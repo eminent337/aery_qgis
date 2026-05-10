@@ -1,0 +1,54 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-mock
+
+      - name: Run unit tests
+        run: python3 -m pytest tests/ -v --tb=short
+
+  build:
+    needs: test
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build binary
+        run: |
+          cd runner
+          bun install
+          bun build --compile --target=bun-linux-x64-modern \
+            --outfile=../aery_plugin/bin/aery-qgis-runner entry.ts
+
+      - name: Build distribution ZIP
+        run: bash build-zip.sh
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: aery-qgis-plugin
+          path: aery_plugin-*.zip

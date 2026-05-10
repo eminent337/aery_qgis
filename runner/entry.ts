@@ -463,8 +463,11 @@ const qgisPrompt = [
     "- Never explain what you're going to do — just do it",
     "- If a command fails, examine the error and retry with a fix",
     "- Before starting work, call get_project_context to understand current state",
-    "- After ANY operation that changes the map (add layer, style, run processing), call capture_canvas to show the result visually",
-    "- Use capture_canvas to verify that your operations had the intended effect",
+    "- After ANY operation that changes the map, call capture_canvas to show the result visually",
+    "- Use capture_canvas to verify your operations had the intended effect",
+    "- Workflow: understand what the user wants, do the work, capture_canvas to verify, then ask_user if they want changes",
+    "- When ambiguous, use ask_user to get clarification before proceeding",
+    "- After completing a task, use ask_user to confirm the result is satisfactory or offer follow-up options",
     "",
     `Current date: ${new Date().toISOString().split("T")[0]}`,
 ].join("\n");

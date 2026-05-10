@@ -111,9 +111,14 @@ class RPCBridge(QObject):
             stderr_thread.start()
 
         except FileNotFoundError:
-            self.error_occurred.emit(
-                "Aery not found. Install with: npm install -g @eminent337/aery"
-            )
+            if not is_bundled:
+                self.error_occurred.emit(
+                    "Bundled binary not found. Build it first:\n"
+                    "  cd runner && bun build --compile --target=bun-linux-x64-modern "
+                    "--outfile=../aery_plugin/bin/aery-qgis-runner entry.ts"
+                )
+            else:
+                self.error_occurred.emit(f"Binary not found at: {binary}")
         except Exception as e:
             self.error_occurred.emit(f"Failed to start Aery: {e}")
 
@@ -131,33 +136,8 @@ class RPCBridge(QObject):
         self._process.stdin.flush()
 
     def prompt(self, message: str):
-        """Send a prompt command."""
-        self.send_command({"type": "prompt", "message": message})
-
-    def abort(self):
-        """Abort the current operation."""
-        self.send_command({"type": "abort"})
-
-    def send_command(self, command: dict[str, Any], callback: Optional[Callable] = None):
-        """Send a JSON-RPC command to Aery via stdin."""
-        if not self._process or not self._running:
-            self.error_occurred.emit("Aery is not running")
-            return
-
-        cmd_id = command.get("id")
-        if callback and cmd_id:
-            self._pending_responses[cmd_id] = callback
-
-        line = json.dumps(command) + "\n"
-        self._process.stdin.write(line)
-        self._process.stdin.flush()
-
-    def prompt(self, message: str):
         """Send a prompt command to the agent."""
-        self.send_command({
-            "type": "prompt",
-            "message": message,
-        })
+        self.send_command({"type": "prompt", "message": message})
 
     def abort(self):
         """Abort the current agent operation."""
