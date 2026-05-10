@@ -149,6 +149,206 @@ function createQGISExtension(port, providerConfig) {
             });
         }
 
+        // --- analyze_task ---
+        aery.registerTool({
+            name: "analyze_task",
+            label: "Analyze Geospatial Task",
+            description:
+                "Break down a user's request into steps. Returns a structured plan with: " +
+                "required tools, input/output layers, potential issues (CRS, memory).",
+            promptSnippet: "Analyze a geospatial task and plan the approach",
+            promptGuidelines: [
+                "ALWAYS call this FIRST for complex tasks (>1 step)",
+                "Outputs: steps[], estimated_time, risks[], tool_sequence",
+                "Use output to guide subsequent tool calls",
+                "Simple tasks can skip this - go straight to get_project_context",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    task: { type: "string", description: "User's request in plain text" },
+                    layers: { type: "array", items: { type: "string" }, description: "Available layer names (optional)" },
+                },
+                required: ["task"],
+            },
+            async execute(_id, params) {
+                const code = `
+from qgis.core import *
+
+available = [l.name() for l in iface.project().mapLayers().values()]
+layers_info = []
+for l in iface.project().mapLayers().values():
+    layers_info.append({
+        "name": l.name(),
+        "type": str(l.type()),
+        "crs": l.crs().authid() if l.crs() else "unknown",
+        "features": l.featureCount() if hasattr(l, "featureCount") else "N/A",
+        "geometry": str(Qgis.geometryType(l.wkbType())) if hasattr(l, "wkbType") else "N/A",
+    })
+
+result = {
+    "available_layers": layers_info,
+    "user_task": params.get("task", ""),
+}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return {
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify(r.result, null, 2),
+                    }],
+                    details: {},
+                };
+            },
+        });
+
+        // --- select_by_attribute ---
+        aery.registerTool({
+            name: "select_by_attribute",
+            label: "Select Features by Attribute",
+            description:
+                "Select features in a layer matching an expression. " +
+                "Use for filtering: 'population' > 1000, 'type' = 'urban', etc.",
+            promptSnippet: "Select features in a layer matching a condition",
+            promptGuidelines: [
+                "Use before: buffer, clip, extract - operate on selection only",
+                "Expression examples: area > 1000, type = 'road', population > 5000",
+                "Returns count of selected features",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    layer_name: { type: "string", description: "Name of layer to select from" },
+                    expression: { type: "string", description: "QGIS expression (e.g. 'population > 1000')" },
+                    method: { type: "string", enum: ["set", "add", "remove"], description: "Selection method", default: "set" },
+                },
+                required: ["layer_name", "expression"],
+            },
+            async execute(_id, params) {
+                const code = `
+from qgis.core import *
+
+layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+if layer is None:
+    raise ValueError("Layer not found: ${params.layer_name}")
+
+method_map = {"set": 0, "add": 1, "remove": 2}
+layer.selectByExpression("${params.expression}", method_map.get("${params.method}", 0))
+
+count = len(layer.selectedFeatureIds())
+result = {"selected": count, "layer": layer.name()}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
+        // --- select_by_location ---
+        aery.registerTool({
+            name: "select_by_location",
+            label: "Select by Location",
+            description:
+                "Select features in one layer based on their spatial relationship to another layer. " +
+                "Use for: features within buffer, points in polygon, roads crossing zones.",
+            promptSnippet: "Select features based on spatial relationship to another layer",
+            promptGuidelines: [
+                "predicate: 'intersects', 'within', 'contains', 'crosses', 'touches'",
+                "Common patterns: buffer around point, points in polygon, lines crossing zones",
+                "Returns count of selected features",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    source_layer: { type: "string", description: "Layer to select from" },
+                    reference_layer: { type: "string", description: "Layer to compare against" },
+                    predicate: { type: "string", description: "Spatial predicate (intersects, within, contains, crosses)" },
+                    method: { type: "string", enum: ["set", "add", "remove"], description: "Selection method", default: "set" },
+                },
+                required: ["source_layer", "reference_layer", "predicate"],
+            },
+            async execute(_id, params) {
+                const code = `
+from qgis.core import *
+import processing
+
+source = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.source_layer}"), None)
+ref = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.reference_layer}"), None)
+if not source: raise ValueError("Source layer not found: ${params.source_layer}")
+if not ref: raise ValueError("Reference layer not found: ${params.reference_layer}")
+
+method_map = {"set": 0, "add": 1, "remove": 2}
+params = {
+    'INPUT': source,
+    'PREDICATE': [0],  # intersects
+    'INTERSECT': ref,
+    'METHOD': method_map.get("${params.method}", 0),
+}
+
+# Map predicate string to index
+pred_map = {'intersects': 0, 'within': 1, 'contains': 2, 'crosses': 3, 'touches': 4, 'overlaps': 5}
+if "${params.predicate}" in pred_map:
+    params['PREDICATE'] = [pred_map["${params.predicate}"]]
+
+processing.run("native:selectbylocation", params)
+count = len(source.selectedFeatureIds())
+result = {"selected": count, "layer": source.name()}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
+        // --- export_layer ---
+        aery.registerTool({
+            name: "export_layer",
+            label: "Export Layer",
+            description:
+                "Export a layer or selection to file. Supports GeoPackage, Shapefile, GeoJSON, CSV.",
+            promptSnippet: "Save layer to file (GeoPackage, GeoJSON, Shapefile)",
+            promptGuidelines: [
+                "GeoPackage recommended - modern, handles CRS, no size limits",
+                "Use 'memory:' for temporary results that can be further processed",
+                "Include CRS in output path: 'file.gpkg|layername=MyLayer' for GeoPackage",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    layer_name: { type: "string", description: "Name of layer to export" },
+                    output_path: { type: "string", description: "Output file path" },
+                    format: { type: "string", enum: ["gpkg", "shp", "geojson", "csv"], description: "Output format", default: "gpkg" },
+                    only_selected: { type: "boolean", description: "Export only selected features" },
+                },
+                required: ["layer_name", "output_path"],
+            },
+            async execute(_id, params) {
+                const fmt_map = { gpkg: "GPKG", shp: "ESRI Shapefile", geojson: "GeoJSON", csv: "CSV" };
+                const code = `
+from qgis.core import *
+import processing
+
+layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+if layer is None: raise ValueError("Layer not found")
+
+# Get only selected if requested
+input_layer = layer.materialize(QgsFeatureRequest().setFilterFids(layer.selectedFeatureIds())) if ${params.only_selected} and layer.selectedFeatureIds() else layer
+
+# Export
+params = {
+    'INPUT': input_layer,
+    'OUTPUT': "${params.output_path}",
+    'FORMATS': [{"long_name": "${fmt_map[params.format] || 'GPKG'}", "short_name": "${params.format}", "extension": "${params.format}", "filter": ""}],
+}
+result_feats = processing.run("native:exporttogeopackage", params) if "${params.format}" == "gpkg" else processing.run("native:savefeatures", {
+    'INPUT': input_layer,
+    'OUTPUT': "${params.output_path}",
+})
+result = {"saved": "${params.output_path}", "format": "${params.format}"}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
         // --- run_qgis_code (PRIMARY) ---
         aery.registerTool({
             name: "run_qgis_code",
@@ -341,38 +541,65 @@ result = f"Loaded {l.name()} ({l.featureCount()} features)"
         // --- capture_canvas ---
         aery.registerTool({
             name: "capture_canvas",
-            label: "Capture Canvas",
+            label: "Capture Map Canvas",
             description:
-                "Capture the current QGIS map canvas as an image. " +
-                "Use this to show the user visual results of spatial operations.",
-            promptSnippet: "Capture the QGIS map canvas to see the current map state",
+                "Capture the QGIS map canvas as an image. " +
+                "Zooms to show all layers, captures at 2x resolution for clarity.",
+            promptSnippet: "Capture the QGIS map canvas - shows all layers at good resolution",
             promptGuidelines: [
                 "ALWAYS call this after operations that change the map",
-                "Shows current styling, labels, layers as visible in QGIS",
-                "Good for verifying buffer, clip, styling operations worked correctly",
+                "Shows current styling, labels, all visible layers",
+                "Use scale=1 for fast captures (default), scale=2 for high quality",
             ],
-            parameters: { type: "object", properties: {} },
-            async execute(_id) {
+            parameters: {
+                type: "object",
+                properties: {
+                    width: { type: "number", description: "Image width in pixels (default 800)" },
+                    height: { type: "number", description: "Image height in pixels (default 600)" },
+                    scale: { type: "number", enum: [1, 2], description: "Resolution scale: 1=fast, 2=high quality (default 1)" },
+                },
+            },
+            async execute(_id, params) {
+                const width = params.width || 800;
+                const height = params.height || 600;
+                const scale = params.scale || 1;  // 1=fast, 2=high quality
+
                 const code = `
-from PyQt6.QtCore import QBuffer, QIODevice
-import base64
+from PyQt6.QtCore import QBuffer, QIODevice, QSize
+from PyQt6.QtGui import QImage, QPainter
 
 canvas = iface.mapCanvas()
-pixmap = canvas.grab()
+settings = canvas.mapSettings()
+
+# High DPI rendering for crisp images
+settings.setOutputSize(QSize(${width}, ${height}))
+settings.setDevicePixelRatio(${scale})
+
+# Calculate final image size
+final_w = ${width} * ${scale}
+final_h = ${height} * ${scale}
+
+image = QImage(final_w, final_h, QImage.Format.Format_ARGB32)
+image.fill(0xFFFFFFFF)
+painter = QPainter(image)
+settings.render(painter)
+painter.end()
+
+# Convert to base64 PNG
 buf = QBuffer()
 buf.open(QIODevice.OpenModeFlag.WriteOnly)
-pixmap.save(buf, "PNG")
-buf.close()
-result = base64.b64encode(bytes(buf.data())).decode()
+image.save(buf, "PNG")
+result = buf.data().toBase64().data().decode()
 `;
                 const r = await qgisRequest(port, "run_code", { code });
                 const b64 = typeof r.result === "string" ? r.result : "";
+                const quality = scale === 2 ? "high" : "fast";
                 return {
                     content: [
-                        { type: "text", text: "Map canvas captured." },
+                        { type: "text", text: `Map captured (${width}x${height}, ${quality})` },
                         { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
                     ],
-                    details: {},
+                    details: { width, height, scale, quality },
                 };
             },
         });
@@ -624,23 +851,36 @@ const modelArg = providerConfig?.model
 const algoList = PROCESSING_ALGORITHMS.map(a => `- ${a.name}: '${a.id}'`).join("\n");
 
 const qgisPrompt = [
-    "You are a geospatial AI assistant operating inside QGIS.",
-    "Your role: execute spatial operations quickly, show results visually, confirm with user.",
+    "You are a geospatial AI assistant inside QGIS.",
+    "Your workflow: Understand → Explore → Plan → Execute → Visualize → Confirm.",
+
+    "",
+    "=== QGIS WORKFLOW ===",
+    "1. UNDERSTAND: Analyze the user's request (use analyze_task for complex tasks)",
+    "2. EXPLORE: Get project context, inspect layers, check CRS",
+    "3. PLAN: Select the right operations, handle CRS mismatches",
+    "4. EXECUTE: Run processing algorithms or custom Python",
+    "5. VISUALIZE: Always capture_canvas after changes",
+    "6. CONFIRM: Show results, offer follow-up operations",
 
     "",
     "=== AVAILABLE TOOLS ===",
-    "- run_qgis_code: Execute Python in QGIS (PRIMARY tool)",
-    "- get_project_context: Get layers, CRS, selection (call FIRST)",
-    "- get_layer_info: Get detailed info about a specific layer",
-    "- run_processing: Run native algorithms (see list below)",
-    "- add_layer: Load GeoJSON/Shapefile/GeoTIFF",
-    "- capture_canvas: Screenshot the map - ALWAYS after changes",
-    "- bash: GDAL/OGR, pip install, file ops",
-    "- confirm_action: Confirm destructive operations",
-    "- ask_user: Ask questions, confirm results",
-    "- web_search: Look up GIS data sources, API docs",
-    "- run_gee_code: Google Earth Engine operations",
-    "- register_tool: Save reusable Python snippets",
+    "- analyze_task: Break down complex tasks into steps (call FIRST for multi-step tasks)",
+    "- get_project_context: Get all layers, CRS, selection (call FIRST for all tasks)",
+    "- get_layer_info: Detailed layer inspection (fields, geometry, sample data)",
+    "- select_by_attribute: Filter features by expression ('population' > 1000)",
+    "- select_by_location: Spatial selection (features within buffer, points in polygon)",
+    "- run_processing: Run native QGIS algorithms (buffer, clip, intersect, etc.)",
+    "- run_qgis_code: Custom Python (PRIMARY for complex logic)",
+    "- add_layer: Load external files (GeoJSON, Shapefile, GeoTIFF, raster)",
+    "- export_layer: Save to file (GeoPackage, GeoJSON, Shapefile, CSV)",
+    "- capture_canvas: Screenshot map (default fast, scale=2 for quality) - ALWAYS after changes",
+    "- bash: GDAL/OGR shell commands",
+    "- confirm_action: Confirm destructive ops (delete, overwrite)",
+    "- ask_user: Ask questions for clarification",
+    "- web_search: Look up GIS docs, data sources",
+    "- run_gee_code: Google Earth Engine satellite analysis",
+    "- register_tool: Create reusable tools from Python snippets",
 
     "",
     `=== PROCESSING ALGORITHMS ===`,
