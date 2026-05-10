@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 #   baseUrl    — API endpoint
 #   auth       — "bearer" (Authorization: Bearer) or "header" (x-goog-api-key)
 #   models     — Suggested models for the combo box
-#   contextWindow, maxTokens — Default values
+#   contextWindow, maxTokens — Derived from preset, not user-editable
 
 PRESETS: dict[str, dict] = {
     "OpenAI": {
@@ -155,16 +155,6 @@ class ProviderSettingsDialog(QDialog):
         self.model_combo.setPlaceholderText("Select or type a model...")
         form.addRow("Model:", self.model_combo)
 
-        # ── Context window ──
-        self.context_window = QLineEdit()
-        self.context_window.setPlaceholderText("128000")
-        form.addRow("Context Window:", self.context_window)
-
-        # ── Max tokens ──
-        self.max_tokens = QLineEdit()
-        self.max_tokens.setPlaceholderText("8192")
-        form.addRow("Max Tokens:", self.max_tokens)
-
         layout.addLayout(form)
 
         # ── Test connection ──
@@ -201,9 +191,6 @@ class ProviderSettingsDialog(QDialog):
         # Populate model combo
         self.model_combo.clear()
         self.model_combo.addItems(preset["models"])
-
-        self.context_window.setText(str(preset["contextWindow"]))
-        self.max_tokens.setText(str(preset["maxTokens"]))
 
         # Show a hint for auth type in the placeholder
         if preset["auth"] == "header":
@@ -242,14 +229,6 @@ class ProviderSettingsDialog(QDialog):
             else:
                 self.model_combo.setEditText(saved_model)
 
-        cw = settings.value("aery/provider/contextWindow", "")
-        if cw:
-            self.context_window.setText(str(cw))
-
-        mt = settings.value("aery/provider/maxTokens", "")
-        if mt:
-            self.max_tokens.setText(str(mt))
-
     def _save_and_accept(self):
         """Save to QSettings and close."""
         settings = QSettings()
@@ -258,10 +237,12 @@ class ProviderSettingsDialog(QDialog):
         settings.setValue("aery/provider/baseUrl", self.base_url.text().strip())
         settings.setValue("aery/provider/apiKey", self.api_key.text().strip())
         settings.setValue("aery/provider/model", self.model_combo.currentText().strip())
-        cw = self.context_window.text().strip()
-        settings.setValue("aery/provider/contextWindow", int(cw) if cw.isdigit() else 128000)
-        mt = self.max_tokens.text().strip()
-        settings.setValue("aery/provider/maxTokens", int(mt) if mt.isdigit() else 8192)
+
+        # Derive contextWindow/maxTokens from preset (not user-editable)
+        preset = PRESETS.get(self.preset_combo.currentText(), {})
+        settings.setValue("aery/provider/contextWindow", preset.get("contextWindow", 128000))
+        settings.setValue("aery/provider/maxTokens", preset.get("maxTokens", 8192))
+
         self.accept()
 
     # =========================================================================
@@ -376,18 +357,26 @@ class ProviderSettingsDialog(QDialog):
         Returns a dict suitable for --provider-file:
           { api, baseUrl, apiKey, model, contextWindow, maxTokens }
         Returns empty dict if no provider is configured.
+
+        contextWindow and maxTokens are derived from the selected preset
+        (not user-editable). Falls back to sensible defaults.
         """
         settings = QSettings()
         api = settings.value("aery/provider/api", "")
         if not api:
             return {}
+
+        # Derive token limits from preset
+        preset_name = settings.value("aery/provider/preset", "")
+        preset = PRESETS.get(preset_name, {})
+
         return {
             "api": api,
             "baseUrl": settings.value("aery/provider/baseUrl", ""),
             "apiKey": settings.value("aery/provider/apiKey", ""),
             "model": settings.value("aery/provider/model", ""),
-            "contextWindow": int(settings.value("aery/provider/contextWindow", "128000")),
-            "maxTokens": int(settings.value("aery/provider/maxTokens", "8192")),
+            "contextWindow": int(preset.get("contextWindow", 128000)),
+            "maxTokens": int(preset.get("maxTokens", 8192)),
         }
 
     @staticmethod
