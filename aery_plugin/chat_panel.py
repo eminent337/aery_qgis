@@ -158,14 +158,22 @@ class ChatPanel(QDockWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
 
+        # Provider status indicator
+        self._provider_status = QLabel("●")
+        self._provider_status.setStyleSheet(f"color: {TEXT_ERROR}; font-size: 14px;")
+        self._provider_status.setFixedWidth(20)
+        self._provider_status.setToolTip("Provider not configured")
+        self._update_provider_status()
+
         # Status indicator (star + text)
         self._activity_label = QLabel("●")
         self._activity_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        self._activity_label.setFixedWidth(60)
+        self._activity_label.setFixedWidth(40)
 
         self._status_text = QLabel("")
         self._status_text.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px;")
 
+        header_layout.addWidget(self._provider_status)
         header_layout.addWidget(self._activity_label)
         header_layout.addWidget(self._status_text)
         header_layout.addStretch()
@@ -873,3 +881,25 @@ class ChatPanel(QDockWidget):
         """Open the provider settings dialog."""
         if self.on_settings:
             self.on_settings()
+        self._update_provider_status()
+
+    def _update_provider_status(self):
+        """Update the provider status indicator based on QSettings."""
+        from PyQt6.QtCore import QSettings
+
+        settings = QSettings()
+        has_api_key = bool(settings.value("aery/provider/apiKey", ""))
+        has_model = bool(settings.value("aery/provider/model", ""))
+
+        if has_api_key and has_model:
+            self._provider_status.setText("●")
+            self._provider_status.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 14px;")
+            self._provider_status.setToolTip("Provider configured")
+        elif has_api_key:
+            self._provider_status.setText("◐")
+            self._provider_status.setStyleSheet(f"color: {TEXT_WORKING}; font-size: 14px;")
+            self._provider_status.setToolTip("Provider partially configured - select a model")
+        else:
+            self._provider_status.setText("●")
+            self._provider_status.setStyleSheet(f"color: {TEXT_ERROR}; font-size: 14px;")
+            self._provider_status.setToolTip("Provider not configured - click ⚙ to set up")

@@ -303,9 +303,11 @@ result = {"selected": count, "layer": source.name()}
             name: "export_layer",
             label: "Export Layer",
             description:
-                "Export a layer or selection to file. Supports GeoPackage, Shapefile, GeoJSON, CSV.",
-            promptSnippet: "Save layer to file (GeoPackage, GeoJSON, Shapefile)",
+                "Export a layer or selection to file. Supports GeoPackage, Shapefile, GeoJSON, CSV. " +
+                "SAVE ALL OUTPUTS to the project directory (use os.path.join(project_dir, ...)).",
+            promptSnippet: "Save layer to file in project_dir (GeoPackage, GeoJSON, Shapefile)",
             promptGuidelines: [
+                "SAVE TO project_dir — use os.path.join(project_dir, 'filename.gpkg')",
                 "GeoPackage recommended - modern, handles CRS, no size limits",
                 "Use 'memory:' for temporary results that can be further processed",
                 "Include CRS in output path: 'file.gpkg|layername=MyLayer' for GeoPackage",
@@ -506,11 +508,11 @@ result = processing.run("${params.algorithm}", ${JSON.stringify(params.parameter
             label: "Add Layer",
             description:
                 "Load a geospatial file into QGIS. Supports GeoJSON, Shapefile, GeoPackage, GeoTIFF. " +
-                "Auto-detects layer type from file extension.",
-            promptSnippet: "Load a geospatial file into QGIS",
+                "Auto-detects layer type from file extension. Files should be in project_dir.",
+            promptSnippet: "Load a geospatial file from project_dir into QGIS",
             promptGuidelines: [
                 "Supports: GeoJSON (.geojson, .json), Shapefile (.shp), GeoPackage (.gpkg), GeoTIFF (.tif, .tiff)",
-                "Always use absolute file paths",
+                "Always use absolute file paths (os.path.join(project_dir, ...))",
                 "File must be readable by QGIS/OGR",
             ],
             parameters: {
@@ -610,10 +612,12 @@ result = buf.data().toBase64().data().decode()
             label: "Shell Command",
             description:
                 "Execute a shell command on the QGIS host system. " +
-                "Use for GDAL/OGR operations, pip install, file management.",
-            promptSnippet: "Run shell commands",
+                "Use for GDAL/OGR operations, pip install, file management. " +
+                "Runs from the project directory by default.",
+            promptSnippet: "Run shell commands from the project directory",
             promptGuidelines: [
                 "Useful for: gdalinfo, ogr2ogr, pip install, file copy/move",
+                "Runs from project_dir by default (available as 'project_dir' variable)",
                 "Returns stdout, stderr, and return code",
                 "Use sparingly - most GIS work should use processing.run() or qgis.core",
             ],
@@ -627,8 +631,13 @@ result = buf.data().toBase64().data().decode()
             },
             async execute(_id, params) {
                 const code = `
-import subprocess, json
-r = subprocess.run(${JSON.stringify(params.command)}, shell=True, capture_output=True, text=True, timeout=${params.timeout || 60})
+import subprocess, json, os
+cwd = os.getcwd()
+try:
+    os.chdir(project_dir)
+    r = subprocess.run(${JSON.stringify(params.command)}, shell=True, capture_output=True, text=True, timeout=${params.timeout || 60})
+finally:
+    os.chdir(cwd)
 result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
 `;
                 const r = await qgisRequest(port, "run_code", { code, timeout: params.timeout || 120 });
@@ -889,6 +898,17 @@ const qgisPrompt = [
     "Use run_processing('algorithm_id', {PARAM: value}) for these.",
 
     "",
+    "=== PROJECT DIRECTORY (CRITICAL) ===",
+    "ALL output files MUST be saved inside the project directory.",
+    "The project directory is in the QGIS State context as 'project_dir'.",
+    "In Python code, the 'project_dir' variable is always available:",
+    "  output_path = os.path.join(project_dir, 'results.gpkg')",
+    "  processing.run('native:buffer', {'INPUT': l, 'OUTPUT': output_path})",
+    "NEVER write files to /tmp, ~/, or other arbitrary locations.",
+    "If no project is saved, project_dir defaults to the user's home directory",
+    "  — in that case, ask_user to save the project first.",
+
+    "",
     "=== CRS RULES (CRITICAL) ===",
     ...CRS_RULES,
     "Reproject: processing.run('native:reprojectlayer', {'INPUT': layer, 'TARGET_CRS': crs})",
@@ -903,8 +923,8 @@ const qgisPrompt = [
     "",
     "=== TYPICAL WORKFLOW ===",
     "1. Understand what user wants",
-    "2. Call get_project_context to see current state",
-    "3. Do the work (processing.run or raw Python)",
+    "2. Call get_project_context to see current state (note project_dir)",
+    "3. Do the work — save outputs to project_dir using os.path.join",
     "4. Call capture_canvas to show visual result",
     "5. Confirm result with user, offer follow-up",
 

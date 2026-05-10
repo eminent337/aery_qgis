@@ -107,13 +107,21 @@ class QGISCodeExecutor(QObject):
 
     def _process_queue(self):
         """Process queued requests on the main QGIS thread. Called by QTimer."""
+        import os
+        from qgis.core import QgsProject
+
         try:
             while True:
                 req_id, code, result_queue = self._request_queue.get_nowait()
                 try:
-                    # Build execution context
+                    # Determine project directory
+                    project_path = QgsProject.instance().fileName()
+                    project_dir = os.path.dirname(project_path) if project_path else os.path.expanduser("~")
+
+                    # Build execution context — project_dir always available
                     local_vars: dict[str, Any] = {
                         "iface": self.iface,
+                        "project_dir": project_dir,
                         "result": None,
                     }
                     exec(code, self._get_globals(), local_vars)
@@ -141,7 +149,8 @@ class QGISCodeExecutor(QObject):
 
     def _get_project_context(self) -> dict[str, Any]:
         """Get current QGIS project state for the agent."""
-        from qgis.core import Qgis, Qt
+        import os
+        from qgis.core import Qgis
 
         project = self.iface.project()
         layers = []
@@ -166,12 +175,18 @@ class QGISCodeExecutor(QObject):
         if active_layer and hasattr(active_layer, "selectedFeatureIds"):
             selection_count = len(active_layer.selectedFeatureIds())
 
+        # Determine project directory — all file operations should go here
+        project_path = project.fileName()
+        project_dir = os.path.dirname(project_path) if project_path else os.path.expanduser("~")
+
         return {
             "layers": layers,
             "active_layer": active_layer.name() if active_layer else None,
             "selection_count": selection_count,
             "project_crs": project.crs().authid() if project.crs() else None,
             "project_extent": str(project.extent().toString()),
+            "project_dir": project_dir,
+            "project_path": project_path or "",
         }
 
     def _get_globals(self) -> dict[str, Any]:
