@@ -1,0 +1,8 @@
+{
+  "name": "aery-qgis-runner",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@eminent337/aery": "latest"
+  }
+}

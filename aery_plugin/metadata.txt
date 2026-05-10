@@ -1,0 +1,15 @@
+[general]
+name=Aery
+qgisMinimumVersion=4.0
+qgisMaximumVersion=4.99
+description=AI coding agent for geospatial work
+about=Embeds the Aery AI agent inside QGIS. Perform geospatial operations through natural language.
+author=Aryee
+email=
+version=0.1.0
+experimental=True
+icon=resources/icons/aery.svg
+tags=ai,agent,automation,geospatial,processing
+homepage=https://github.com/eminent337/aery
+tracker=https://github.com/eminent337/aery/issues
+repository=https://github.com/eminent337/aery

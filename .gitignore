@@ -1,0 +1,30 @@
+# Aery QGIS Plugin — .gitignore
+
+# Runner source code and dependencies
+runner/node_modules/
+runner/package-lock.json
+runner/bun.lock
+runner/deno.lock
+
+# Compiled Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Test cache
+.pytest_cache/
+
+# Distribution archives
+*.zip
+
+# Standalone ELF binary (built from runner/entry.ts via bun build --compile)
+aery_plugin/bin/aery-qgis-runner
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated database files
+*.db

@@ -1,0 +1,5 @@
+/* Aery QGIS Plugin - Dark Theme */
+QDockWidget {
+    background-color: #1e1e24;
+    color: #e5e5e7;
+}
