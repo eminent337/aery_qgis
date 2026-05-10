@@ -64,6 +64,7 @@ class ChatPanel(QDockWidget):
         self._assistant_text = ""
         self._tool_output = ""
         self._queued_messages: list[str] = []  # Queue for messages sent while busy
+        self._abort_debounce: Optional[QTimer] = None  # Timer to delay button revert after abort
 
         self._build_ui()
         self._connect_signals()
@@ -343,8 +344,16 @@ class ChatPanel(QDockWidget):
     def _abort(self):
         """Abort current operation."""
         self._aborted = True
+        self._queued_messages.clear()
         self.rpc.abort()
-        self._show_send_button()
+        # Delay the button revert to give Aery time to process the abort
+        # before the user can fire a new prompt (avoids race where the
+        # agent is still flagged as "processing" when the new prompt arrives)
+        if self._abort_debounce is None:
+            self._abort_debounce = QTimer()
+            self._abort_debounce.setSingleShot(True)
+            self._abort_debounce.timeout.connect(self._show_send_button)
+        self._abort_debounce.start(500)
         self._set_activity(STATE_IDLE)
         self._append_message("system", "Operation aborted")
 

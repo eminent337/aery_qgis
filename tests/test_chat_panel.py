@@ -109,12 +109,17 @@ def test_send_button_toggles_to_stop_during_send(panel):
 
 
 def test_stop_toggles_back_to_send(panel):
-    """After abort, button reverts to send (▶)."""
+    """After abort, button reverts to send (▶) after a short debounce."""
     panel.set_ready()
     panel.input_field.setText("test")
     panel._send_message()
     assert panel._is_streaming
     panel._abort()
+    # Button stays ■ while abort propagates (500ms timer)
+    assert panel.send_button.text() == "■"
+    assert panel._is_streaming  # still streaming until timer fires
+    # Advance the abort debounce timer
+    panel._abort_debounce.timeout.emit()
     assert panel.send_button.text() == "▶"
     assert not panel._is_streaming
     assert panel.send_button.isEnabled()
