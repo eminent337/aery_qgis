@@ -174,3 +174,55 @@ def test_status_label_updates(panel):
     assert "Connecting" in panel.status_label.text()
     panel.set_ready()
     assert "Ready" in panel.status_label.text()
+
+
+def test_command_history_navigates_up(panel):
+    """Arrow up navigates to previous commands."""
+    panel.set_ready()
+    panel.input_field.setText("first command")
+    panel._send_message()
+    panel.input_field.setText("second command")
+    panel._send_message()
+
+    # Navigate up
+    panel.input_field.setText("")
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt
+    up_event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier)
+    panel.input_field.keyPressEvent(up_event)
+    assert panel.input_field.text() == "second command"
+
+
+def test_keyboard_shortcut_ctrl_enter_sends(panel):
+    """Ctrl+Enter sends the message."""
+    panel.set_ready()
+    panel.input_field.setText("test ctrl+enter")
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import Qt
+    enter_event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    panel.input_field.keyPressEvent(enter_event)
+    # Message should be sent
+    assert panel.input_field.text() == ""
+
+
+def test_suggestions_hidden_initially(panel):
+    """Suggestions frame is hidden by default."""
+    panel.set_ready()
+    assert not panel._suggestions_frame.isVisible()
+
+
+def test_suggestion_click_sends_message(panel):
+    """Clicking a suggestion sends that message."""
+    panel.set_ready()
+    panel._on_suggestion_click("Buffer roads by 100m")
+    assert "Buffer roads by 100m" in panel.message_log.toHtml()
+
+
+def test_clear_chat_clears_messages(panel):
+    """Clear chat removes all messages."""
+    panel.set_ready()
+    panel.input_field.setText("test")
+    panel._send_message()
+    assert panel.message_log.toPlainText().strip() != ""
+    panel._clear_chat()
+    assert panel.message_log.toPlainText().strip() == ""

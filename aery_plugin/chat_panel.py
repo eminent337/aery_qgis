@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont, QKeyEvent, QTextCursor
 from PyQt6.QtWidgets import (
     QDockWidget,
     QFrame,
@@ -41,6 +41,79 @@ STATE_THINKING = "thinking"
 STATE_TOOL = "tool"
 STATE_DONE = "done"
 
+# Suggested prompts for empty state
+SUGGESTIONS = [
+    "Buffer the selected roads by 50 meters",
+    "Clip landuse layer to current extent",
+    "Find the intersection of two polygon layers",
+    "Calculate area of all polygons in km²",
+    "Reproject current layer to EPSG:32735",
+    "Select features within 1km of the selected point",
+    "Merge all selected layers",
+    "Create a hillshade from elevation raster",
+]
+
+
+class HistoryLineEdit(QLineEdit):
+    """QLineEdit with command history support (arrow up/down)."""
+
+    history_updated = pyqtSignal()
+
+    def __init__(self, history: list[str]):
+        super().__init__()
+        self._history = history
+        self._history_index = -1  # -1 = current input
+
+    def keyPressEvent(self, e):
+        key = e.key()
+
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            e.accept()
+            if not self._history:
+                return
+
+            if key == Qt.Key.Key_Up:
+                # Navigate up (older)
+                if self._history_index == -1:
+                    self._history_index = len(self._history) - 1
+                elif self._history_index > 0:
+                    self._history_index -= 1
+            else:  # Down
+                # Navigate down (newer)
+                if self._history_index == -1:
+                    return
+                self._history_index += 1
+                if self._history_index >= len(self._history):
+                    self._history_index = -1
+
+            if self._history_index == -1:
+                self.clear()
+            else:
+                self.setText(self._history[self._history_index])
+                self.selectAll()
+
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # Save to history on plain Enter; Ctrl+Enter just sends
+            if not (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                if self.text().strip():
+                    self._save_to_history(self.text().strip())
+            super().keyPressEvent(e)
+
+        elif key == Qt.Key.Key_Escape:
+            # Pass Escape to parent (ChatPanel handles abort)
+            e.ignore()
+
+        else:
+            super().keyPressEvent(e)
+
+    def _save_to_history(self, text: str):
+        """Add text to history (avoid duplicates)."""
+        if text in self._history:
+            self._history.remove(text)
+        self._history.append(text)
+        self._history_index = -1
+        self.history_updated.emit()
+
 
 class ChatPanel(QDockWidget):
     """Aery chat interface as a QGIS dockable panel."""
@@ -65,6 +138,9 @@ class ChatPanel(QDockWidget):
         self._tool_output = ""
         self._queued_messages: list[str] = []  # Queue for messages sent while busy
         self._abort_debounce: Optional[QTimer] = None  # Timer to delay button revert after abort
+        self._command_history: list[str] = []  # Command history for up/down navigation
+        self._suggestion_buttons: list[QPushButton] = []  # Active suggestion chips
+        self._tool_timer: Optional[QTimer] = None  # Timer to auto-hide tool frame
 
         self._build_ui()
         self._connect_signals()
@@ -110,6 +186,22 @@ class ChatPanel(QDockWidget):
         self._settings_btn.clicked.connect(self._on_settings_clicked)
         header_layout.addWidget(self._settings_btn)
 
+        # Clear button
+        self._clear_btn = QPushButton("🗑")
+        self._clear_btn.setFixedSize(QSize(24, 24))
+        self._clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {TEXT_DIM};
+                border: none;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ color: {TEXT_ERROR}; }}
+        """)
+        self._clear_btn.setToolTip("Clear chat")
+        self._clear_btn.clicked.connect(self._clear_chat)
+        header_layout.addWidget(self._clear_btn)
+
         layout.addWidget(header)
 
         # ── Message log ──
@@ -130,7 +222,33 @@ class ChatPanel(QDockWidget):
 
         layout.addWidget(self.message_log, 1)
 
-        # ── Streaming area ──
+        # ── Suggestions area (hidden by default) ──
+        self._suggestions_frame = QFrame()
+        self._suggestions_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {BG_DARK};
+                border-top: 1px solid {BORDER_SUBTLE};
+                padding: 8px 12px;
+            }}
+        """)
+        suggestions_layout = QVBoxLayout(self._suggestions_frame)
+        suggestions_layout.setContentsMargins(12, 8, 12, 8)
+        suggestions_layout.setSpacing(6)
+
+        suggestions_title = QLabel("Try one of these:")
+        suggestions_title.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; font-weight: bold;")
+        suggestions_layout.addWidget(suggestions_title)
+
+        self._suggestions_grid = QWidget()
+        grid_layout = QVBoxLayout(self._suggestions_grid)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setSpacing(4)
+        suggestions_layout.addWidget(self._suggestions_grid)
+        self._build_suggestion_buttons(grid_layout)
+
+        layout.addWidget(self._suggestions_frame)
+
+        # ── Streaming area (shows AI response as it's generated) ──
         self._streaming_label = QLabel()
         self._streaming_label.setVisible(False)
         self._streaming_label.setWordWrap(True)
@@ -159,7 +277,7 @@ class ChatPanel(QDockWidget):
         input_layout.setContentsMargins(4, 2, 4, 2)
         input_layout.setSpacing(2)
 
-        self.input_field = QLineEdit()
+        self.input_field = HistoryLineEdit(self._command_history)
         self.input_field.setPlaceholderText("Describe a geospatial task")
         self.input_field.setStyleSheet(f"""
             QLineEdit {{
@@ -201,6 +319,35 @@ class ChatPanel(QDockWidget):
 
         layout.addWidget(input_frame)
 
+        # ── Tool call display ──
+        self._tool_call_frame = QFrame()
+        self._tool_call_frame.setVisible(False)
+        self._tool_call_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {BG_TOOL};
+                border-top: 2px solid {TEXT_SUCCESS};
+                padding: 8px 12px;
+            }}
+        """)
+        tool_layout = QVBoxLayout(self._tool_call_frame)
+        tool_layout.setContentsMargins(0, 4, 0, 4)
+        tool_layout.setSpacing(2)
+
+        self._tool_header = QLabel()
+        self._tool_header.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 10px; font-weight: bold;")
+        tool_layout.addWidget(self._tool_header)
+
+        self._tool_args_label = QLabel()
+        self._tool_args_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px; font-family: monospace;")
+        tool_layout.addWidget(self._tool_args_label)
+
+        self._tool_output_label = QLabel()
+        self._tool_output_label.setWordWrap(True)
+        self._tool_output_label.setStyleSheet(f"color: {TEXT_MAIN}; font-size: 10px; font-family: monospace;")
+        tool_layout.addWidget(self._tool_output_label)
+
+        layout.addWidget(self._tool_call_frame)
+
         # ── Status bar ──
         self.status_label = QLabel("Connecting...")
         self.status_label.setStyleSheet(f"""
@@ -229,11 +376,75 @@ class ChatPanel(QDockWidget):
         """Connect signals."""
         self.input_field.returnPressed.connect(self._send_message)
         self.send_button.clicked.connect(self._toggle_send_stop)
+        self.input_field.textChanged.connect(self._on_input_changed)
 
         self.rpc.event_received.connect(self._on_event)
         self.rpc.response_received.connect(self._on_response)
         self.rpc.error_occurred.connect(self._on_error)
         self.rpc.process_exited.connect(self._on_exit)
+
+    def keyPressEvent(self, e):
+        """Handle global keyboard shortcuts."""
+        # Escape to abort
+        if e.key() == Qt.Key.Key_Escape and self._is_streaming:
+            e.accept()
+            self._abort()
+            return
+
+        super().keyPressEvent(e)
+
+    def _build_suggestion_buttons(self, layout):
+        """Create clickable suggestion chips."""
+        for i, text in enumerate(SUGGESTIONS):
+            btn = QPushButton(text)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {BG_TOOL};
+                    color: {TEXT_MAIN};
+                    border: 1px solid {BORDER_SUBTLE};
+                    border-radius: 12px;
+                    padding: 4px 10px;
+                    font-size: 10px;
+                    text-align: left;
+                }}
+                QPushButton:hover {{
+                    background-color: {TEXT_ACCENT};
+                    color: {BG_DARK};
+                    border-color: {TEXT_ACCENT};
+                }}
+            """)
+            btn.clicked.connect(lambda checked, t=text: self._on_suggestion_click(t))
+            layout.addWidget(btn)
+            self._suggestion_buttons.append(btn)
+
+        self._suggestions_frame.setVisible(False)
+
+    def _on_suggestion_click(self, text: str):
+        """Handle suggestion click."""
+        self.input_field.setText(text)
+        self.input_field.setFocus()
+        self._send_message()
+
+    def _show_suggestions(self):
+        """Show suggestions when idle and no messages."""
+        # Only show when truly idle and no message history
+        if self._activity_state == STATE_IDLE and not self.message_log.toPlainText().strip():
+            self._suggestions_frame.setVisible(True)
+        else:
+            self._suggestions_frame.setVisible(False)
+
+    def _hide_suggestions(self):
+        """Hide suggestions when user starts typing or agent is working."""
+        self._suggestions_frame.setVisible(False)
+
+    def _on_input_changed(self, text: str):
+        """Hide suggestions when user starts typing."""
+        if text.strip():
+            self._hide_suggestions()
+        elif self._activity_state == STATE_IDLE:
+            # Show suggestions when input is cleared and idle
+            self._show_suggestions()
 
     def _set_activity(self, state: str, info: str = ""):
         """Update the activity indicator."""
@@ -245,6 +456,7 @@ class ChatPanel(QDockWidget):
             self._status_text.setText("")
             self._blink_timer.stop()
             self._elapsed_timer.stop()
+            self._show_suggestions()
 
         elif state == STATE_WORKING:
             self._blink_timer.start(500)  # Blink every 500ms
@@ -252,6 +464,7 @@ class ChatPanel(QDockWidget):
             self._activity_label.setStyleSheet(f"color: {TEXT_ACCENT}; font-size: 12px;")
             self._status_text.setStyleSheet(f"color: {TEXT_ACCENT}; font-size: 9px;")
             self._elapsed_timer.start(1000)  # Update every second
+            self._hide_suggestions()
 
         elif state == STATE_THINKING:
             self._blink_timer.start(300)
@@ -328,6 +541,12 @@ class ChatPanel(QDockWidget):
         text = self.input_field.text().strip()
         if not text:
             return
+
+        # Save to command history
+        if text in self._command_history:
+            self._command_history.remove(text)
+        self._command_history.append(text)
+        self.input_field._history_index = -1  # Reset navigation state
 
         if self._is_streaming or self._queued_messages:
             # Queue the message — agent is processing or messages ahead in queue
@@ -540,17 +759,52 @@ class ChatPanel(QDockWidget):
         """Start a tool execution display."""
         self._current_tool_name = tool_name
         self._tool_output = ""
-        self._render_assistant_stream()
+
+        # Cancel any pending auto-hide from previous tool
+        if self._tool_timer is not None:
+            self._tool_timer.stop()
+
+        self._tool_header.setText(f"⚡ {tool_name}")
+        # Format args as pretty JSON
+        args_str = ""
+        if args:
+            import json
+            try:
+                args_str = json.dumps(args, indent=2, default=str)
+            except Exception:
+                for k, v in args.items():
+                    if isinstance(v, str) and len(v) > 50:
+                        v = v[:47] + "..."
+                    args_str += f"{k}={v}, "
+                args_str = args_str[:-2]
+        self._tool_args_label.setText(args_str)
+        self._tool_output_label.setText("")
+        self._tool_call_frame.setVisible(True)
+        self._scroll_to_bottom()
 
     def _update_tool_output(self, text: str):
         """Update streaming tool output."""
         self._tool_output += text
-        self._render_assistant_stream()
+        self._tool_output_label.setText(self._render_text(self._tool_output))
+        self._scroll_to_bottom()
 
     def _finalize_tool_call(self, is_error: bool):
         """Finalize a tool execution display."""
+        if is_error:
+            self._tool_header.setStyleSheet(f"color: {TEXT_ERROR}; font-size: 10px; font-weight: bold;")
         self._current_tool_name = ""
         self._tool_output = ""
+        # Hide after a brief moment to let user see output
+        # Store timer reference so _start_tool_call can cancel it
+        self._tool_timer = QTimer()
+        self._tool_timer.setSingleShot(True)
+        self._tool_timer.timeout.connect(self._hide_tool_frame)
+        self._tool_timer.start(3000)
+
+    def _hide_tool_frame(self):
+        """Hide tool call display."""
+        self._tool_call_frame.setVisible(False)
+        self._tool_header.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 10px; font-weight: bold;")
 
     def _finalize_assistant_message(self):
         """Finalize the current assistant message."""
@@ -605,6 +859,15 @@ class ChatPanel(QDockWidget):
         self.send_button.setEnabled(True)
         self.status_label.setText("Ready")
         self._set_activity(STATE_IDLE)
+
+    def _clear_chat(self):
+        """Clear the message log and reset to initial state."""
+        self.message_log.clear()
+        self._streaming_label.clear()
+        self._streaming_label.setVisible(False)
+        self._tool_call_frame.setVisible(False)
+        self._show_suggestions()
+        self.input_field.setFocus()
 
     def _on_settings_clicked(self):
         """Open the provider settings dialog."""
