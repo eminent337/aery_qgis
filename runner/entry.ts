@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Aery for QGIS — standalone binary entry point.
+ * Aery for QGIS - standalone binary entry point.
  *
  * Args: aery-qgis-runner <port> [--provider-file <path>]
  *
@@ -14,9 +14,64 @@ import { main } from "@eminent337/aery";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as crypto from "node:crypto";
-import * as path from "node:path";
 
-// ── QGIS TCP helpers ────────────────────────────────────
+// =============================================================================
+// QGIS CONSTANTS & RULES
+// =============================================================================
+
+const CRS_RULES = [
+    "ALWAYS check CRS before spatial operations - layers must match",
+    "Use reprojecting if layers have different CRS",
+    "EPSG:4326 = WGS84 (lat/lon), EPSG:3857 = Web Mercator",
+    "For Africa: EPSG:32632 (UTM 32N), EPSG:32633 (UTM 33N), EPSG:20935 (Congo Basins)",
+    "For local analysis, use projected CRS (UTM) not geographic (lat/lon)",
+];
+
+const SAFETY_RULES = [
+    "ALWAYS warn before: deleting layers, overwriting files, dropping columns",
+    "Request confirmation for operations affecting >10,000 features",
+    "Show preview of changes before applying bulk updates",
+];
+
+const PROCESSING_ALGORITHMS = [
+    { name: "Buffer", id: "native:buffer" },
+    { name: "Clip", id: "native:clip" },
+    { name: "Intersect", id: "native:intersection" },
+    { name: "Union", id: "native:union" },
+    { name: "Dissolve", id: "native:dissolve" },
+    { name: "Fix geometries", id: "native:fixgeometries" },
+    { name: "Centroid", id: "native:centroids" },
+    { name: "Simplify", id: "native:simplifygeos" },
+    { name: "Smooth", id: "native:smoothgeometry" },
+    { name: "Difference", id: "native:difference" },
+    { name: "Sym difference", id: "native:symmetricaldifference" },
+    { name: "Point to polygon", id: "native:pointstopath" },
+    { name: "Voronoi", id: "native:voronoi" },
+    { name: "Delaunay", id: "native:delaunayTriangulation" },
+    { name: "Extract vertices", id: "native:extractvertices" },
+    { name: "Rasterize", id: "gdal:rasterize" },
+    { name: "Raster clip", id: "gdal:cliprasterbyextent" },
+    { name: "Field calculator", id: "native:fieldcalculator" },
+    { name: "Statistics by field", id: "native:statisticsbycategories" },
+    { name: "Join by location", id: "qgis:joinbylocation" },
+    { name: "Spatial join summary", id: "qgis:joinbylocationsummary" },
+    { name: "Export to GeoPackage", id: "native:exporttogeopackage" },
+    { name: "Reproject layer", id: "native:reprojectlayer" },
+    { name: "Extract by expression", id: "native:extractbyexpression" },
+    { name: "Random selection", id: "native:randomselection" },
+    { name: "Create attribute index", id: "native:createattributeindex" },
+    { name: "Count points in polygon", id: "native:countpointsinpolygon" },
+    { name: "Distance matrix", id: "native:distancematrix" },
+    { name: "Nearest neighbor", id: "native:nearestneighboranalysis" },
+    { name: "Multipart to single", id: "native:multipart_to_singleparts" },
+    { name: "Single to multipart", id: "native:collect" },
+    { name: "Boundary", id: "native:boundary" },
+    { name: "Convex hull", id: "native:convexhull" },
+];
+
+// =============================================================================
+// TCP HELPER
+// =============================================================================
 
 function qgisRequest(port, method, params, timeout = 30000) {
     return new Promise((resolve, reject) => {
@@ -50,7 +105,9 @@ function qgisRequest(port, method, params, timeout = 30000) {
     });
 }
 
-// ── Provider config loader ──────────────────────────────
+// =============================================================================
+// PROVIDER CONFIG LOADER
+// =============================================================================
 
 function loadProviderConfig() {
     const fileIndex = process.argv.indexOf("--provider-file");
@@ -60,7 +117,6 @@ function loadProviderConfig() {
     try {
         const raw = fs.readFileSync(filePath, "utf-8");
         const config = JSON.parse(raw);
-        // Remove the file after reading
         try { fs.unlinkSync(filePath); } catch {}
         return config;
     } catch {
@@ -68,11 +124,14 @@ function loadProviderConfig() {
     }
 }
 
-// ── Extension factory ────────────────────────────────────
+// =============================================================================
+// TOOL REGISTRATION
+// =============================================================================
 
 function createQGISExtension(port, providerConfig) {
     return (aery) => {
-        // ── Register provider from config ──
+
+        // --- Register provider from config ---
         if (providerConfig?.baseUrl && providerConfig?.apiKey && providerConfig?.model) {
             aery.registerProvider("qgis", {
                 baseUrl: providerConfig.baseUrl,
@@ -90,27 +149,35 @@ function createQGISExtension(port, providerConfig) {
             });
         }
 
-        // ── run_qgis_code (primary) ──
+        // --- run_qgis_code (PRIMARY) ---
         aery.registerTool({
             name: "run_qgis_code",
             label: "Run QGIS Code",
             description:
-                "Execute Python code inside QGIS. Full QGIS API: QgsProject, QgsVectorLayer, " +
-                "QgsRasterLayer, processing, iface. Store result in `result` variable.",
+                "Execute Python code inside QGIS. " +
+                "Full QGIS Python API: qgis.core, qgis.gui, processing, iface, PyQt6. " +
+                "Store result in `result` variable for display to user. " +
+                "Use processing.run('native:buffer', {...}) for standard geoalgorithms.",
             promptSnippet: "Execute QGIS Python code for geospatial operations",
             promptGuidelines: [
-                "Use run_qgis_code for ALL QGIS operations",
-                "Store results in the `result` Python variable",
-                "Add layers: QgsProject.instance().addMapLayer(layer)",
-                "Import processing: import processing",
-                "Use layer.selectByExpression('expression') for selections",
-                "Use processing.run('native:buffer', {...}) for geoalgorithms",
+                "PRIMARY tool for ALL QGIS operations",
+                "Store results in `result` variable for user display",
+                "Available: processing, iface, qgis.core classes (QgsProject, etc.), PyQt6",
+                "CRS check: layer.crs().authid() before spatial operations",
+                "Use processing.run() for standard algorithms (handles CRS properly)",
+                "Use raw Python for custom logic, geometry ops, styling",
             ],
             parameters: {
                 type: "object",
                 properties: {
-                    code: { type: "string", description: "Python code to execute inside QGIS" },
-                    timeout: { type: "number", description: "Timeout in seconds" },
+                    code: {
+                        type: "string",
+                        description:
+                            "Python code to execute. Available: processing, iface, qgis.core, PyQt6. " +
+                            "Store result in `result`. Example: layer=QgsProject.instance().mapLayersByName('roads')[0]; " +
+                            "result=f'Layer has {layer.featureCount()} features'"
+                    },
+                    timeout: { type: "number", description: "Timeout in seconds (default 300)" },
                 },
                 required: ["code"],
             },
@@ -121,12 +188,21 @@ function createQGISExtension(port, providerConfig) {
             },
         });
 
-        // ── get_project_context ──
+        // --- get_project_context ---
         aery.registerTool({
             name: "get_project_context",
             label: "Get Project Context",
-            description: "Full snapshot of the current QGIS project: layers, CRS, extent, selection.",
-            promptSnippet: "Get QGIS project context",
+            description:
+                "Get a full snapshot of the current QGIS project: all layers with names, types, CRS, " +
+                "feature counts, fields; active layer and selection; project CRS and extent. " +
+                "Call this FIRST before any operation to understand current state.",
+            promptSnippet: "Get QGIS project context (layers, CRS, selection, extent)",
+            promptGuidelines: [
+                "Call this FIRST before starting any task",
+                "Review layers: names, types (vector/raster), CRS, feature counts",
+                "Check for large layers (>100k features) - might need sampling",
+                "Note any CRS mismatches that need reprojection",
+            ],
             parameters: { type: "object", properties: {} },
             async execute() {
                 const r = await qgisRequest(port, "get_project_context", {});
@@ -134,38 +210,114 @@ function createQGISExtension(port, providerConfig) {
             },
         });
 
-        // ── run_processing ──
+        // --- get_layer_info ---
         aery.registerTool({
-            name: "run_processing",
-            label: "Run Processing Algorithm",
-            description: "Run any QGIS Processing algorithm by name with parameters.",
-            promptSnippet: "Run a QGIS Processing algorithm (buffer, clip, intersect...)",
+            name: "get_layer_info",
+            label: "Get Layer Details",
+            description:
+                "Inspect a specific layer in depth: fields and types, geometry type, CRS, " +
+                "sample features, statistics. Use when you need to understand a layer before modifying it.",
+            promptSnippet: "Get detailed layer info (fields, geometry, sample data)",
+            promptGuidelines: [
+                "Use this before modifying or analyzing a specific layer",
+                "Check geometry type to know what spatial operations are valid",
+                "Review fields to know what attributes can be queried/calculated",
+                "Sample features show data quality and structure",
+            ],
             parameters: {
                 type: "object",
                 properties: {
-                    algorithm: { type: "string", description: "e.g. native:buffer, native:clip" },
-                    parameters: { type: "object", additionalProperties: true },
+                    layer_name: { type: "string", description: "Exact name of the layer to inspect" },
                 },
-                required: ["algorithm", "parameters"],
+                required: ["layer_name"],
             },
             async execute(_id, params) {
-                const code = `import processing\nfeedback = QgsProcessingFeedback()\nresult = processing.run("${params.algorithm}", ${JSON.stringify(params.parameters)})`;
+                const code = `
+from qgis.core import *
+
+layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+if layer is None:
+    available = [l.name() for l in iface.project().mapLayers().values()]
+    raise ValueError(f"Layer '${params.layer_name}' not found. Available: {available}")
+
+info = {
+    "name": layer.name(),
+    "type": layer.type().toString(),
+    "crs": layer.crs().authid(),
+    "feature_count": layer.featureCount(),
+    "fields": [{"name": f.name(), "type": f.type().toString()} for f in layer.fields()],
+    "geometry_type": Qgis.geometryType(layer.wkbType()).toString() if hasattr(layer, 'wkbType') else "N/A",
+}
+
+# Sample 5 features
+samples = []
+for i, feat in enumerate(layer.getFeatures()):
+    if i >= 5: break
+    geom = feat.geometry()
+    samples.append({
+        "id": feat.id(),
+        "geom_type": geom.type().toString(),
+        "attrs": dict(zip([f.name() for f in layer.fields()], feat.attributes())),
+    })
+
+info["samples"] = samples
+result = info
+`;
                 const r = await qgisRequest(port, "run_code", { code });
                 return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
             },
         });
 
-        // ── add_layer ──
+        // --- run_processing ---
         aery.registerTool({
-            name: "add_layer",
-            label: "Add Layer",
-            description: "Load a file (GeoJSON, Shapefile, GeoPackage, GeoTIFF) into QGIS.",
-            promptSnippet: "Load a geospatial file into QGIS",
+            name: "run_processing",
+            label: "Run Processing Algorithm",
+            description:
+                "Run any QGIS Processing algorithm by name with parameters. " +
+                "Use the algorithm ID (e.g. 'native:buffer') and pass parameters dict.",
+            promptSnippet: "Run a QGIS Processing algorithm (buffer, clip, intersect...)",
+            promptGuidelines: [
+                "Use 'native:buffer' for buffers, 'native:clip' for clipping, etc.",
+                "Parameters must be dict with algorithm-specific keys",
+                "Common: INPUT (layer), OUTPUT (output path or 'memory:'), DISTANCE, etc.",
+                "Check processing.algorithmHelp('native:buffer') for parameter info",
+            ],
             parameters: {
                 type: "object",
                 properties: {
-                    path: { type: "string", description: "Absolute file path" },
-                    name: { type: "string", description: "Display name" },
+                    algorithm: { type: "string", description: "Algorithm ID (e.g. native:buffer, native:clip)" },
+                    parameters: { type: "object", additionalProperties: true, description: "Algorithm parameters dict" },
+                },
+                required: ["algorithm", "parameters"],
+            },
+            async execute(_id, params) {
+                const code = `import processing
+from qgis.core import *
+feedback = processing.QgsProcessingFeedback()
+result = processing.run("${params.algorithm}", ${JSON.stringify(params.parameters)})`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
+        // --- add_layer ---
+        aery.registerTool({
+            name: "add_layer",
+            label: "Add Layer",
+            description:
+                "Load a geospatial file into QGIS. Supports GeoJSON, Shapefile, GeoPackage, GeoTIFF. " +
+                "Auto-detects layer type from file extension.",
+            promptSnippet: "Load a geospatial file into QGIS",
+            promptGuidelines: [
+                "Supports: GeoJSON (.geojson, .json), Shapefile (.shp), GeoPackage (.gpkg), GeoTIFF (.tif, .tiff)",
+                "Always use absolute file paths",
+                "File must be readable by QGIS/OGR",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    path: { type: "string", description: "Absolute file path to geospatial file" },
+                    name: { type: "string", description: "Display name (optional, defaults to filename)" },
                 },
                 required: ["path"],
             },
@@ -173,26 +325,34 @@ function createQGISExtension(port, providerConfig) {
                 const p = params.path;
                 const isRaster = /\.(tif|tiff|dem)$/i.test(p);
                 const code = `
-from qgis.core import QgsRasterLayer, QgsVectorLayer, QgsProject
+from qgis.core import *
 import os
 l = ${isRaster ? `QgsRasterLayer("${p}", os.path.basename("${p}"))` : `QgsVectorLayer("${p}", os.path.basename("${p}"), 'ogr')`}
 if not l.isValid(): raise ValueError(f"Failed: {l.lastError()}")
 ${params.name ? `l.setName("${params.name}")` : ""}
 QgsProject.instance().addMapLayer(l)
-result = f"Loaded {l.name()} ({l.featureCount()} features)"`;
+result = f"Loaded {l.name()} ({l.featureCount()} features)"
+`;
                 const r = await qgisRequest(port, "run_code", { code });
                 return { content: [{ type: "text", text: r.result }], details: {} };
             },
         });
 
-        // ── capture_canvas ──
+        // --- capture_canvas ---
         aery.registerTool({
             name: "capture_canvas",
             label: "Capture Canvas",
-            description: "Capture the current QGIS map canvas as an image. Returns a screenshot showing layers, labels, and styling.",
+            description:
+                "Capture the current QGIS map canvas as an image. " +
+                "Use this to show the user visual results of spatial operations.",
             promptSnippet: "Capture the QGIS map canvas to see the current map state",
+            promptGuidelines: [
+                "ALWAYS call this after operations that change the map",
+                "Shows current styling, labels, layers as visible in QGIS",
+                "Good for verifying buffer, clip, styling operations worked correctly",
+            ],
             parameters: { type: "object", properties: {} },
-            async execute(_id, params) {
+            async execute(_id) {
                 const code = `
 from PyQt6.QtCore import QBuffer, QIODevice
 import base64
@@ -209,7 +369,7 @@ result = base64.b64encode(bytes(buf.data())).decode()
                 const b64 = typeof r.result === "string" ? r.result : "";
                 return {
                     content: [
-                        { type: "text", text: "Canvas captured." },
+                        { type: "text", text: "Map canvas captured." },
                         { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
                     ],
                     details: {},
@@ -217,17 +377,24 @@ result = base64.b64encode(bytes(buf.data())).decode()
             },
         });
 
-        // ── bash ──
+        // --- bash ---
         aery.registerTool({
             name: "bash",
             label: "Shell Command",
-            description: "Execute a shell command on the QGIS host system (GDAL/OGR, pip, file ops).",
+            description:
+                "Execute a shell command on the QGIS host system. " +
+                "Use for GDAL/OGR operations, pip install, file management.",
             promptSnippet: "Run shell commands",
+            promptGuidelines: [
+                "Useful for: gdalinfo, ogr2ogr, pip install, file copy/move",
+                "Returns stdout, stderr, and return code",
+                "Use sparingly - most GIS work should use processing.run() or qgis.core",
+            ],
             parameters: {
                 type: "object",
                 properties: {
-                    command: { type: "string", description: "Shell command to execute (e.g. gdalinfo, ogr2ogr, pip install)" },
-                    timeout: { type: "number", description: "Timeout in seconds" },
+                    command: { type: "string", description: "Shell command to execute" },
+                    timeout: { type: "number", description: "Timeout in seconds (default 60)" },
                 },
                 required: ["command"],
             },
@@ -247,16 +414,23 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
             },
         });
 
-        // ── confirm_action ──
+        // --- confirm_action ---
         aery.registerTool({
             name: "confirm_action",
             label: "Confirm Action",
-            description: "Ask user to confirm before destructive operations (delete layer, overwrite file).",
+            description:
+                "Ask user to confirm before destructive operations. " +
+                "Use before: deleting layers, overwriting files, bulk deletes.",
             promptSnippet: "Confirm a destructive QGIS action",
+            promptGuidelines: [
+                "ALWAYS confirm before: deleting layers, overwriting existing files",
+                "Use before operations affecting >10,000 features",
+                "Returns 'Confirmed' or 'Cancelled' based on user response",
+            ],
             parameters: {
                 type: "object",
                 properties: {
-                    message: { type: "string", description: "Confirmation message" },
+                    message: { type: "string", description: "Clear description of what will happen" },
                 },
                 required: ["message"],
             },
@@ -266,12 +440,18 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
             },
         });
 
-        // ── web_search ──
+        // --- web_search ---
         aery.registerTool({
             name: "web_search",
             label: "Web Search",
-            description: "Search the web for information (satellite data sources, documentation, APIs).",
+            description:
+                "Search the web for information about satellite data sources, QGIS documentation, " +
+                "geospatial APIs, coordinate reference systems.",
             promptSnippet: "Search the web for geospatial data or information",
+            promptGuidelines: [
+                "Useful for: finding OpenData portals, API documentation, CRS definitions",
+                "Not for real-time data - use GEE or other APIs for live data",
+            ],
             parameters: {
                 type: "object",
                 properties: {
@@ -283,7 +463,6 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
                 const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(params.query)}`;
                 const res = await fetch(url);
                 const html = await res.text();
-                // Extract meaningful text: skip HTML tags, keep result links + snippets
                 const text = html
                     .replace(/<[^>]+>/g, " ")
                     .replace(/\s+/g, " ")
@@ -293,12 +472,18 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
             },
         });
 
-        // ── ask_user ──
+        // --- ask_user ---
         aery.registerTool({
             name: "ask_user",
             label: "Ask User",
-            description: "Ask the user a question and get a free-form text response. Use when you need clarification, feedback on results, or decisions before proceeding.",
+            description:
+                "Ask the user a question and get a free-form text response. " +
+                "Use when you need clarification or decisions before proceeding.",
             promptSnippet: "Ask the user a question",
+            promptGuidelines: [
+                "Use when: ambiguous task, need user preference, want confirmation before proceeding",
+                "After showing results, ask if user wants changes or follow-up",
+            ],
             parameters: {
                 type: "object",
                 properties: {
@@ -315,20 +500,20 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
             },
         });
 
-        // ── run_gee_code ──
+        // --- run_gee_code ---
         aery.registerTool({
             name: "run_gee_code",
             label: "Run Google Earth Engine Code",
             description:
-                "Execute Google Earth Engine Python code inside QGIS. Handles authentication, " +
-                "loads results as QGIS layers. Install earthengine-api automatically if missing.",
+                "Execute Google Earth Engine Python code inside QGIS. " +
+                "Handles authentication, loads results as QGIS layers. " +
+                "Installs earthengine-api automatically if missing.",
             promptSnippet: "Execute Google Earth Engine code and load results into QGIS",
             promptGuidelines: [
-                "Use run_gee_code for any Google Earth Engine operation",
-                "Store results in the `result` Python variable",
-                "gee_result (an ee.Image or ee.FeatureCollection) is automatically loaded as a QGIS layer",
-                "For images: export via ee.Image.getThumbURL or convert to numpy array",
-                "For feature collections: convert to GeoJSON via gee_result.getInfo() and load via QgsVectorLayer",
+                "Use run_gee_code for satellite imagery, land cover analysis, change detection",
+                "GEE is initialized as `ee`. Store final result in `gee_result`.",
+                "For images: convert to numpy array or export as GeoTIFF",
+                "For features: getInfo() and load as QGIS layer",
             ],
             parameters: {
                 type: "object",
@@ -336,9 +521,8 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
                     code: {
                         type: "string",
                         description:
-                            "Python code using Earth Engine. GEE is already initialized as `ee`. " +
-                            "Store the final ee.Image or ee.FeatureCollection in `gee_result`. " +
-                            "The result variable is automatically captured.",
+                            "Python code using Earth Engine. GEE initialized as `ee`. " +
+                            "Store final ee.Image or ee.FeatureCollection in `gee_result`.",
                     },
                 },
                 required: ["code"],
@@ -347,25 +531,22 @@ result = {"stdout": r.stdout, "stderr": r.stderr, "returncode": r.returncode}
                 const wrapped = `
 import subprocess, json, sys, importlib.util
 
-# Ensure earthengine-api is installed
 spec = importlib.util.find_spec("ee")
 if spec is None:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "earthengine-api", "-q"])
 
 import ee
 
-# Initialize (attempt both with and without explicit credentials)
 try:
     ee.Initialize()
 except Exception:
     try:
         ee.Initialize(project=ee.data.getCloudCredentials()?.get("project_id") or "")
     except Exception:
-        pass  # Will fail with clear error message
+        pass
 
 ${params.code}
 
-# Capture result
 result = gee_result.getInfo() if "gee_result" in dir() else str(result)
 `;
                 const r = await qgisRequest(port, "run_code", { code: wrapped, timeout: 120 });
@@ -374,19 +555,21 @@ result = gee_result.getInfo() if "gee_result" in dir() else str(result)
             },
         });
 
-        // ── register_tool ──
+        // --- register_tool ---
         aery.registerTool({
             name: "register_tool",
             label: "Register Tool",
-            description: "Create a reusable QGIS tool. Use PARAMS_PLACEHOLDER in code for tool parameters.",
+            description:
+                "Create a reusable QGIS tool from Python code. " +
+                "Use PARAMS_PLACEHOLDER in code for tool parameters.",
             promptSnippet: "Create a reusable QGIS tool",
             parameters: {
                 type: "object",
                 properties: {
                     name: { type: "string", description: "Tool name (snake_case)" },
-                    description: { type: "string", description: "Description" },
-                    code: { type: "string", description: "Python code with PARAMS_PLACEHOLDER" },
-                    parameters_schema: { type: "object", description: "JSON Schema" },
+                    description: { type: "string", description: "Description of what the tool does" },
+                    code: { type: "string", description: "Python code with PARAMS_PLACEHOLDER for parameters" },
+                    parameters_schema: { type: "object", description: "JSON Schema for parameters (optional)" },
                 },
                 required: ["name", "description", "code"],
             },
@@ -407,7 +590,7 @@ result = gee_result.getInfo() if "gee_result" in dir() else str(result)
             },
         });
 
-        // ── Inject QGIS context before each turn ──
+        // --- Inject QGIS context before each turn ---
         aery.on("context", async (event) => {
             try {
                 const r = await qgisRequest(port, "get_project_context", {});
@@ -420,54 +603,79 @@ result = gee_result.getInfo() if "gee_result" in dir() else str(result)
     };
 }
 
-// ── Entry point ──────────────────────────────────────────
+// =============================================================================
+// ENTRY POINT
+// =============================================================================
 
 const port = parseInt(process.argv[2], 10);
 if (!port || port < 1024 || port > 65535) {
     console.error("Usage: aery-qgis-runner <port> [--provider-file <path>]");
+    console.error("  port: TCP port where the QGIS executor is listening (1024-65535)");
     process.exit(1);
 }
 
 const providerConfig = loadProviderConfig();
 
-// If provider configured, auto-select its model as default
 const modelArg = providerConfig?.model
     ? ["--model", `qgis/${providerConfig.model}`]
     : [];
 
-// QGIS-focused system prompt — no Aery infra, no skills, no superpowers
+// Build processing algorithms string for prompt
+const algoList = PROCESSING_ALGORITHMS.map(a => `- ${a.name}: '${a.id}'`).join("\n");
+
 const qgisPrompt = [
-    "You are a geospatial AI assistant operating inside QGIS. Your only purpose is to help the user with GIS tasks.",
+    "You are a geospatial AI assistant operating inside QGIS.",
+    "Your role: execute spatial operations quickly, show results visually, confirm with user.",
+
     "",
-    "Available tools:",
-    "- bash: Execute shell commands (GDAL/OGR, system operations, pip install)",
-    "- run_qgis_code: Execute Python code in QGIS (primary tool for ALL geospatial work)",
-    "- get_project_context: Get current QGIS project info (layers, CRS, extent)",
-    "- run_processing: Run QGIS Processing algorithms (buffer, clip, intersect)",
-    "- add_layer: Load a file (GeoJSON, Shapefile, GeoTIFF) into QGIS",
-    "- confirm_action: Ask user to confirm destructive operations",
-    "- capture_canvas: Capture the QGIS map canvas as an image to see current map state",
-    "- web_search: Search the web for information (satellite data, APIs, documentation)",
-    "- ask_user: Ask you a question and wait for your free-form response",
-    "- run_gee_code: Execute Google Earth Engine code and load results into QGIS",
-    "- register_tool: Save a QGIS Python snippet as a reusable tool",
+    "=== AVAILABLE TOOLS ===",
+    "- run_qgis_code: Execute Python in QGIS (PRIMARY tool)",
+    "- get_project_context: Get layers, CRS, selection (call FIRST)",
+    "- get_layer_info: Get detailed info about a specific layer",
+    "- run_processing: Run native algorithms (see list below)",
+    "- add_layer: Load GeoJSON/Shapefile/GeoTIFF",
+    "- capture_canvas: Screenshot the map - ALWAYS after changes",
+    "- bash: GDAL/OGR, pip install, file ops",
+    "- confirm_action: Confirm destructive operations",
+    "- ask_user: Ask questions, confirm results",
+    "- web_search: Look up GIS data sources, API docs",
+    "- run_gee_code: Google Earth Engine operations",
+    "- register_tool: Save reusable Python snippets",
+
     "",
-    "Guidelines:",
-    "- Use run_qgis_code for ALL QGIS operations",
-    "- Be extremely concise — respond in 1-3 sentences",
-    "- No thinking out loud, no planning steps, no reasoning chains",
-    "- If you need more info, just ask a direct question",
-    "- Store Python results in the `result` variable",
-    "- Use bash for GDAL/OGR commands and system-level tasks",
-    "- Use run_processing as a shortcut for native:buffer, native:clip, etc.",
-    "- Never explain what you're going to do — just do it",
-    "- If a command fails, examine the error and retry with a fix",
-    "- Before starting work, call get_project_context to understand current state",
-    "- After ANY operation that changes the map, call capture_canvas to show the result visually",
-    "- Use capture_canvas to verify your operations had the intended effect",
-    "- Workflow: understand what the user wants, do the work, capture_canvas to verify, then ask_user if they want changes",
-    "- When ambiguous, use ask_user to get clarification before proceeding",
-    "- After completing a task, use ask_user to confirm the result is satisfactory or offer follow-up options",
+    `=== PROCESSING ALGORITHMS ===`,
+    algoList,
+    "",
+    "Use run_processing('algorithm_id', {PARAM: value}) for these.",
+
+    "",
+    "=== CRS RULES (CRITICAL) ===",
+    ...CRS_RULES,
+    "Reproject: processing.run('native:reprojectlayer', {'INPUT': layer, 'TARGET_CRS': crs})",
+    "Check CRS: layer.crs().authid() (e.g. 'EPSG:4326')",
+
+    "",
+    "=== SAFETY RULES ===",
+    ...SAFETY_RULES,
+    "Before bulk deletes: confirm_action('Delete N features?')",
+    "Before overwriting: confirm_action('Overwrite existing file?')",
+
+    "",
+    "=== TYPICAL WORKFLOW ===",
+    "1. Understand what user wants",
+    "2. Call get_project_context to see current state",
+    "3. Do the work (processing.run or raw Python)",
+    "4. Call capture_canvas to show visual result",
+    "5. Confirm result with user, offer follow-up",
+
+    "",
+    "=== STYLE ===",
+    "- Be concise - 1-3 sentences responses",
+    "- No thinking aloud, no planning steps",
+    "- Just execute and show results",
+    "- If ambiguous, ask_user for clarification",
+    "- After completion, ask if user wants changes",
+
     "",
     `Current date: ${new Date().toISOString().split("T")[0]}`,
 ].join("\n");

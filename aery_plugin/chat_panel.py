@@ -2,11 +2,12 @@
 
 import json
 import re
+import time
 from datetime import datetime
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat, QTextBlockFormat
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QDockWidget,
     QFrame,
@@ -17,7 +18,6 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QApplication,
 )
 
 
@@ -31,7 +31,15 @@ TEXT_DIM = "#888888"
 TEXT_ACCENT = "#8abeb7"
 TEXT_ERROR = "#cc6666"
 TEXT_SUCCESS = "#88c088"
+TEXT_WORKING = "#e6c866"
 BORDER_SUBTLE = "#3a3a4a"
+
+# Activity states
+STATE_IDLE = "idle"
+STATE_WORKING = "working"
+STATE_THINKING = "thinking"
+STATE_TOOL = "tool"
+STATE_DONE = "done"
 
 
 class ChatPanel(QDockWidget):
@@ -47,14 +55,15 @@ class ChatPanel(QDockWidget):
         self.setMinimumWidth(280)
         self.setMinimumHeight(300)
 
-        # Streaming state
+        # State
         self._is_streaming = False
-        self._aborted = False  # blocks stale stream events after abort
-        self._assistant_text = ""
-        self._thinking_text = ""
-        self._tool_args = ""
-        self._tool_output = ""
+        self._aborted = False
+        self._activity_state = STATE_IDLE
+        self._activity_start_time = 0
         self._current_tool_name = ""
+        self._assistant_text = ""
+        self._tool_output = ""
+        self._queued_messages: list[str] = []  # Queue for messages sent while busy
 
         self._build_ui()
         self._connect_signals()
@@ -72,16 +81,16 @@ class ChatPanel(QDockWidget):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
 
-        # Status indicator dot
-        self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet(f"color: {TEXT_DIM}; font-size: 14px;")
-        self.status_dot.setFixedWidth(20)
+        # Status indicator (star + text)
+        self._activity_label = QLabel("●")
+        self._activity_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        self._activity_label.setFixedWidth(60)
 
-        title = QLabel("Aery")
-        title.setStyleSheet(f"color: {TEXT_MAIN}; font-weight: bold; font-size: 11px;")
+        self._status_text = QLabel("")
+        self._status_text.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px;")
 
-        header_layout.addWidget(self.status_dot)
-        header_layout.addWidget(title)
+        header_layout.addWidget(self._activity_label)
+        header_layout.addWidget(self._status_text)
         header_layout.addStretch()
 
         # Settings button
@@ -120,7 +129,7 @@ class ChatPanel(QDockWidget):
 
         layout.addWidget(self.message_log, 1)
 
-        # ── Streaming label (replaces inline cursor manipulation) ──
+        # ── Streaming area ──
         self._streaming_label = QLabel()
         self._streaming_label.setVisible(False)
         self._streaming_label.setWordWrap(True)
@@ -206,6 +215,15 @@ class ChatPanel(QDockWidget):
 
         self.setWidget(container)
 
+        # Activity animation timer
+        self._blink_timer = QTimer()
+        self._blink_timer.timeout.connect(self._blink_update)
+        self._blink_on = False
+
+        # Elapsed time timer
+        self._elapsed_timer = QTimer()
+        self._elapsed_timer.timeout.connect(self._update_elapsed)
+
     def _connect_signals(self):
         """Connect signals."""
         self.input_field.returnPressed.connect(self._send_message)
@@ -215,6 +233,87 @@ class ChatPanel(QDockWidget):
         self.rpc.response_received.connect(self._on_response)
         self.rpc.error_occurred.connect(self._on_error)
         self.rpc.process_exited.connect(self._on_exit)
+
+    def _set_activity(self, state: str, info: str = ""):
+        """Update the activity indicator."""
+        self._activity_state = state
+
+        if state == STATE_IDLE:
+            self._activity_label.setText("●")
+            self._activity_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+            self._status_text.setText("")
+            self._blink_timer.stop()
+            self._elapsed_timer.stop()
+
+        elif state == STATE_WORKING:
+            self._blink_timer.start(500)  # Blink every 500ms
+            self._activity_start_time = time.time()
+            self._activity_label.setStyleSheet(f"color: {TEXT_ACCENT}; font-size: 12px;")
+            self._status_text.setStyleSheet(f"color: {TEXT_ACCENT}; font-size: 9px;")
+            self._elapsed_timer.start(1000)  # Update every second
+
+        elif state == STATE_THINKING:
+            self._blink_timer.start(300)
+            self._activity_label.setStyleSheet(f"color: {TEXT_WORKING}; font-size: 12px;")
+            self._status_text.setStyleSheet(f"color: {TEXT_WORKING}; font-size: 9px;")
+
+        elif state == STATE_TOOL:
+            self._blink_timer.start(400)
+            tool_text = f" {info}" if info else ""
+            self._status_text.setText(f"Running{tool_text}...")
+            self._activity_label.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 12px;")
+            self._status_text.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 9px;")
+
+        elif state == STATE_DONE:
+            elapsed = self._get_elapsed_str()
+            self._activity_label.setText("✓")
+            self._activity_label.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 12px;")
+            self._status_text.setText(f"Done in {elapsed}")
+            self._status_text.setStyleSheet(f"color: {TEXT_DIM}; font-size: 9px;")
+            self._blink_timer.stop()
+            self._elapsed_timer.stop()
+
+    def _blink_update(self):
+        """Toggle the blink state for activity indicator."""
+        self._blink_on = not self._blink_on
+
+        if self._blink_on:
+            self._activity_label.setText("✻")
+        else:
+            self._activity_label.setText("◌")
+
+        # Update status text based on state
+        elapsed = self._get_elapsed_str()
+
+        if self._activity_state == STATE_WORKING:
+            self._status_text.setText(f"Working{elapsed}")
+        elif self._activity_state == STATE_THINKING:
+            self._status_text.setText(f"Thinking{elapsed}")
+        elif self._activity_state == STATE_TOOL:
+            self._status_text.setText(f"Running {self._current_tool_name}{elapsed}")
+
+    def _get_elapsed_str(self) -> str:
+        """Get elapsed time string."""
+        if self._activity_start_time:
+            elapsed = int(time.time() - self._activity_start_time)
+            if elapsed < 60:
+                return f" {elapsed}s"
+            else:
+                mins = elapsed // 60
+                secs = elapsed % 60
+                return f" {mins}m {secs}s"
+        return ""
+
+    def _update_elapsed(self):
+        """Update elapsed time display."""
+        if self._activity_state in (STATE_WORKING, STATE_THINKING, STATE_TOOL):
+            elapsed = self._get_elapsed_str()
+            if self._activity_state == STATE_WORKING:
+                self._status_text.setText(f"Working{elapsed}")
+            elif self._activity_state == STATE_THINKING:
+                self._status_text.setText(f"Thinking{elapsed}")
+            elif self._activity_state == STATE_TOOL:
+                self._status_text.setText(f"Running {self._current_tool_name}{elapsed}")
 
     def _toggle_send_stop(self):
         """Toggle between send and stop based on current state."""
@@ -229,16 +328,24 @@ class ChatPanel(QDockWidget):
         if not text:
             return
 
+        if self._is_streaming or self._queued_messages:
+            # Queue the message — agent is processing or messages ahead in queue
+            self._queued_messages.append(text)
+            self._append_message("system", f"Queued: \"{text[:50]}{'...' if len(text) > 50 else ''}\"")
+            return
+
         self._append_message("user", text)
         self.input_field.clear()
         self._show_stop_button()
+        self._set_activity(STATE_WORKING)
         self.rpc.prompt(text)
 
     def _abort(self):
         """Abort current operation."""
-        self._aborted = True  # block stale stream events
+        self._aborted = True
         self.rpc.abort()
         self._show_send_button()
+        self._set_activity(STATE_IDLE)
         self._append_message("system", "Operation aborted")
 
     def _show_send_button(self):
@@ -283,11 +390,9 @@ class ChatPanel(QDockWidget):
 
         if event_type == "message_update":
             if self._aborted:
-                return  # ignore stale events after abort
+                return
             msg = event.get("message", {})
             content = msg.get("content", [])
-            # Each message_update carries the FULL content array,
-            # so rebuild the accumulated text from all text blocks
             full_text = ""
             for block in content:
                 btype = block.get("type")
@@ -302,16 +407,23 @@ class ChatPanel(QDockWidget):
             msg = event.get("message", {})
             if msg.get("role") == "assistant":
                 self._start_assistant_message()
+                self._set_activity(STATE_THINKING)
 
         elif event_type == "agent_end":
-            # Agent has fully finished the entire processing cycle
-            # (assistant → tool → continuation → ... → done).
-            # Revert the button now.
-            self._show_send_button()
+            self._set_activity(STATE_DONE)
+
+            if self._queued_messages:
+                # Don't revert to send — queued message is about to fire
+                # Keeps ■ mode, prevents user typing in the gap
+                QTimer.singleShot(100, self._drain_queue)
+            else:
+                self._show_send_button()
 
         elif event_type == "tool_execution_start":
             tool_name = event.get("toolName", "unknown")
             args = event.get("args", {})
+            self._current_tool_name = tool_name
+            self._set_activity(STATE_TOOL, tool_name)
             self._start_tool_call(tool_name, args)
 
         elif event_type == "tool_execution_update":
@@ -324,24 +436,34 @@ class ChatPanel(QDockWidget):
         elif event_type == "tool_execution_end":
             self._finalize_tool_call(event.get("isError", False))
 
+    def _drain_queue(self):
+        """Send the next queued message, or drain the queue if multiple are pending."""
+        if not self._queued_messages or not self.rpc:
+            return
+        text = self._queued_messages.pop(0)
+        self._append_message("user", text)
+        self._show_stop_button()
+        self._set_activity(STATE_WORKING)
+        self.rpc.prompt(text)
+
     def _on_response(self, command: str, data: dict[str, Any]):
         """Handle command responses."""
         if not data.get("success"):
             self._append_message("error", f"Command failed: {data.get('error', 'Unknown error')}")
             self._show_send_button()
+            self._set_activity(STATE_IDLE)
 
     def _on_error(self, message: str):
         """Handle errors."""
         self._append_message("error", message)
         self._show_send_button()
-        self.status_dot.setStyleSheet(f"color: {TEXT_ERROR}; font-size: 14px;")
-        self.status_label.setText(message)
+        self._set_activity(STATE_IDLE)
 
     def _on_exit(self, exit_code: int):
         """Handle process exit."""
         self._append_message("error", f"Aery exited (code {exit_code})")
         self.send_button.setEnabled(False)
-        self.status_dot.setStyleSheet(f"color: {TEXT_ERROR}; font-size: 14px;")
+        self._set_activity(STATE_IDLE)
         self.status_label.setText("Disconnected")
 
     def _append_message(self, role: str, text: str):
@@ -380,54 +502,35 @@ class ChatPanel(QDockWidget):
     def _start_assistant_message(self):
         """Start a new assistant message block."""
         self._assistant_text = ""
-        self._thinking_text = ""
-        self._tool_args = ""
         self._tool_output = ""
         self._current_tool_name = ""
-        self._message_has_tool = False
 
-        # Show the streaming label
         self._streaming_label.clear()
         self._streaming_label.setVisible(True)
         self._scroll_to_bottom()
 
     def _update_assistant_text(self, text: str):
-        """Update streaming assistant text (replaces, not appends - events carry full content)."""
+        """Update streaming assistant text."""
         self._assistant_text = text
         self._render_assistant_stream()
-
-    def _update_thinking(self, text: str):
-        """Accumulate thinking text silently (not displayed to user)."""
-        self._thinking_text += text
 
     def _render_assistant_stream(self):
         """Render current assistant message with streaming updates."""
         text_html = self._render_text(self._assistant_text) if self._assistant_text else ""
 
-        # Build tool HTML if present
         tool_html = ""
         if self._current_tool_name:
-            args_html = self._render_text(json.dumps(self._tool_args, indent=2)) if self._tool_args else ""
             output_html = self._render_text(self._tool_output) if self._tool_output else ""
+            tool_html = f"\n\n⚡ {self._current_tool_name}\n{output_html}"
 
-            tool_html = f"""
-            ⚡ {self._current_tool_name}
-            Args:
-            {args_html}
-            Output:
-            {output_html}
-            """
-
-        display = (text_html + "\n" + tool_html).strip()
+        display = (text_html + tool_html).strip()
         self._streaming_label.setText(display)
         self._scroll_to_bottom()
 
     def _start_tool_call(self, tool_name: str, args: dict[str, Any]):
         """Start a tool execution display."""
         self._current_tool_name = tool_name
-        self._tool_args = args
         self._tool_output = ""
-        self._message_has_tool = True
         self._render_assistant_stream()
 
     def _update_tool_output(self, text: str):
@@ -437,12 +540,7 @@ class ChatPanel(QDockWidget):
 
     def _finalize_tool_call(self, is_error: bool):
         """Finalize a tool execution display."""
-        # Update border color based on success/error
-        if is_error:
-            self._tool_border_color = TEXT_ERROR
-        # Already rendered via _render_assistant_stream
         self._current_tool_name = ""
-        self._tool_args = ""
         self._tool_output = ""
 
     def _finalize_assistant_message(self):
@@ -450,17 +548,14 @@ class ChatPanel(QDockWidget):
         if self._assistant_text.strip():
             self._append_message("assistant", self._assistant_text)
         self._assistant_text = ""
-        self._thinking_text = ""
         self._streaming_label.clear()
         self._streaming_label.setVisible(False)
 
     @staticmethod
     def _render_text(text: str) -> str:
         """Convert plain text/markdown to safe HTML."""
-        # Escape HTML
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        # Code blocks with syntax highlighting hints
         text = re.sub(
             r"```(\w*)\n(.*?)```",
             lambda m: f'<pre style="background:#2a2a35; padding:10px; border-radius:6px; overflow-x:auto; font-size:10px; border:1px solid {BORDER_SUBTLE};"><code>{m.group(2).strip()}</code></pre>',
@@ -468,17 +563,14 @@ class ChatPanel(QDockWidget):
             flags=re.DOTALL,
         )
 
-        # Inline code
         text = re.sub(
             r"`([^`]+)`",
             f'<code style="background:#2a2a35; padding:2px 6px; border-radius:3px; font-size:10px;">\\1</code>',
             text,
         )
 
-        # Bold
         text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
 
-        # Paragraphs
         text = re.sub(r"\n{2,}", "</p><p>", text)
         text = f"<p>{text}</p>"
         text = text.replace("\n", "<br>")
@@ -493,12 +585,9 @@ class ChatPanel(QDockWidget):
     def set_ready(self):
         """Called when Aery is ready."""
         self.send_button.setEnabled(True)
-        self.status_dot.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 14px;")
+        self._set_activity(STATE_IDLE)
         self.status_label.setText("Ready")
-        self._append_message(
-            "system",
-            "Aery agent connected."
-        )
+        self._append_message("system", "Aery agent connected.")
 
     def set_rpc(self, rpc):
         """Replace the RPC bridge (after provider config change)."""
@@ -506,7 +595,7 @@ class ChatPanel(QDockWidget):
         self._connect_signals()
         self.send_button.setEnabled(True)
         self.status_label.setText("Ready")
-        self.status_dot.setStyleSheet(f"color: {TEXT_SUCCESS}; font-size: 14px;")
+        self._set_activity(STATE_IDLE)
 
     def _on_settings_clicked(self):
         """Open the provider settings dialog."""
