@@ -28,3 +28,4 @@ aery_plugin/bin/aery-qgis-runner
 
 # Generated database files
 *.db
+.worktrees/
