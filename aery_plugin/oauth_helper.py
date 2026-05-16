@@ -28,13 +28,20 @@ SETTINGS_PATH = os.path.join(AGENT_DIR, "settings.json")
 AERY_GATEWAY_URL = "https://aery-gateway.eminent337.workers.dev/v1"
 
 # ── OAuth provider configs (exact from Aery) ──────────────────────────────────
+# NOTE: client_id / client_secret are read from environment variables to
+# avoid committing secrets to source control.
+#
+# Required env vars:
+#   GOOGLE_ANTIGRAVITY_CLIENT_ID       GOOGLE_ANTIGRAVITY_CLIENT_SECRET
+#   GOOGLE_GEMINI_CLI_CLIENT_ID        GOOGLE_GEMINI_CLI_CLIENT_SECRET
+#
 OAUTH_CONFIGS: dict[str, dict] = {
     "google-antigravity": {
         "name": "Google Antigravity",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "client_id": "ENV_GOOGLE_OAUTH_CLIENT_ID",
-        "client_secret": "ENV_GOOGLE_OAUTH_CLIENT_SECRET",
+        "client_id": os.environ.get("GOOGLE_ANTIGRAVITY_CLIENT_ID", ""),
+        "client_secret": os.environ.get("GOOGLE_ANTIGRAVITY_CLIENT_SECRET", ""),
         "redirect_port": 51121,
         "redirect_path": "/oauth-callback",
         "scopes": [
@@ -48,8 +55,8 @@ OAUTH_CONFIGS: dict[str, dict] = {
         "name": "Gemini CLI (Cloud Code)",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "client_id": "ENV_GOOGLE_OAUTH_CLIENT_ID",
-        "client_secret": "ENV_GOOGLE_OAUTH_CLIENT_SECRET",
+        "client_id": os.environ.get("GOOGLE_GEMINI_CLI_CLIENT_ID", ""),
+        "client_secret": os.environ.get("GOOGLE_GEMINI_CLI_CLIENT_SECRET", ""),
         "redirect_port": 50321,
         "redirect_path": "/auth",
         "scopes": [
@@ -375,6 +382,88 @@ API_PROVIDERS: dict[str, dict] = {
             ("deepseek.r1-v1:0", "DeepSeek R1"),
         ],
     },
+    "google-vertex": {
+        "name": "Google Vertex AI",
+        "base_url": "https://us-central1-aiplatform.googleapis.com/v1",
+        "env_key": "GOOGLE_CLOUD_API_KEY",
+        "test_path": "/chat/completions",
+        "test_model": "gemini-2.0-flash",
+        "needs_base_url": False,
+        "models": [
+            ("gemini-2.0-flash", "Gemini 2.0 Flash"),
+            ("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+            ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+            ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+            ("gemini-1.5-flash", "Gemini 1.5 Flash"),
+            ("gemini-1.5-pro", "Gemini 1.5 Pro"),
+        ],
+    },
+    "minimax-cn": {
+        "name": "MiniMax CN",
+        "base_url": "https://api.minimax.chat/anthropic",
+        "env_key": "MINIMAX_CN_API_KEY",
+        "test_path": "/v1/messages",
+        "test_model": "MiniMax-M2.7",
+        "models": [
+            ("MiniMax-M2.7", "MiniMax M2.7"),
+            ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed"),
+        ],
+    },
+    "opencode-go": {
+        "name": "OpenCode Go",
+        "base_url": "https://opencode.ai/go",
+        "env_key": "OPENCODE_API_KEY",
+        "test_path": "/v1/chat/completions",
+        "test_model": "deepseek-v4-flash",
+        "models": [
+            ("deepseek-v4-flash", "DeepSeek V4 Flash"),
+            ("deepseek-v4-pro", "DeepSeek V4 Pro"),
+            ("glm-5", "GLM-5"),
+            ("glm-5.1", "GLM-5.1"),
+            ("kimi-k2.5", "Kimi K2.5"),
+            ("kimi-k2.6", "Kimi K2.6"),
+            ("mimo-v2-omni", "Mimo V2 Omni"),
+            ("mimo-v2-pro", "Mimo V2 Pro"),
+        ],
+    },
+    # ── AERY_KEEP: custom OpenAI-compatible providers — DO NOT REMOVE in upstream sync ──
+    "claude-local": {
+        "name": "Claude (Local/Custom)",
+        "base_url": "https://api.anthropic.com/v1",  # change to your proxy URL
+        "env_key": "ANTHROPIC_API_KEY",
+        "test_path": "/messages",
+        "test_model": "claude-opus-4-5-20251101",
+        "aery_keep": True,  # upstream sync guard — never overwrite this entry
+        "models": [
+            ("claude-opus-4-5-20251101", "Claude Opus 4.5"),
+            ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+            ("claude-opus-4-20250514", "Claude Opus 4"),
+            ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
+        ],
+    },
+    "openai-compatible": {
+        "name": "Custom OpenAI-compatible API",
+        "base_url": "",
+        "env_key": "OPENAI_API_KEY",
+        "test_path": "/chat/completions",
+        "test_model": "gpt-4o",
+        "needs_base_url": True,
+        "aery_keep": True,
+        "models": [
+            ("gpt-4o", "GPT-4o"),
+            ("gpt-4.1", "GPT-4.1"),
+            ("gpt-4.1-mini", "GPT-4.1 Mini"),
+            ("gpt-4o-mini", "GPT-4o Mini"),
+            ("o3", "o3"),
+            ("o3-mini", "o3 Mini"),
+            ("o4-mini", "o4 Mini"),
+        ],
+    },
+    # ── END AERY_KEEP ──────────────────────────────────────────────────────────
     "aery-gateway": {
         "name": "Aery Gateway",
         "base_url": AERY_GATEWAY_URL,
@@ -402,9 +491,10 @@ def _ensure_agent_dir() -> None:
 
 def _load_auth() -> dict:
     _ensure_agent_dir()
-    if os.path.exists(AUTH_PATH):
+    auth_path = os.path.join(AGENT_DIR, "auth.json")
+    if os.path.exists(auth_path):
         try:
-            with open(AUTH_PATH) as f:
+            with open(auth_path) as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
@@ -413,11 +503,12 @@ def _load_auth() -> dict:
 
 def _save_auth(data: dict) -> None:
     _ensure_agent_dir()
-    tmp = AUTH_PATH + ".tmp"
+    auth_path = os.path.join(AGENT_DIR, "auth.json")
+    tmp = auth_path + ".tmp"
     try:
         with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp, AUTH_PATH)
+        os.replace(tmp, auth_path)
     except Exception:
         try:
             os.unlink(tmp)
@@ -438,6 +529,7 @@ def get_all_providers() -> list[dict]:
         "name": "Aery Gateway",
         "type": "gateway",
         "has_creds": bool(gw.get("key")),
+        "connected": bool(gw.get("key")),
         "models": [m[0] for m in API_PROVIDERS["aery-gateway"]["models"]],
         "model_names": API_PROVIDERS["aery-gateway"]["models"],
     })
@@ -451,6 +543,7 @@ def get_all_providers() -> list[dict]:
             "name": cfg["name"],
             "type": "oauth",
             "has_creds": has_creds,
+            "connected": has_creds,
             "models": [m[0] for m in _oauth_models(pid)],
             "model_names": _oauth_models(pid),
         })
@@ -466,6 +559,7 @@ def get_all_providers() -> list[dict]:
             "name": cfg["name"],
             "type": "api_key",
             "has_creds": has_creds,
+            "connected": has_creds,
             "models": [m[0] for m in cfg["models"]],
             "model_names": cfg["models"],
             "needs_account_id": cfg.get("needs_account_id", False),
@@ -483,7 +577,7 @@ def get_all_providers() -> list[dict]:
             "name": pid.replace("-", " ").title(),
             "type": entry.get("type", "api_key"),
             "has_creds": bool(entry.get("key") or entry.get("access")),
-            "models": [],
+            "connected": bool(entry.get("key") or entry.get("access")),            "models": [],
             "model_names": [],
         })
 
@@ -526,10 +620,11 @@ def _oauth_models(pid: str) -> list[tuple]:
 
 
 def get_active_provider() -> Optional[dict]:
-    if not os.path.exists(SETTINGS_PATH):
+    settings_path = os.path.join(AGENT_DIR, "settings.json")
+    if not os.path.exists(settings_path):
         return None
     try:
-        with open(SETTINGS_PATH) as f:
+        with open(settings_path) as f:
             s = json.load(f)
         pid = s.get("defaultProvider", "")
         model = s.get("defaultModel", "")
@@ -543,19 +638,20 @@ def get_active_provider() -> Optional[dict]:
 
 def set_active_provider(provider_id: str, model: str = "") -> None:
     _ensure_agent_dir()
+    settings_path = os.path.join(AGENT_DIR, "settings.json")
     existing = {}
-    if os.path.exists(SETTINGS_PATH):
+    if os.path.exists(settings_path):
         try:
-            with open(SETTINGS_PATH) as f:
+            with open(settings_path) as f:
                 existing = json.load(f)
         except Exception:
             pass
     existing["defaultProvider"] = provider_id
     if model:
         existing["defaultModel"] = model
-    existing["quietStartup"] = True
-    existing["defaultThinkingLevel"] = "off"
-    with open(SETTINGS_PATH, "w") as f:
+    existing.setdefault("quietStartup", True)
+    existing.setdefault("defaultThinkingLevel", "off")
+    with open(settings_path, "w") as f:
         json.dump(existing, f, indent=2)
 
 
@@ -802,6 +898,63 @@ def _pkce_login(provider_id: str, cfg: dict) -> bool:
 
     if not result["code"]:
         return False
+
+
+# ── Env-key auto-detection ─────────────────────────────────────────────────────
+# Per-provider env-var names so the plugin can surface env credentials without
+# requiring the user to open a terminal first.
+
+ENV_KEY_MAP: dict[str, str] = {
+    "anthropic":      "ANTHROPIC_API_KEY",
+    "openai":         "OPENAI_API_KEY",
+    "google":         "GEMINI_API_KEY",
+    "groq":           "GROQ_API_KEY",
+    "mistral":        "MISTRAL_API_KEY",
+    "openrouter":     "OPENROUTER_API_KEY",
+    "deepseek":       "DEEPSEEK_API_KEY",
+    "xai":            "XAI_API_KEY",
+    "kimi-coding":    "KIMI_API_KEY",
+    "zai":            "ZAI_API_KEY",
+    "minimax":        "MINIMAX_API_KEY",
+    "minimax-cn":     "MINIMAX_CN_API_KEY",
+    "fireworks":      "FIREWORKS_API_KEY",
+    "huggingface":    "HF_TOKEN",
+}
+
+
+def get_env_key(provider_id: str) -> str:
+    """Return the environment variable name for a provider's API key."""
+    return ENV_KEY_MAP.get(provider_id, "")
+
+
+def read_env_credentials(provider_id: str) -> dict:
+    """Read API key from the environment; returns empty dict if not set."""
+    env_key = get_env_key(provider_id)
+    if not env_key:
+        return {}
+    value = os.environ.get(env_key, "")
+    if not value:
+        return {}
+    return {"key": value}
+
+
+# ── Model changelog ────────────────────────────────────────────────────────────
+
+def get_model_changelog() -> str:
+    """Return Aery model registry changelog string.
+
+    Tries the Aery package first; falls back to a static string when offline.
+    """
+    try:
+        from aery_ai import getModelChangelog  # type: ignore
+        return getModelChangelog()
+    except Exception:
+        return (
+            "Aery Model Registry — load changelog\n\n"
+            "Model lists are managed by the Aery AI package.\n"
+            "Updates are fetched from the model registry on startup.\n"
+            "See https://github.com/eminent337/aery for the latest models."
+        )
 
     exchange = {
         "client_id": cfg["client_id"],

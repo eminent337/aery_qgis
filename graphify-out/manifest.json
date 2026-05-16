@@ -1,0 +1,106 @@
+{
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/qgis_executor.py": {
+    "mtime": 1778618858.2625759,
+    "hash": "46ff94c944957cd5284e3092f951f72e"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/ui_settings.py": {
+    "mtime": 1778654476.4479024,
+    "hash": "67685504d9fbb491ae1470004c0746fc"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/rpc_bridge.py": {
+    "mtime": 1778653499.19795,
+    "hash": "ed3474962217540b00006843e705ac94"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/tool_registry.py": {
+    "mtime": 1778624213.0972857,
+    "hash": "b21c8b8a9af49357cdb3a4ad55cb9a0b"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/provider_settings.py": {
+    "mtime": 1778659463.8996596,
+    "hash": "8f626a05c8d1bc580d068a16f21d21d2"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/chat_panel.py": {
+    "mtime": 1778664690.7014053,
+    "hash": "f85addcc206b3564d431295e0eef3506"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/__init__.py": {
+    "mtime": 1778618858.2545462,
+    "hash": "de81936496e0b4bce6dc830d38891fe2"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/plugin.py": {
+    "mtime": 1778664530.442413,
+    "hash": "0a8fc0adbfc13b56de3351772439cacc"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/tool-renderer.js": {
+    "mtime": 1778618858.2615676,
+    "hash": "9e80b35f2fedf4d4d2bae4de22d3cc00"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/ansi-to-html.js": {
+    "mtime": 1778618858.2605462,
+    "hash": "9b58b30c4800e54849d017c858066b20"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/template.js": {
+    "mtime": 1778618858.2615676,
+    "hash": "4ea745b46e16a4ff2fe12dee6aa1b454"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/index.js": {
+    "mtime": 1778618858.2615676,
+    "hash": "d45f89120d37e312085245d408681c1c"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/vendor/highlight.min.js": {
+    "mtime": 1778618858.2615676,
+    "hash": "1ba1ea897d65b202b5450f6e55d043ef"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/vendor/marked.min.js": {
+    "mtime": 1778618858.2623527,
+    "hash": "dd8238ebb77640d9648611de5c9c7f39"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/runner/entry.ts": {
+    "mtime": 1778618858.2655463,
+    "hash": "dc56f6ac4871f682a443a0d47b9b0918"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/tests/test_qgis_executor.py": {
+    "mtime": 1778591679.63838,
+    "hash": "8bad61753a91815f67538b53e9ef8a64"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/tests/test_rpc_bridge.py": {
+    "mtime": 1778664852.7743974,
+    "hash": "77b6ea57b3b166f46261fa715661f2dc"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/tests/test_integration.py": {
+    "mtime": 1778618858.2665462,
+    "hash": "491bc1f973bbb7d27e98b0987e6a210d"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/tests/test_chat_panel.py": {
+    "mtime": 1778664731.7344031,
+    "hash": "22f71d80082c43ff78aa9b90b1e19e0c"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/tests/test_plugin.py": {
+    "mtime": 1778664816.834399,
+    "hash": "1db4d5be14156254747412a128a88c84"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/README.md": {
+    "mtime": 1778591679.6339123,
+    "hash": "e730e5b81a19219f517552448dae897d"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/implementation-plan.md": {
+    "mtime": 1778618113.8545825,
+    "hash": "c7214a58893714d0c6c4ec52f430714f"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/metadata.txt": {
+    "mtime": 1778664911.862252,
+    "hash": "e81c64fc9a7e62b075caeaf9e8b0c1dd"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/export-html/template.html": {
+    "mtime": 1778618858.2615676,
+    "hash": "4d43a5289b8c162aa798b39330474b3f"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/bin/assets/clankolas.png": {
+    "mtime": 1778618858.2605462,
+    "hash": "42a2bf0c21e1f99f5e30db53dbc7aa02"
+  },
+  "/home/aryee/Desktop/aerforge/aery-qgis-plugin/aery_plugin/resources/icons/aery.svg": {
+    "mtime": 1778618858.2632127,
+    "hash": "91e8fa689cb331c80002f2a14985f0cd"
+  }
+}

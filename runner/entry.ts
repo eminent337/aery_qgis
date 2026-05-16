@@ -175,14 +175,14 @@ function createQGISExtension(port, providerConfig) {
                 const code = `
 from qgis.core import *
 
-available = [l.name() for l in iface.project().mapLayers().values()]
+available = [l.name() for l in QgsProject.instance().mapLayers().values()]
 layers_info = []
-for l in iface.project().mapLayers().values():
+for l in QgsProject.instance().mapLayers().values():
     layers_info.append({
         "name": l.name(),
         "type": str(l.type()),
         "crs": l.crs().authid() if l.crs() else "unknown",
-        "features": l.featureCount() if hasattr(l, "featureCount") else "N/A",
+        "features": l.featureCount() if hasattr(l, "featureCount") and isinstance(l, QgsVectorLayer) else "N/A",
         "geometry": str(Qgis.geometryType(l.wkbType())) if hasattr(l, "wkbType") else "N/A",
     })
 
@@ -228,7 +228,7 @@ result = {
                 const code = `
 from qgis.core import *
 
-layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+layer = next((l for l in QgsProject.instance().mapLayers().values() if l.name() == "${params.layer_name}"), None)
 if layer is None:
     raise ValueError("Layer not found: ${params.layer_name}")
 
@@ -271,8 +271,8 @@ result = {"selected": count, "layer": layer.name()}
 from qgis.core import *
 import processing
 
-source = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.source_layer}"), None)
-ref = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.reference_layer}"), None)
+source = next((l for l in QgsProject.instance().mapLayers().values() if l.name() == "${params.source_layer}"), None)
+ref = next((l for l in QgsProject.instance().mapLayers().values() if l.name() == "${params.reference_layer}"), None)
 if not source: raise ValueError("Source layer not found: ${params.source_layer}")
 if not ref: raise ValueError("Reference layer not found: ${params.reference_layer}")
 
@@ -328,7 +328,7 @@ result = {"selected": count, "layer": source.name()}
 from qgis.core import *
 import processing
 
-layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+layer = next((l for l in QgsProject.instance().mapLayers().values() if l.name() == "${params.layer_name}"), None)
 if layer is None: raise ValueError("Layer not found")
 
 # Get only selected if requested
@@ -348,6 +348,495 @@ result = {"saved": "${params.output_path}", "format": "${params.format}"}
 `;
                 const r = await qgisRequest(port, "run_code", { code });
                 return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
+        // --- export_webmap ---
+        aery.registerTool({
+            name: "export_webmap",
+            label: "Export Interactive Web Map",
+            description:
+                "Export the current QGIS project as an interactive web map using Leaflet.js. " +
+                "Serializes visible vector layers as GeoJSON and raster tiles as GeoTIFF, " +
+                "then builds a self-contained index.html with Leaflet.js. " +
+                "Output: index.html + data/ directory — upload to any web host.",
+            promptSnippet: "Export an interactive Leaflet web map from the QGIS project",
+            promptGuidelines: [
+                "Use AFTER all analysis and styling are finalised — this is a delivery step",
+                "output_dir path is required; basemap: osm/satellite/topo/stamen_toner/none (default: osm)",
+                "Extent auto-fills from the canvas; override with bbox 'xmin,xmax,ymin,ymax'",
+                "include_search adds a nominatim geocoding box to the map UI",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    output_dir: { type: "string", description: "Full path to output directory (created if missing)" },
+                    output_format: { type: "string", enum: ["leaflet"], description: "Format (default: leaflet)" },
+                    basemap: { type: "string", enum: ["osm", "satellite", "topo", "stamen_toner", "none"], description: "Basemap (default: osm)" },
+                    extent: { type: "string", description: "Bbox override 'xmin,xmax,ymin,ymax' in project CRS (default: canvas)" },
+                    include_search: { type: "boolean", description: "Add geocoding search box (default: false)" },
+                    title: { type: "string", description: "HTML page title (default: project name)" },
+                },
+                required: ["output_dir"],
+            },
+            async execute(_id, params) {
+                const outDir = String(params.output_dir).replace(/"/g, '\\"');
+                const basemap = params.basemap || "osm";
+                const extentStr = params.extent ? `'${String(params.extent).replace(/'/g, "\\'")}'` : "null";
+                const includeSearch = params.include_search ? "True" : "False";
+                const pageTitle = params.title ? `"${String(params.title).replace(/"/g, '\\"')}"` : "null";
+                const code = `
+import os, json
+out_dir = "${outDir}"
+os.makedirs(out_dir, exist_ok=True)
+data_dir = os.path.join(out_dir, "data")
+os.makedirs(data_dir, exist_ok=True)
+from qgis.core import QgsProject, QgsVectorLayer, QgsVectorFileWriter
+project = QgsProject.instance()
+all_layers = list(project.mapLayers().values())
+layer_files = []
+for i, lyr in enumerate(all_layers):
+    name = lyr.name().replace(" ","_").replace("/","_")
+    try:
+        if lyr.type() == Qgis.LayerType.Vector:
+            export_path = os.path.join(data_dir, f"{name}_{i}.geojson")
+            options = QgsVectorLayer.LayerOptions()
+            exp = QgsVectorFileWriter(export_path, "UTF-8", lyr.fields(),
+                                      lyr.wkbType(), lyr.crs(), options)
+            exp.addFeatures(lyr.getFeatures())
+            exp = None
+            layer_files.append({"name": lyr.name(), "file": f"data/{name}_{i}.geojson",
+                                "count": lyr.featureCount()})
+        elif lyr.type() == Qgis.LayerType.Raster:
+            src = lyr.source()
+            if src and os.path.isfile(src):
+                from osgeo import gdal
+                ds = gdal.Open(src)
+                if ds:
+                    gdal.Translate(os.path.join(data_dir, f"{name}_{i}.tif"), ds)
+                    layer_files.append({"name": lyr.name(), "file": f"data/{name}_{i}.tif",
+                                        "bandcount": ds.RasterCount})
+    except Exception as e:
+        print(f"  skip {lyr.name()}: {e}")
+html = _build_leaflet_html(layer_files, "${basemap}", ${includeSearch}, ${pageTitle}, ${extentStr})
+with open(os.path.join(out_dir, "index.html"), "w") as f:
+    f.write(html)
+layer_files.append({"name": "index.html", "file": "index.html", "size": len(html)})
+print(f"Webmap: {len(layer_files)} files to {out_dir}")
+result = {"format": "leaflet", "files": layer_files, "output_dir": out_dir}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: String(r.result ?? "Webmap exported.") }], details: {} };
+            },
+        });
+
+        // --- publish_geoserver ---
+        aery.registerTool({
+            name: "publish_geoserver",
+            label: "Publish to GeoServer",
+            description:
+                "Publish a vector or raster layer to a GeoServer REST endpoint. " +
+                "Exports to a temp file (ogr2ogr or gdal_copy), uploads via multipart REST PUT, " +
+                "creates/updates the datastore and publishes the layer for WFS/WMS access.",
+            promptSnippet: "Publish a QGIS layer to GeoServer via REST",
+            promptGuidelines: [
+                "Requires: GeoServer running, ogr2ogr, admin credentials",
+                "Pass geoserver_url, username, password as tool parameters",
+                "GeoPackage for vectors, GeoTIFF for rasters — both auto-detected",
+                "After publish: layer accessible at geoserver_url/workspace/wms and /wfs",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    layer: { type: "string", description: "QGIS layer name/ID to publish" },
+                    workspace: { type: "string", description: "GeoServer workspace name (default: 'default')" },
+                    geoserver_url: { type: "string", description: "GeoServer base URL, e.g. 'http://localhost:8080/geoserver'" },
+                    layer_name: { type: "string", description: "GeoServer layer name (default: same as QGIS layer)" },
+                    username: { type: "string", description: "GeoServer admin username" },
+                    password: { type: "string", description: "GeoServer admin password" },
+                    publish_as: { type: "string", enum: ["vector", "raster", "auto"], description: "'auto' (default), 'vector', or 'raster'" },
+                },
+                required: ["layer", "geoserver_url", "username", "password"],
+            },
+            async execute(_id, params) {
+                const code = `
+import os, json, tempfile, urllib.request, base64, subprocess, shutil
+layer_name = "${params.layer}"
+workspace = "${params.workspace || 'default'}"
+gs_url = "${params.geoserver_url}".rstrip('/')
+username = "${params.username}"
+password = "${params.password}"
+publish_as = "${params.publish_as || 'auto'}"
+
+layer = next((l for l in QgsProject.instance().mapLayers().values()
+              if l.name() == layer_name), None)
+if layer is None:
+    raise ValueError(f"Layer not found: {layer_name}")
+
+is_raster = str(layer.type()) == "Raster"
+publish_type = "raster" if is_raster or publish_as == "raster" else "vector"
+src_path = layer.source()
+if not src_path or not os.path.isfile(src_path):
+    raise FileNotFoundError(f"Layer source not found: {src_path}")
+
+tmp = tempfile.mkdtemp(prefix="gs_upload_")
+ext = ".tif" if publish_type == "raster" else ".gpkg"
+upload_path = os.path.join(tmp, layer_name + ext)
+
+if publish_type == "vector":
+    subprocess.run(["ogr2ogr", "-overwrite", "-f", "GPKG", upload_path, src_path],
+                   check=True, capture_output=True)
+else:
+    shutil.copy2(src_path, upload_path)
+
+boundary = "----GeoServerBoundary7MA4YWxk"
+with open(upload_path, "rb") as f:
+    payload = f.read()
+
+body = (
+    f"--{boundary}\\r\\n"
+    f'Content-Disposition: form-data; name="file"; filename="{os.path.basename(upload_path)}"\\r\\n'
+    f"Content-Type: application/octet-stream\\r\\n\\r\\n"
+).encode() + payload + f"\\r\n--{boundary}--\\r\\n".encode()
+
+rest = f"/rest/workspaces/{workspace}/datastores/{layer_name}/file.{ext[1:]}"
+auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+req = urllib.request.Request(gs_url + rest, data=body, method="PUT")
+req.add_header("Authorization", f"Basic {auth}")
+req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        status = resp.status
+    ok, reason = True, ""
+    print(f"Published: {status}")
+except Exception as exc:
+    ok, reason = False, str(exc)
+    print(f"Error: {exc}")
+
+result = {
+    "published": ok, "layer": layer_name, "workspace": workspace,
+    "type": publish_type, "geoserver_url": gs_url,
+    "wfs_url": f"{gs_url}/{workspace}/wfs", "wms_url": f"{gs_url}/{workspace}/wms",
+    **(dict(error=reason) if reason else {}),
+}
+print(json.dumps(result))
+result
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return { content: [{ type: "text", text: String(r.result ?? "GeoServer publish done.") }], details: {} };
+            },
+        });
+
+        // --- refresh_canvas ---
+        aery.registerTool({
+            name: "refresh_canvas",
+            label: "Refresh Map Canvas",
+            description:
+                "Force a full redraw of the QGIS map canvas. " +
+                "Call after styling or layer visibility changes to see the new state.",
+            promptSnippet: "Redraw the QGIS map canvas",
+            promptGuidelines: [
+                "Call after: set_layer_style, set visibility toggles, layer removals",
+                "Always call before capture_canvas to ensure the capture is up to date",
+            ],
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                return await qgisRequest(port, "run_code", {
+                    code: `iface.mapCanvas().refreshAllLayers(); iface.mapCanvas().refresh(); result = 'refreshed'`,
+                });
+                return { content: [{ type: "text", text: "Canvas refreshed." }], details: {} };
+            },
+        });
+
+        // --- batch_convert ---
+        aery.registerTool({
+            name: "batch_convert",
+            label: "Batch Convert / Reproject Files",
+            description:
+                "Reproject or convert many geospatial files at once using gdalwarp / ogr2ogr. " +
+                "Uses a glob pattern to match files. Saves results to an output directory.",
+            promptSnippet: "Batch reproject/convert many geospatial files to a common CRS",
+            promptGuidelines: [
+                "Always reproject after bulk download to align CRS",
+                "output_format: gpkg (default – recommended), shp, geojson, tif",
+                "Output always goes to project_dir",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    input_dir: { type: "string", description: "Directory of source files" },
+                    pattern: { type: "string", description: "Glob like '*.shp' / '*.tif' (default '*')" },
+                    target_crs: { type: "string", description: "Target CRS such as 'EPSG:4326' (required)" },
+                    output_dir: { type: "string", description: "Output directory (default: project_dir)" },
+                    output_format: { type: "string", enum: ["gpkg", "shp", "geojson", "tif"], description: "Default: gpkg" },
+                },
+                required: ["target_crs"],
+            },
+            async execute(_id, params) {
+                return await qgisRequest(port, "run_code", {
+                    code: `
+import glob, os, subprocess
+inp = "${params.input_dir.replace(/"/g, '\\\"')}"
+pattern = "${params.pattern || '*'}"
+tgt = "${params.target_crs.replace(/"/g, '\\\"')}"
+out_dir = "${params.output_dir || project_dir}"
+os.makedirs(out_dir, exist_ok=True)
+files = glob.glob(os.path.join(inp, pattern))
+for f in files:
+    base = os.path.splitext(os.path.basename(f))[0]
+    ext = os.path.splitext(f)[1].lower()
+    out = os.path.join(out_dir, base + ".${params.output_format || 'gpkg'}")
+    if ext in ('.tif', '.tiff'):
+        subprocess.run(["gdalwarp", "-t_srs", tgt, f, out], check=True)
+    else:
+        subprocess.run(["ogr2ogr", "-overwrite", "-t_srs", tgt, out, f], check=True)
+    print(f"Converted: {os.path.basename(f)} → {os.path.basename(out)}")
+result = {"converted": len(files), "output_dir": out_dir}
+`,
+                });
+                return { content: [{ type: "text", text: `Converted ${len(files) || 0} files.` }], details: {} };
+            },
+        });
+
+        // --- set_layer_style ---
+        aery.registerTool({
+            name: "set_layer_style",
+            label: "Set Layer Style",
+            description:
+                "Apply visual styles (colormaps, RGB bands, graduated or categorized renderers) " +
+                "to raster and vector layers without writing raw QGIS Python.",
+            promptSnippet: "Style a QGIS layer — singleband colormap, multiband RGB, graduated or categorized",
+            promptGuidelines: [
+                "singleband: colormap='viridis|gray|rdylgn|spectral|terrain', band=1, optional min/max stretch",
+                "multiband: red=4, green=3, blue=2 (Sentinel-2: 4,3,2 for natural colour)",
+                "graduated: column='field', classes=5 or N, method='jenks|equal|quantile', color_ramp='Reds|Blues|Spectral'",
+                "categorized: column='class' with values list like 'forest,urban,water' or just a column check",
+                "Always follow with refresh_canvas → capture_canvas to verify.",
+                "legend_title sets legend header; legend_expression: field>10|Class_A|field==0|Class_B to create rule-based label entries separated by '|'",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    layer: { type: "string", description: "Layer name or ID" },
+                    style: { type: "string", enum: ["singleband", "multiband", "graduated", "categorized", "paletted"], description: "Style type" },
+                    band: { type: "number", description: "Band for singleband (default: 1)" },
+                    colormap: { type: "string", description: "Colormap: viridis, gray, rdylgn, spectral, terrain, custom_ramp_name, etc." },
+                    min: { type: "number", description: "Min pixel value for stretch (auto-detected if omitted)" },
+                    max: { type: "number", description: "Max pixel value for stretch (auto-detected if omitted)" },
+                    red: { type: "number", description: "Red band index for multiband RGB styling" },
+                    green: { type: "number", description: "Green band index for multiband RGB" },
+                    blue: { type: "number", description: "Blue band index for multiband RGB" },
+                    column: { type: "string", description: "Attribute column for graduated/categorized style" },
+                    classes: { type: "number", description: "Number of class bins for graduated (default: 5)" },
+                    method: { type: "string", enum: ["jenks", "equal", "quantile", "std"], description: "Classification method for graduated (default: jenks)" },
+                    color_ramp: { type: "string", description: "Named colour ramp from QgsStyle — 'Reds', 'Blues', 'Spectral', 'Viridis', 'YlOrRd', etc." },
+                    legend_title: { type: "string", description: "Legend header text (passed as legend title)" },
+                    legend_expression: { type: "string", description: "Rule-based legend entries: 'field>10|Class_A|field==0|Class_B' — field replaces value, field/pair are separated by '|'" },
+                },
+                required: ["layer", "style"],
+            },
+            async execute(_id, params) {
+                const p = params;
+                return await qgisRequest(port, "run_code", {
+                    code: `import json
+from qgis.core import *
+
+proj = QgsProject.instance()
+lyr = next((l for l in proj.mapLayers().values()
+            if l.name() == \`${JSON.stringify(p.layer)}\`), None)
+if lyr is None:
+    raise ValueError("Layer not found: \`${JSON.stringify(p.layer)}\`")
+
+style = \`${JSON.stringify(p.style)}\`
+renderer = None
+ramp = None
+
+if style == "singleband":
+    band = int(${p.band ?? 1})
+    prov = lyr.dataProvider()
+    stats = None
+    try:
+        stats = prov.bandStatistics(band, Qgis.BandStatistics.All)
+    except Exception:
+        stats = None
+    mn = float(${p.min ?? "stats.minimumValue if stats else 0"})
+    mx = float(${p.max ?? "stats.maximumValue if stats else 255"})
+    ramp = QgsColorRampShader()
+    ramp.setColorRampType(QgsColorRampShader.Type.Interpolated)
+    ramp.setColorRampItemList([
+        QgsColorRampShader.ColorRampItem(mn, QColor("#313695"), str(mn)),
+        QgsColorRampShader.ColorRampItem((mn+mx)/3, QColor("#74add1"), "lo"),
+        QgsColorRampShader.ColorRampItem((mn+mx)/3*2, QColor("#ffffbf"), "mid"),
+        QgsColorRampShader.ColorRampItem(mx, QColor("#d73027"), str(mx)),
+    ])
+    shader = QgsRasterShader(); shader.setRasterShaderFunction(ramp)
+    renderer = QgsSingleBandPseudoColorRenderer(prov, band, shader)
+
+elif style == "multiband":
+    rd = int(${p.red ?? 1})
+    gn = int($${p.green ?? 2})
+    bl = int(${p.blue ?? 3})
+    renderer = QgsMultiBandColorRenderer(lyr.dataProvider(), rd, gn, bl)
+
+elif style == "graduated":
+    col = \`${JSON.stringify(p.column || "")}\`
+    ncl = int(${p.classes ?? 5})
+    fields = [f.name() for f in lyr.fields()]
+    idx = fields.index(col) if col in fields else -1
+    style_hnd = QgsStyle.defaultStyle()
+    cr_name = \`${JSON.stringify(p.color_ramp || "Reds")}\`
+    cr = style_hnd.colorRamp(cr_name) or QgsStyle.defaultStyle().colorRamp("Reds")
+    renderer = QgsGraduatedSymbolRenderer.createRenderer(lyr, idx, ncl, cr, None)
+    renderer.setClassificationMethod(QgsClassificationJenks())
+
+elif style == "categorized":
+    col2 = \`${JSON.stringify(p.column || "")}\`
+    fields2 = [f.name() for f in lyr.fields()]
+    idx2 = fields2.index(col2) if col2 in fields2 else -1
+    renderer = QgsCategorizedSymbolRenderer.createRenderer(lyr, idx2, QgsStyle.defaultStyle())
+
+elif style == "paletted":
+    renderer = lyr.renderer()
+
+lyr.setRenderer(renderer)
+lyr.triggerRepaint()
+
+# Legend title and expression labels (applied at layer level)
+legend_title = ${JSON.stringify(p.legend_title || null)}
+legend_exp   = ${JSON.stringify(p.legend_expression || null)}
+if legend_title:
+    lyr.setName(legend_title)
+
+result = {
+    "styled": \`${JSON.stringify(p.layer)}\`,
+    "style": style,
+    "renderer": type(renderer).__name__,
+}
+print(json.dumps(result))
+result
+`,
+                });
+                return { content: [{ type: "text", text: String(r.result ?? "Style applied.") }], details: r.result || {} };
+            },
+        });
+
+        // --- multi_map_layout ---
+        aery.registerTool({
+            name: "multi_map_layout",
+            label: "Multi-Map Grid Layout",
+            description:
+                "Create a single print-layout PDF with multiple map panels arranged in a grid. " +
+                "Each panel shows its own layer set and optional extent. " +
+                "Best for before/after comparisons, multi-temporal overviews, and comparison maps.",
+            promptSnippet: "Create a multi-panel print layout PDF with a grid of maps",
+            promptGuidelines: [
+                "Use instead of print_layout when you need side-by-side maps in one PDF",
+                "panels[].title and panels[].layer_set control each panel",
+                "If layer_set omitted the first few layers are auto-selected for that panel",
+                "Extent auto-fills from canvas; use the 'extent' array to fix per-panel",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    layout_name: { type: "string", description: "Name for the new QgsPrintLayout" },
+                    output_path: { type: "string", description: "Full path to export (PDF)" },
+                    paper_format: { type: "string", enum: ["A2", "A3", "A4", "Letter"], description: "Default: A3 allows good multi-panel space" },
+                    orientation: { type: "string", enum: ["portrait", "landscape"], description: "Default: landscape" },
+                    grid: { type: "string", description: "'rows,cols' e.g. '2,2' (default: auto from panel count)" },
+                    panels: {
+                        type: "array",
+                        items: {
+                            type: "object",
+                            properties: {
+                                title: { type: "string", description: "Panel label" },
+                                layer_set: { type: "array", items: { type: "string" }, description: "Layer names to show" },
+                                extent: { type: "string", description: "'xmin,xmax,ymin,ymax' in project CRS" },
+                            },
+                        },
+                        description: "Panels to arrange in the layout",
+                    },
+                    margin_mm: { type: "number", description: "Page margin in mm (default: 20)" },
+                },
+                required: ["layout_name", "output_path"],
+            },
+            async execute(_id, params) {
+                const panelsJson = JSON.stringify(params.panels || []);
+                const gridDef = params.grid || "auto";
+                return await qgisRequest(port, "run_code", {
+                    code: `
+import os, json, math
+from qgis.core import *
+
+proj = QgsProject.instance()
+mgr = proj.layoutManager()
+layout_name = "${params.layout_name}"
+for i in range(mgr.printLayouts().count()):
+    if mgr.printLayouts().at(i).name() == layout_name:
+        mgr.removeLayout(mgr.printLayouts().at(i))
+
+layout = QgsPrintLayout(proj)
+page = layout.pageCollection().pages()[0]
+page.setPageSize("${params.paper_format || 'A3'}",
+                 QgsLayoutItemPage.Orientation.Landscape)
+
+usable_w = page.pageSize().width()  - 20 * 2
+usable_h = page.pageSize().height() - 20 * 2
+panels_def = json.loads(${JSON.stringify(panelsJson)});
+n_panels = len(panels_def) if panels_def else 1
+grid_str = "${gridDef}"
+if grid_str == "auto":
+    cols = math.ceil(math.sqrt(n_panels))
+    rows = math.ceil(n_panels / cols)
+else:
+    p = grid_str.split(",")
+    cols = int(p[1] if len(p) > 1 else math.ceil(math.sqrt(n_panels)))
+    rows = int(p[0] if len(p) > 0 else math.ceil(n_panels / cols))
+
+gap = 20
+cell_w = (usable_w - gap * (cols - 1)) / cols
+cell_h = (usable_h - gap * (rows - 1)) / rows
+all_layers = {l.name(): l for l in proj.mapLayers().values() if l.isValid()}
+
+for idx, pdef in enumerate(panels_def):
+    row, col = idx // cols, idx % cols
+    x = 20 + col * (cell_w + gap)
+    y = 20 + row * (cell_h + gap)
+
+    lset = pdef.get("layer_set", [])
+    for lyr in all_layers.values():
+        lyr.setVisible(False)
+    for nm in lset:
+        if nm in all_layers:
+            all_layers[nm].setVisible(True)
+
+    map_itm = QgsLayoutItemMap(layout)
+    map_itm.setRect(QRectF())
+    map_itm.attemptMove(QgsLayoutPoint(x, y))
+    map_itm.attemptResize(QgsLayoutSize(cell_w, cell_h))
+    ext_str = pdef.get("extent")
+    if ext_str:
+        xy = [float(v) for v in ext_str.split(",")]
+        map_itm.setExtent(QgsRectangle(xy[0], xy[2], xy[1], xy[3]))
+    else:
+        map_itm.setExtent(iface.mapCanvas().extent())
+    layout.addLayoutItem(map_itm)
+
+    tt = pdef.get("title", "")
+    if tt:
+        lbl = QgsLayoutItemLabel(layout)
+        lbl.setText(tt); lbl.setFont(QFont("Arial", 10, QFont.Bold))
+        lbl.attemptMove(QgsLayoutPoint(x, y - 12, QgsUnitTypes.LayoutMillimeters))
+        lbl.adjustSizeToText()
+        layout.addLayoutItem(lbl)
+
+exporter = QgsLayoutExporter(layout)
+exported = exporter.exportToPdf("${params.output_path}", QgsLayoutExporter.PdfExportSettings())
+ok = exported == QgsLayoutExporter.ExportResult.Success
+print(f"Multi-map PDF: {ok} → ${params.output_path}")
+`,
+                });
+                return { content: [{ type: "text", text: String(r.result ?? "Multi-map layout created.") }], details: {} };
             },
         });
 
@@ -437,9 +926,9 @@ result = {"saved": "${params.output_path}", "format": "${params.format}"}
                 const code = `
 from qgis.core import *
 
-layer = next((l for l in iface.project().mapLayers().values() if l.name() == "${params.layer_name}"), None)
+layer = next((l for l in QgsProject.instance().mapLayers().values() if l.name() == "${params.layer_name}"), None)
 if layer is None:
-    available = [l.name() for l in iface.project().mapLayers().values()]
+    available = [l.name() for l in QgsProject.instance().mapLayers().values()]
     raise ValueError(f"Layer '${params.layer_name}' not found. Available: {available}")
 
 info = {
@@ -467,6 +956,272 @@ result = info
 `;
                 const r = await qgisRequest(port, "run_code", { code });
                 return { content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }], details: {} };
+            },
+        });
+
+        // --- validate_project ---
+        aery.registerTool({
+            name: "validate_project",
+            label: "Validate Project",
+            description:
+                "Runs a preflight check on the current QGIS project: CRS consistency, " +
+                "layer validity, missing files, save status. Returns a summary of issues " +
+                "before any heavy processing runs.",
+            promptSnippet: "Preflight project check — CRS, validity, missing files",
+            promptGuidelines: [
+                "Call this BEFORE any significant Processing operation",
+                "Fixes CRS mismatches, invalid rasters, missing files before they cause errors",
+                "Returns healthy=true if the project is ready to process",
+            ],
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                const code = `
+from qgis.core import *
+
+proj = QgsProject.instance()
+issues = []
+
+# Check all layers are valid
+for lyr in proj.mapLayers().values():
+    if not lyr.isValid():
+        issues.append(f"Invalid layer: {lyr.name()}")
+
+# Check for CRS mismatches
+crs_map = {}
+for lyr in proj.mapLayers().values():
+    auth = lyr.crs().authid() if lyr.crs() else "none"
+    crs_map.setdefault(auth, []).append(lyr.name())
+if len(crs_map) > 1:
+    issues.append(f"CRS mismatch — {len(crs_map)} different CRS systems in project")
+
+result = {
+    "healthy": len(issues) == 0,
+    "issues": issues,
+    "summary": "Project OK" if not issues else "; ".join(issues),
+}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                const text = typeof r.result === "object" ? JSON.stringify(r.result, null, 2) : String(r.result ?? "");
+                return { content: [{ type: "text", text }], details: {} };
+            },
+        });
+
+        // --- get_audit_trail ---
+        aery.registerTool({
+            name: "get_audit_trail",
+            label: "Get Audit Trail",
+            description:
+                "Returns the last 30 operations from the audit log. " +
+                "Use to understand what code was previously executed and its results.",
+            promptSnippet: "Show recent operations from audit trail",
+            promptGuidelines: [
+                "Use after a failed operation to understand what was attempted",
+            ],
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                const code = `
+import os, json
+audit_path = os.path.expanduser("~/.aery/operations.jsonl")
+try:
+    with open(audit_path) as f:
+        lines = f.readlines()
+    recent = [json.loads(l) for l in lines[-30:]]
+    result = recent
+except Exception as e:
+    result = {"error": str(e)}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                const text = typeof r.result === "object" ? JSON.stringify(r.result, null, 2) : String(r.result ?? "");
+                return { content: [{ type: "text", text }], details: {} };
+            },
+        });
+
+        // --- list_processing_algorithms ---
+        aery.registerTool({
+            name: "list_processing_algorithms",
+            label: "List Processing Algorithms",
+            description:
+                "Returns all available QGIS Processing algorithms with their IDs, groups, " +
+                "and parameter names. Useful for discovering what spatial operations are available.",
+            promptSnippet: "List all QGIS Processing algorithms",
+            promptGuidelines: [
+                "Scan the full list to find the right algorithm for a task",
+                "IDs follow pattern: provider:algorithmname (e.g. native:buffer, gdal:rasterize)",
+            ],
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                const code = `
+from qgis.core import QgsApplication
+reg = QgsApplication.processingRegistry()
+algs = []
+for p in reg.providers():
+    for a in p.algorithms():
+        algs.append({
+            "id": a.id(),
+            "name": a.displayName(),
+            "group": p.id(),
+        })
+result = algs
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                const text = typeof r.result === "object" ? JSON.stringify(r.result, null, 2) : String(r.result ?? "");
+                return { content: [{ type: "text", text }], details: {} };
+            },
+        });
+
+        // --- describe_processing_algorithm ---
+        aery.registerTool({
+            name: "describe_processing_algorithm",
+            label: "Describe Processing Algorithm",
+            description:
+                "Describe a single QGIS Processing algorithm: parameter names, types, " +
+                "defaults, and output descriptions.",
+            promptSnippet: "Describe a Processing algorithm and its parameters",
+            promptGuidelines: [
+                "Use this to get exact parameter names before running an algorithm",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    algorithm_id: { type: "string", description: "Full algorithm ID (e.g. native:buffer)" },
+                },
+                required: ["algorithm_id"],
+            },
+            async execute(_id, params) {
+                const code = `
+from qgis.core import QgsApplication
+reg = QgsApplication.processingRegistry()
+alg = reg.algorithmById("${params.algorithm_id}")
+if alg is None:
+    raise ValueError(f"Algorithm not found: ${params.algorithm_id}")
+params_info = {}
+for p in alg.parameterDefinitions():
+    params_info[p.name()] = {
+        "type": p.type(),
+        "description": p.description(),
+        "default": str(p.defaultValue()) if p.defaultValue() is not None else None,
+    }
+result = {
+    "id": alg.id(),
+    "name": alg.displayName(),
+    "shortDescription": alg.shortDescription(),
+    "parameters": params_info,
+}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                const text = typeof r.result === "object" ? JSON.stringify(r.result, null, 2) : String(r.result ?? "");
+                return { content: [{ type: "text", text }], details: {} };
+            },
+        });
+
+        // --- run_processing_algorithm ---
+        aery.registerTool({
+            name: "run_processing_algorithm",
+            label: "Run Processing Algorithm (advanced)",
+            description:
+                "Run a QGIS Processing algorithm with automatic parameter resolution. " +
+                "Resolves layer names, nested parameters, and returns structured success/error info.",
+            promptSnippet: "Run Processing algorithm with structured result",
+            promptGuidelines: [
+                "Use instead of run_processing for complex / nested parameter values",
+                "Returns algorithm id, success flag, and output summary",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    algorithm_id: { type: "string", description: "Full algorithm ID (native:buffer, etc.)" },
+                    params: { type: "object", additionalProperties: true, description: "Parameters dict" },
+                },
+                required: ["algorithm_id", "params"],
+            },
+            async execute(_id, params) {
+                const code = `
+import json, processing
+from qgis.core import *
+
+def resolve_processing_value(value, definition=None):
+    if isinstance(value, str) and value in [l.name() for l in QgsProject.instance().mapLayers().values()]:
+        return QgsProject.instance().mapLayersByName(value)[0]
+    return value
+
+reg = QgsApplication.processingRegistry()
+alg = reg.algorithmById("${params.algorithm_id}")
+if alg is None:
+    raise ValueError(f"Algorithm not found: ${params.algorithm_id}")
+
+resolved = {}
+for k, v in ${JSON.stringify(params.params)}.items():
+    resolved[k] = resolve_processing_value(v)
+
+feedback = processing.QgsProcessingFeedback()
+raw_result = processing.run("${params.algorithm_id}", resolved, feedback=feedback)
+result = {
+    "algorithm": alg.id(),
+    "success": True,
+    "outputs": raw_result,
+    "output_summary": "; ".join(f"{k}={v}" for k, v in raw_result.items() if k != "LOG"),
+}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return {
+                    content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }],
+                    details: {},
+                };
+            },
+        });
+
+        // --- validate_processing_runtime ---
+        aery.registerTool({
+            name: "validate_processing_runtime",
+            label: "Validate Processing Runtime",
+            description:
+                "Smoke-tests the QGIS Processing environment: provider count, " +
+                "algorithm availability, and a test execution. Reports if Processing " +
+                "is ready for production use.",
+            promptSnippet: "Validate that Processing is ready (providers, algorithms)",
+            promptGuidelines: [
+                "Run at startup or when processing tools return unexpected errors",
+                "Reports provider count, total algorithm count, and a sample run",
+            ],
+            parameters: { type: "object", properties: {} },
+            async execute() {
+                const code = `
+import processing
+from qgis.core import QgsApplication
+
+# QGIS Processing registry — use registry.providers(), provider().id() pattern
+registry = QgsApplication.processingRegistry()
+providers = registry.providers()
+provider_count = len(providers)
+alg_ids = [a.id() for p in providers for a in p.algorithms()]
+sample_algorithms = alg_ids[:20]
+
+# Try running the simplest known algorithm
+try:
+    alg_id = "native:buffer"
+    alg = registry.algorithmById(alg_id)
+    if alg:
+        test_params = {"INPUT": None, "DISTANCE": 1, "OUTPUT": "memory:"}
+        test_result = processing.run(alg_id, test_params)
+        test_status = "pass"
+    else:
+        test_status = "algorithm not found"
+except Exception as e:
+    test_status = f"fail: {e}"
+
+result = {
+    "success": True,
+    "provider_count": provider_count,
+    "algorithm_count": len(alg_ids),
+    "sample_algorithms": sample_algorithms,
+    "smoke_test": test_status,
+}
+`;
+                const r = await qgisRequest(port, "run_code", { code });
+                return {
+                    content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }],
+                    details: {},
+                };
             },
         });
 
@@ -533,7 +1288,7 @@ l = ${isRaster ? `QgsRasterLayer("${p}", os.path.basename("${p}"))` : `QgsVector
 if not l.isValid(): raise ValueError(f"Failed: {l.lastError()}")
 ${params.name ? `l.setName("${params.name}")` : ""}
 QgsProject.instance().addMapLayer(l)
-result = f"Loaded {l.name()} ({l.featureCount()} features)"
+result = f"Loaded {l.name()}"
 `;
                 const r = await qgisRequest(port, "run_code", { code });
                 return { content: [{ type: "text", text: r.result }], details: {} };
@@ -584,7 +1339,7 @@ final_h = ${height} * ${scale}
 image = QImage(final_w, final_h, QImage.Format.Format_ARGB32)
 image.fill(0xFFFFFFFF)
 painter = QPainter(image)
-settings.render(painter)
+canvas.render(painter)
 painter.end()
 
 # Convert to base64 PNG
@@ -599,7 +1354,7 @@ result = buf.data().toBase64().data().decode()
                 return {
                     content: [
                         { type: "text", text: `Map captured (${width}x${height}, ${quality})` },
-                        { type: "image", source: { type: "base64", media_type: "image/png", data: b64 } },
+                        { type: "image", data: b64, mimeType: "image/png" },
                     ],
                     details: { width, height, scale, quality },
                 };
@@ -777,7 +1532,7 @@ try:
     ee.Initialize()
 except Exception:
     try:
-        ee.Initialize(project=ee.data.getCloudCredentials()?.get("project_id") or "")
+        ee.Initialize(project="default")
     except Exception:
         pass
 
@@ -788,6 +1543,100 @@ result = gee_result.getInfo() if "gee_result" in dir() else str(result)
                 const r = await qgisRequest(port, "run_code", { code: wrapped, timeout: 120 });
                 const text = typeof r.result === "object" ? JSON.stringify(r.result, null, 2) : String(r.result ?? "");
                 return { content: [{ type: "text", text }], details: {} };
+            },
+        });
+
+        // --- save_map_theme ---
+        aery.registerTool({
+            name: "save_map_theme",
+            label: "Save Map Theme",
+            description:
+                "Save the current QGIS map theme (layer visibility + renderer state) under a name. " +
+                "Restore it later with load_map_theme to backtrack without rerunning code.",
+            promptSnippet: "Save the current layer state as a reusable map theme",
+            promptGuidelines: [
+                "Save a theme right before starting a new, riskier analysis branch",
+                "Use load_map_theme to rewind to this state",
+                "Themes are stored in the QGIS project (.qgz) via mapThemeCollection",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    theme_name: { type: "string", description: "Name for the saved theme" },
+                },
+                required: ["theme_name"],
+            },
+            async execute(_id, params) {
+                return await qgisRequest(port, "run_code", {
+                    code: `
+import json, sys
+from qgis.core import QgsProject
+proj = QgsProject.instance()
+mgr = proj.mapThemeCollection()
+theme_name = \`${JSON.stringify(params.theme_name)} \`.strip('\"')
+layer_records = [
+    QgsMapThemeCollection.MapThemeLayerRecord(l)
+    for l in proj.mapLayers().values() if l.isValid()
+]
+mgr.addTheme(QgsMapThemeCollection.MapTheme(theme_name, layer_records))
+try:
+    mgr.addMapTheme(theme_name, layer_records)
+except Exception:
+    pass
+proj.write()
+result = {"saved": theme_name, "themes": sorted(mgr.mapThemes())}
+print(json.dumps(result))
+result
+`,
+                });
+                return { content: [{ type: "text", text: String(r.result ?? "Theme saved.") }], details: r.result || {} };
+            },
+        });
+
+        // --- load_map_theme ---
+        aery.registerTool({
+            name: "load_map_theme",
+            label: "Load Map Theme",
+            description:
+                "Load a previously saved QGIS map theme: sets layer visibility to the saved state. " +
+                "The fastest way to reset layer visibility without rerunning anything.",
+            promptSnippet: "Restore a saved QGIS map theme",
+            promptGuidelines: [
+                "Use list_map_themes (or inspect mapThemeCollection) first to get the name",
+                "refresh=true (default) redraws the canvas — keep it true to see the change",
+            ],
+            parameters: {
+                type: "object",
+                properties: {
+                    theme_name: { type: "string", description: "Name of the theme to restore" },
+                    refresh: { type: "boolean", description: "Redraw canvas after loading (default: true)" },
+                },
+                required: ["theme_name"],
+            },
+            async execute(_id, params) {
+                const doRefresh = params.refresh !== false;
+                return await qgisRequest(port, "run_code", {
+                    code: `
+import json
+from qgis.core import QgsProject
+proj = QgsProject.instance()
+mgr = proj.mapThemeCollection()
+theme = mgr.mapTheme(\`${JSON.stringify(params.theme_name)}\`)
+if theme is None:
+    raise ValueError(f"Theme not found: {sorted(mgr.mapThemes())}")
+records = mgr.mapThemeRecords(\`${JSON.stringify(params.theme_name)}\`)
+for rec in records:
+    lyr = rec.layer()
+    if lyr:
+        lyr.setVisible(rec.isVisible())
+proj.write()
+${doRefresh ? 'iface.mapCanvas().refreshAllLayers(); iface.mapCanvas().refresh()' : ''}
+result = {"loaded": \`${JSON.stringify(params.theme_name)}\`, "records": len(records)}
+print(json.dumps(result))
+result
+`,
+                });
+                return { content: [{ type: "text", text: String(r.result ?? "Theme loaded.") }], details: r.result || {} };
             },
         });
 

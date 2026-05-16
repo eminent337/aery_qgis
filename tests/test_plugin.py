@@ -33,17 +33,10 @@ def plugin(qapp):
         p.rpc.shutdown()
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_creates_executor(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_init_gui_creates_executor(mock_chat, mock_rpc, mock_exec, plugin):
     """initGui starts the executor."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -55,17 +48,10 @@ def test_init_gui_creates_executor(
     mock_exec_instance.start_socket_server.assert_called_once()
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_spawns_rpc(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_init_gui_spawns_rpc(mock_chat, mock_rpc, mock_exec, plugin):
     """initGui spawns the RPC bridge with the executor port."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -73,23 +59,14 @@ def test_init_gui_spawns_rpc(
 
     plugin.initGui()
 
-    mock_rpc.assert_called_once_with(
-        cwd=plugin._get_project_dir(), port=12345, provider_config={}
-    )
+    mock_rpc.assert_called_once_with(cwd=plugin._get_project_dir(), port=12345)
     mock_rpc.return_value.spawn.assert_called_once()
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_creates_panel(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_init_gui_creates_panel(mock_chat, mock_rpc, mock_exec, plugin):
     """initGui creates and adds the chat panel."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -104,17 +81,10 @@ def test_init_gui_creates_panel(
     )
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_adds_menu_action(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_init_gui_adds_menu_action(mock_chat, mock_rpc, mock_exec, plugin):
     """initGui adds a menu action."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -125,17 +95,10 @@ def test_init_gui_adds_menu_action(
     plugin.iface.addPluginToMenu.assert_called_once_with("Aery", plugin.action)
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_unload_cleans_up(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_unload_cleans_up(mock_chat, mock_rpc, mock_exec, plugin):
     """unload() shuts down all components."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -143,29 +106,22 @@ def test_unload_cleans_up(
 
     plugin.initGui()
 
-    # Save references before unload clears them
     rpc = plugin.rpc
     executor = plugin.executor
     panel = plugin.panel
 
     plugin.unload()
 
+    panel.disconnect_rpc.assert_called_once()
     rpc.shutdown.assert_called_once()
     executor.shutdown.assert_called_once()
     plugin.iface.removeDockWidget.assert_called_once_with(panel)
 
 
-@patch("aery_plugin.plugin.ProviderSettingsDialog.load_config", return_value={})
 @patch("aery_plugin.plugin.QGISCodeExecutor")
 @patch("aery_plugin.plugin.RPCBridge")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_toggle_panel(
-    mock_chat,
-    mock_rpc,
-    mock_exec,
-    mock_load_cfg,
-    plugin,
-):
+def test_toggle_panel(mock_chat, mock_rpc, mock_exec, plugin):
     """Toggle panel shows/hides the panel."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345

@@ -121,7 +121,7 @@ def test_prompt_sends_command(bridge):
 
 
 def test_abort_sends_command(bridge):
-    """abort() sends an abort command."""
+    """abort() sends abort + abort_bash + abort_retry to stdin."""
     with patch("aery_plugin.rpc_bridge.subprocess.Popen") as mock_popen:
         mock_process = MagicMock()
         mock_process.stdin = MagicMock()
@@ -133,9 +133,12 @@ def test_abort_sends_command(bridge):
         bridge.spawn()
         bridge.abort()
 
-        written = mock_process.stdin.write.call_args[0][0]
-        data = json.loads(written.strip())
-        assert data["type"] == "abort"
+        # Check that all three abort types were written
+        calls = [c[0][0] for c in mock_process.stdin.write.call_args_list]
+        types = [json.loads(c.strip())["type"] for c in calls]
+        assert "abort" in types
+        assert "abort_bash" in types
+        assert "abort_retry" in types
 
 
 def test_dispatch_event_received(bridge):
@@ -167,16 +170,64 @@ def test_dispatch_response_received(bridge):
 
 
 def test_shutdown_terminates_process(bridge):
-    """shutdown() sends SIGTERM to the process."""
+    """shutdown() closes streams and calls terminate() on the process."""
     with patch("aery_plugin.rpc_bridge.subprocess.Popen") as mock_popen:
         mock_process = MagicMock()
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
         mock_process.stderr = MagicMock()
         mock_process.stdout.readline.return_value = ""
+        mock_process.poll.return_value = None   # process is still running
         mock_popen.return_value = mock_process
 
         bridge.spawn()
         bridge.shutdown()
 
-        mock_process.send_signal.assert_called_once()
+        # shutdown() must close all process streams and terminate the process
+        mock_process.stdin.close.assert_called_once()
+        mock_process.stdout.close.assert_called_once()
+        mock_process.stderr.close.assert_called_once()
+        mock_process.terminate.assert_called_once()
+
+
+def test_load_qgis_system_prompt_reads_from_json(tmp_path):
+    """_load_qgis_system_prompt must load from geospatial_rules.json, not hardcoded literals."""
+    import aery_plugin.rpc_bridge as rb
+
+    # Point resources dir at a temp dir containing a minimal rules file
+    rules = {"identity": {"role": "test_role", "capabilities": "test_caps", "workflow": "test_wf"}}
+    resources_dir = tmp_path / "resources"
+    resources_dir.mkdir()
+    (resources_dir / "geospatial_rules.json").write_text(json.dumps(rules))
+
+    # Build with patched resources dir
+    class PatchedBridge(RPCBridge):
+        def _get_resources_dir(self):
+            return str(resources_dir)
+
+    b = PatchedBridge("/dev/null", 0)
+    prompt = b._load_qgis_system_prompt()
+    assert "test_role" in prompt
+    assert "test_caps" in prompt
+    assert "test_wf" in prompt
+    # The old hardcoded string must not appear when absent from test JSON
+    assert "elite geospatial AI" not in prompt
+
+
+def test_geospatial_rules_json_is_valid_and_complete():
+    """geospatial_rules.json must be valid JSON with all required top-level keys."""
+    from pathlib import Path
+
+    rules_path = (
+        Path(__file__).parent.parent / "aery_plugin" / "resources" / "geospatial_rules.json"
+    )
+    data = json.loads(rules_path.read_text())
+
+    required = [
+        "identity", "workflow_steps", "crs_rules", "safety_rules",
+        "processing_patterns", "error_recovery",
+    ]
+    for key in required:
+        assert key in data, f"missing required key: {key}"
+    assert len(data["crs_rules"]) > 0, "crs_rules must not be empty"
+    assert len(data["processing_patterns"]) > 0, "processing_patterns must not be empty"
