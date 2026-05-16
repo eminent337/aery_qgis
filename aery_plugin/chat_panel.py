@@ -7,8 +7,9 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QTextOption
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QTextOption, QIcon, QPainter
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -718,6 +719,16 @@ class _QuestionWidget(QFrame):
             pass
 
 
+def _svg_pixmap(path: str, size: int) -> QPixmap:
+    """Render an SVG file to a QPixmap at *size*×*size*, smooth-scaled from 64×64."""
+    raw = QPixmap(64, 64)
+    raw.fill(Qt.GlobalColor.transparent)
+    p = QPainter(raw)
+    QSvgRenderer(path).render(p)
+    p.end()
+    return raw.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+
 class ChatPanel(QDockWidget):
     """Simplified QGIS AI agent panel with settings menu."""
 
@@ -750,7 +761,7 @@ class ChatPanel(QDockWidget):
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(230)
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -758,7 +769,7 @@ class ChatPanel(QDockWidget):
         )
 
         self._build_ui()
-        self.resize(300, 760)
+        self.resize(240, 760)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
         self._activity_timer = QTimer(self)
@@ -800,53 +811,107 @@ class ChatPanel(QDockWidget):
         header = QFrame()
         header.setFixedHeight(40)
         header.setStyleSheet(f"background:{BG_SURFACE};border-bottom:1px solid {BORDER};")
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(10, 0, 10, 0)
+        outer = QHBoxLayout(header)
+        outer.setContentsMargins(8, 0, 6, 0)
+        outer.setSpacing(0)
+
+        # ── Left: AERY brand block (SVG icon + name) ────────────────────────────
+        brand_col = QVBoxLayout()
+        brand_col.setContentsMargins(0, 0, 0, 0)
+        brand_col.setSpacing(0)
+
+        row_top = QHBoxLayout()
+        row_top.setSpacing(5)
+        row_top.setContentsMargins(0, 3, 0, 0)   # top-align
+
+        # Aery SVG icon (prominent) – natural 64×64, smooth-scaled to 28
+        icon_lbl = QLabel()
+        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons", "aery.svg")
+        icon_lbl.setPixmap(_svg_pixmap(svg_path, 28))
+        icon_lbl.setFixedSize(28, 28)
+        icon_lbl.setStyleSheet("background:transparent;")
+        row_top.addWidget(icon_lbl)
+
+        # AERY text
+        brand = QLabel("AERY")
+        brand.setStyleSheet(
+            f"color:{ACCENT};font-family:{FONT_SANS};font-size:17px;"
+            "font-weight:700;letter-spacing:0.05em;background:transparent;"
+        )
+        row_top.addWidget(brand)
+
+        brand_col.addLayout(row_top)
+
+        outer.addLayout(brand_col)
+
+        # ── Right column: status + provider + buttons ────────────────────────────
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 2, 0, 0)
+        right_col.setSpacing(0)
+
+        # Row: status dot + label → top-aligns with AERY on the first row
+        status_row = QHBoxLayout()
+        status_row.setSpacing(5)
+        status_row.setContentsMargins(0, 0, 0, 0)
 
         self._status_dot = QLabel("\u25cf")
         self._status_dot.setStyleSheet(
-            f"color:{TEXT_MUTED};font-size:9px;background:transparent;"
+            f"color:{TEXT_MUTED};font-size:10px;background:transparent;"
         )
-        layout.addWidget(self._status_dot)
+        status_row.addWidget(self._status_dot)
 
-        status = QLabel("GEOSPATIAL AGENT")
+        status = QLabel("Geospatial Agent")
         status.setStyleSheet(
-            f"color:{TEXT_MUTED};font-family:{FONT_MONO};font-size:9px;"
-            "letter-spacing:0.08em;background:transparent;"
+            f"color:{TEXT_MUTED};font-size:9px;font-family:{FONT_SANS};"
+            "background:transparent;"
         )
-        layout.addWidget(status)
+        status_row.addWidget(status)
+        status_row.addStretch()
 
-        layout.addStretch()
+        right_col.addLayout(status_row)   # first-line: status text, same top row as AERY
+
+        # Row: provider label + settings buttons (small, aligned below status)
+        control_row = QHBoxLayout()
+        control_row.setSpacing(4)
+        control_row.setContentsMargins(0, 2, 0, 1)
 
         self._provider_lbl = QLabel("")
         self._provider_lbl.setStyleSheet(
-            f"color:{ACCENT_DIM};font-family:{FONT_MONO};font-size:8px;"
-            "font-weight:700;background:transparent;letter-spacing:0.04em;"
+            f"color:{ACCENT_DIM};font-size:9px;font-weight:600;"
+            "background:transparent;letter-spacing:0.03em;"
         )
-        layout.addWidget(self._provider_lbl)
+        control_row.addWidget(self._provider_lbl)
         self._refresh_provider_label()
+
+        control_row.addStretch()
 
         self._dock_btn = QToolButton()
         self._dock_btn.setToolTip("Dock / Undock")
         self._dock_btn.setAutoRaise(True)
+        self._dock_btn.setFixedSize(18, 18)
         self._dock_btn.setText("⇱")
         self._dock_btn.setStyleSheet(
-            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:14px; padding:4px; }}"
-            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:4px; }}"
+            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
+            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
         )
         self._dock_btn.clicked.connect(self._toggle_floating)
-        layout.addWidget(self._dock_btn)
+        control_row.addWidget(self._dock_btn)
 
         self._gear_btn = QToolButton()
         self._gear_btn.setToolTip("Settings")
         self._gear_btn.setAutoRaise(True)
+        self._gear_btn.setFixedSize(18, 18)
         self._gear_btn.setText("⚙")
         self._gear_btn.setStyleSheet(
-            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:14px; padding:4px; }}"
-            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:4px; }}"
+            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
+            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
         )
         self._gear_btn.clicked.connect(self._show_settings_menu)
-        layout.addWidget(self._gear_btn)
+        control_row.addWidget(self._gear_btn)
+
+        right_col.addLayout(control_row)   # second line: provider + small buttons
+
+        outer.addLayout(right_col)
 
         return header
 
@@ -1313,12 +1378,10 @@ class ChatPanel(QDockWidget):
                 background:{BG_SURFACE};
                 border:1px solid {BORDER};
                 padding:4px;
-                font-family:{FONT_MONO};
-                font-size:10px;
                 color:{TEXT_MAIN};
             }}
             QMenu::item {{
-                padding:6px 14px;
+                padding:7px 16px;
                 border-radius:2px;
             }}
             QMenu::item:selected {{
@@ -1328,7 +1391,7 @@ class ChatPanel(QDockWidget):
             QMenu::separator {{
                 height:1px;
                 background:{BORDER};
-                margin:4px 8px;
+                margin:4px 10px;
             }}
         """)
         his = menu.addAction("SESSION HISTORY")

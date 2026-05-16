@@ -48,6 +48,21 @@ AUTH_OAUTH  = "oauth"
 AUTH_APIKEY = "apikey"
 AUTH_GATEWAY = "gateway"
 
+# ── System font fallback ──────────────────────────────────────────────────────
+try:
+    from PyQt6.QtWidgets import QApplication as _QA
+    _BASE = _QA.font().pixelSize() or 12
+except Exception:
+    _BASE = 12
+F_S  = max(_BASE - 1,  9)   # small labels, section headers
+F_M  = _BASE              # body / normal
+F_H  = _BASE + 2          # headings / emphasis
+F_B  = _BASE + 4          # big title
+
+def _fs(size: int) -> str:
+    """Return a font-size CSS token clamped to sensible bounds."""
+    return f"{max(size, 8)}px"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -63,7 +78,7 @@ def _btn(text: str, fg: str = ACCENT, bg: str = "transparent",
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     b.setStyleSheet(
         f"QPushButton {{ background:{bg}; color:{fg}; border:1px solid {fg};"
-        f" border-radius:2px; font-size:8px; font-weight:700; padding:0 8px; }}"
+        f" border-radius:2px; font-size:{_fs(F_M)}; font-weight:700; padding:0 8px; }}"
         f" QPushButton:hover {{ background:{fg}; color:{BG}; }}"
         f" QPushButton:disabled {{ opacity:0.4; }}"
     )
@@ -77,7 +92,7 @@ def _input(placeholder: str = "", width: int = 0) -> QLineEdit:
         e.setFixedWidth(width)
     e.setStyleSheet(
         f"QLineEdit {{ background:{BG}; color:{TEXT}; border:1px solid {BORDER};"
-        f" border-radius:2px; padding:4px 8px; font-size:9px; }}"
+        f" border-radius:2px; padding:4px 8px; font-size:{_fs(F_M)}; }}"
         f" QLineEdit:focus {{ border-color:{ACCENT}; }}"
     )
     return e
@@ -87,7 +102,7 @@ def _section_hdr(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setFixedHeight(28)
     lbl.setStyleSheet(
-        f"font-size:8px; font-weight:800; color:{DIM}; letter-spacing:0.12em;"
+        f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.12em;"
         f" border:none; background:transparent;"
     )
     return lbl
@@ -140,7 +155,7 @@ class _ListButton(QPushButton):
             f"  border-radius:3px;"
             f"  {pad}"
             f"  text-align:left;"
-            f"  font-size:10px;"
+            f"  font-size:{_fs(F_H)};"
             f"  font-weight:{700 if self._selected else 500};"
             f"  color:{title_clr};"
             f"}}"
@@ -216,7 +231,7 @@ class ProviderOAuthList(QWidget):
         # Header row
         hdr = QLabel("SELECT OAUTH PROVIDER")
         hdr.setStyleSheet(
-            f"font-size:8px; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
+            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
             f" border:none; background:transparent;"
         )
         hdr.setFixedHeight(26)
@@ -256,13 +271,13 @@ class ProviderOAuthList(QWidget):
             dot.setFixedSize(16, 16)
             dc = GREEN if connected else DIM
             dot.setStyleSheet(
-                f"color:{dc}; font-size:11px; border:none; background:transparent;")
+                f"color:{dc}; font-size:{_fs(F_H)}; border:none; background:transparent;")
             row.addWidget(dot)
 
             # Name
             nm = QLabel(cfg["name"])
             nm.setStyleSheet(
-                f"font-size:10px; font-weight:600; color:{TEXT};"
+                f"font-size:{_fs(F_H)}; font-weight:600; color:{TEXT};"
                 f" border:none; background:transparent;")
             row.addWidget(nm, 1)
 
@@ -309,7 +324,7 @@ class ProviderApiKeyList(QWidget):
 
         hdr = QLabel("SELECT PROVIDER")
         hdr.setStyleSheet(
-            f"font-size:8px; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
+            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
             f" border:none; background:transparent;")
         hdr.setFixedHeight(26)
         root.addWidget(hdr)
@@ -401,7 +416,7 @@ class ApiKeyDialog(QDialog):
         # Title
         title = QLabel(f"LOGIN {self._cfg.get('name', self._pid).upper()}")
         title.setStyleSheet(
-            f"font-size:9px; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
+            f"font-size:{_fs(F_M)}; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
             f" border:none; background:transparent;")
         root.addWidget(title)
 
@@ -414,7 +429,7 @@ class ApiKeyDialog(QDialog):
             )
             banner.setWordWrap(True)
             banner.setStyleSheet(
-                f"font-size:9px; color:{DIM}; border:1px solid {BORDER};"
+                f"font-size:{_fs(F_M)}; color:{DIM}; border:1px solid {BORDER};"
                 f" border-radius:3px; padding:10px 12px; background:{SURFACE};")
             root.addWidget(banner)
             root.addStretch()
@@ -425,7 +440,7 @@ class ApiKeyDialog(QDialog):
         row_k.setSpacing(8)
         klbl = QLabel("API Key")
         klbl.setFixedWidth(80)
-        klbl.setStyleSheet(f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+        klbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         row_k.addWidget(klbl)
         self._key_inp = _input("Enter API key…", 260)
         row_k.addWidget(self._key_inp, 1)
@@ -437,7 +452,7 @@ class ApiKeyDialog(QDialog):
             row_a.setSpacing(8)
             albl = QLabel("Account ID")
             albl.setFixedWidth(80)
-            albl.setStyleSheet(f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            albl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
             row_a.addWidget(albl)
             self._acct_inp = _input("Enter account ID…", 260)
             row_a.addWidget(self._acct_inp, 1)
@@ -449,7 +464,7 @@ class ApiKeyDialog(QDialog):
             row_b.setSpacing(8)
             blbl = QLabel("Base URL")
             blbl.setFixedWidth(80)
-            blbl.setStyleSheet(f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            blbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
             row_b.addWidget(blbl)
             default_url = self._cfg.get("base_url", "https://api.openai.com/v1")
             self._url_inp = _input(default_url, 260)
@@ -463,13 +478,13 @@ class ApiKeyDialog(QDialog):
             row_m.setSpacing(8)
             mlbl = QLabel("Model")
             mlbl.setFixedWidth(80)
-            mlbl.setStyleSheet(f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            mlbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
             row_m.addWidget(mlbl)
             self._model_combo = QComboBox()
             self._model_combo.setFixedWidth(260)
             self._model_combo.setStyleSheet(
                 f"QComboBox {{ background:{BG}; color:{TEXT}; border:1px solid {BORDER};"
-                f" border-radius:2px; padding:4px 6px; font-size:9px; }}"
+                f" border-radius:2px; padding:4px 6px; font-size:{_fs(F_M)}; }}"
                 f" QComboBox:hover {{ border-color:{ACCENT}; }}"
                 f" QComboBox QAbstractItemView {{ background:{SURFACE}; color:{TEXT}; selection-background-color:{ACCENT}; }}"
             )
@@ -553,7 +568,7 @@ class ModelSwitcherDialog(QDialog):
                    if active else "No active provider")
         hdr = QLabel(hdr_txt)
         hdr.setStyleSheet(
-            f"font-size:9px; font-weight:700; color:{ACCENT};"
+            f"font-size:{_fs(F_M)}; font-weight:700; color:{ACCENT};"
             f" border:none; background:{SURFACE}; border-radius:3px; padding:5px 8px;")
         hdr.setFixedHeight(26)
         root.addWidget(hdr)
@@ -625,7 +640,7 @@ class ModelSwitcherDialog(QDialog):
         # Section title
         lbl = QLabel(name)
         lbl.setStyleSheet(
-            f"font-size:8px; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
+            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
             f" border:none; background:transparent;")
         lbl.setFixedHeight(20)
         cv.addWidget(lbl)
@@ -641,7 +656,7 @@ class ModelSwitcherDialog(QDialog):
             btn.setText(f"{prefix}{mlabel}")
             btn.setStyleSheet(
                 f"QPushButton {{ background:transparent; color:{fc}; border:none;"
-                f" border-radius:2px; font-size:9px; font-weight:{fw};"
+                f" border-radius:2px; font-size:{_fs(F_M)}; font-weight:{fw};"
                 f" padding:0 8px 0 16px; text-align:left; }}"
                 f" QPushButton:hover {{ background:{SURFACE}; color:{ACCENT}; }}"
             )
@@ -685,7 +700,7 @@ class ScopesDialog(QDialog):
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(
-            f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         root.addWidget(sub)
         root.addSpacing(4)
 
@@ -727,7 +742,7 @@ class ScopesDialog(QDialog):
                 return
             lbl = QLabel(title)
             lbl.setStyleSheet(
-                f"font-size:8px; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
+                f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
                 f" border:none; background:transparent;")
             lbl.setFixedHeight(18)
             blay.addWidget(lbl)
@@ -736,7 +751,7 @@ class ScopesDialog(QDialog):
                 cb  = QCheckBox(mlabel)
                 cb.setChecked(key in enabled if enabled else True)
                 cb.setStyleSheet(
-                    f"QCheckBox {{ color:{TEXT}; font-size:9px; spacing:6px; }}"
+                    f"QCheckBox {{ color:{TEXT}; font-size:{_fs(F_M)}; spacing:6px; }}"
                     f" QCheckBox::indicator {{ width:14px; height:14px; border:1px solid {BORDER}; border-radius:2px; background:{BG}; }}"
                     f" QCheckBox::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}"
                 )
@@ -865,7 +880,7 @@ class AuthMethodWizard(QDialog):
         hl.setContentsMargins(16, 0, 12, 0)
         self._title_lbl = QLabel("AERY — CONFIGURE")
         self._title_lbl.setStyleSheet(
-            f"font-size:9px; font-weight:800; color:{DIM};"
+            f"font-size:{_fs(F_M)}; font-weight:800; color:{DIM};"
             f" letter-spacing:0.1em; border:none; background:transparent;")
         hl.addWidget(self._title_lbl)
         hl.addStretch()
@@ -1046,14 +1061,14 @@ class GatewayPage(QWidget):
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(
-            f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         root.addWidget(sub)
 
         row = QHBoxLayout()
         row.setSpacing(8)
         lbl = QLabel("Aery Key")
         lbl.setFixedWidth(70)
-        lbl.setStyleSheet(f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+        lbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         row.addWidget(lbl)
         self._key_inp = _input("Paste key…", 260)
         row.addWidget(self._key_inp, 1)
@@ -1063,7 +1078,7 @@ class GatewayPage(QWidget):
             '<a href="https://aery-web.pages.dev" style="color:#8abeb7;">'
             'Open aery-web.pages.dev →</a>')
         link.setOpenExternalLinks(True)
-        link.setStyleSheet(f"font-size:8px; color:{ACCENT}; border:none; background:transparent;")
+        link.setStyleSheet(f"font-size:{_fs(F_S)}; color:{ACCENT}; border:none; background:transparent;")
         root.addWidget(link)
         root.addSpacing(12)
 
@@ -1118,7 +1133,7 @@ class _DeviceFlowDialog(QDialog):
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(
-            f"font-size:9px; color:{DIM}; border:none; background:transparent;")
+            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         root.addWidget(hint)
 
         threading.Thread(target=self._poll, daemon=True).start()
