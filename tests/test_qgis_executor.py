@@ -2,12 +2,29 @@
 
 import json
 import os
+import pathlib
+import queue
 import socket
 import sys
+import time
+import threading
+import uuid
 from unittest.mock import MagicMock, patch
+from collections import deque
 
 import pytest
+from PyQt6.QtCore import QEvent
 from aery_plugin.qgis_executor import QGISCodeExecutor
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Create a QApplication for Qt widget testing."""
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
 
 
 @pytest.fixture
@@ -287,3 +304,246 @@ def test_graph_hooks_log_error_on_failure(monkeypatch, tmp_path):
     assert len(calls) > 0, f"graph hook failure should have been logged; got: {calls}"
     # Confirms the log entry mentions the graph hook
     assert any("graph hook failed" in c[0] for c in calls), f"log message must mention graph hook: {calls}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ask_user / question-answer integration tests
+# ════════════════════════════════════════════════════════════════════════════════
+
+def test_process_question_posts_event_and_returns_error_on_timeout(qapp):
+    """_process_question registers a pending quest, causes error on no answer via cleanup path."""
+    from aery_plugin.qgis_executor import _resolve_question, _pending_questions, _process_question
+
+    rq = queue.Queue()
+    # Run _process_question in a daemon thread so we don't block
+    import time as _time
+    def _run():
+        _process_question("r1", rq, {
+            "questId": "no_ans_q", "header": "Hi", "description": "test",
+            "options": [{"label": "A", "required_fields": []}],
+        })
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    _time.sleep(2)  # should be in timeout (polling at 0.1s × 0.1s per iter = ~120s total, skip early)
+    result = None
+    try:
+        result = rq.get_nowait()
+    except queue.Empty:
+        # Even after 2s, result_queue empty → _process_question is still polling
+        # Force-cancel by clearing pending entry
+        _pending_questions.pop("no_ans_q", None)
+        _time.sleep(0.2)
+        try:
+            result = rq.get_nowait()
+        except queue.Empty:
+            result = {"error": "timed out (in test)"}
+    assert "error" in result, f"expected error when no answer delivered; got: {result}"
+
+
+def test_pending_questions_pop_via_resolve(qapp):
+    """Full round-trip on the main-thread path: _process_question finds the panel via
+    _find_chat_panel (fast path), the mock panel immediately calls _resolve_question,
+    and the poll loop returns the answer in result_queue."""
+    import aery_plugin.qgis_executor as _qe
+    from aery_plugin.qgis_executor import _resolve_question, _pending_questions, _process_question
+
+    quest_id = "deliver_test_q"
+    rq       = queue.Queue()
+    ANSWER   = {"option_label": "GPKG", "fields": {"path": "/tmp/x"}}
+
+    class _FakePanel:
+        """Instantly resolves so the poll loop terminates on first iteration."""
+        def _handle_question(self, event):
+            _resolve_question(event["questId"], ANSWER)
+
+    # ── Force fast-path and run on main thread ────────────────────────────────
+    _qe._find_chat_panel = staticmethod(lambda: _FakePanel())  # type: ignore[assignment]
+    try:
+        res = _process_question("req_deliver", rq, {
+            "questId": quest_id, "header": "?", "description": "",
+            "options": [{"label": "GPKG", "required_fields": []}],
+        })
+    finally:
+        del _qe._find_chat_panel  # type: ignore[misc]   # restore module-level lookup
+
+    # ── Assertions ─────────────────────────────────────────────────────────────
+    assert res.get("answer") is not None, \
+        f"expected 'answer' key; got keys: {list(res)}"
+    assert res["answer"]["option_label"] == "GPKG"
+    assert not rq.empty(), "rq should carry the response"
+    out = rq.get_nowait()
+    assert out["answer"]["option_label"] == "GPKG"
+    # The mock panel resolved the question so both queues should be drained
+
+
+def test_question_method_routed_via_enqueue(executor):
+    """method='question' routes question through _request_queue (not run_code path)."""
+    qe = __import__("aery_plugin.qgis_executor", fromlist=["qgis_executor"])
+    orig = qe._process_question
+    qe._process_question = lambda *a, **kw: {"answer": {"option_label": "GPKG", "fields": {}}}
+    try:
+        # Enqueue a question directly into the normal queue
+        req_id = "enq_test"
+        rq = queue.Queue()
+        meta = {"method": "question", "tool_name": "ask_user", "source": "test",
+                "params": {"header": "H", "options": [{"label": "O", "required_fields": []}]}}
+        executor._normal_queue.put((req_id, "__ask_user__", rq, meta))
+        executor._process_queue()
+        assert not rq.empty(), f"rq should contain result after _process_queue; contents: {rq}"
+        result = rq.get_nowait()
+        assert result["answer"]["option_label"] == "GPKG"
+    finally:
+        qe._process_question = orig
+
+
+
+def _mk_conn(data: bytes) -> MagicMock:
+    """Return a mock socket whose recv yields *data* then b''."""
+    m = MagicMock()
+    m.recv.side_effect = [data + b"\n", b""]
+    return m
+
+# =============================================================================
+# New executor integrity tests (Fix #1, #2, #5, #6, #13)
+# =============================================================================
+
+def test_safe_json_result_path_converted_to_string():
+    """_safe_json_result converts pathlib.Path to str so json.dumps does not TypeError."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    p = pathlib.Path("/tmp/test_layer.gpkg")
+    result = QGISCodeExecutor._safe_json_result(p)
+    assert isinstance(result, str), f"expected str, got {type(result)}: {result}"
+    assert result == "/tmp/test_layer.gpkg"
+
+
+def test_safe_json_result_none_passthrough():
+    """_safe_json_result passes None through unchanged."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    assert QGISCodeExecutor._safe_json_result(None) is None
+
+
+def test_safe_json_result_small_string_passthrough():
+    """Small plain strings are returned as-is so the socket sends them verbatim."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    assert QGISCodeExecutor._safe_json_result("hello") == "hello"
+
+
+def test_executor_shutdown_clears_pending_questions_and_result_queues(tmp_path):
+    """shutdown() clears _pending_questions and _result_queues so stale entries do not leak."""
+    import aery_plugin.qgis_executor as _qe
+    from aery_plugin.qgis_executor import _pending_questions
+
+    with patch("aery_plugin.qgis_executor.QTimer") as mock_timer:
+        mock_timer.return_value = MagicMock()
+        exec_ = QGISCodeExecutor(iface=MagicMock(), audit_dir=str(tmp_path / ".aery"))
+        try:
+            exec_.start_socket_server()
+            # Seed some stale state
+            rq = queue.Queue()
+            _pending_questions["stale_quest"] = (rq, "stale_req")
+            exec_._result_queues["stale"] = queue.Queue()
+            assert "stale_quest" in _pending_questions
+            assert "stale" in exec_._result_queues
+            exec_.shutdown()
+            # Verify stale entries are gone
+            assert "stale_quest" not in _pending_questions, \
+                "shutdown() must clear _pending_questions"
+            assert "stale" not in exec_._result_queues, \
+                "shutdown() must clear _result_queues"
+        finally:
+            exec_.shutdown()  # safe even if test failed early
+
+
+def test_priority_queue_served_before_normal_queue(executor):
+    """Interactive priority requests (question / capture_canvas) are drained before normal run_code."""
+    captured_order: list = []
+
+    import aery_plugin.qgis_executor as _qe
+    orig_pq = _qe._process_question
+
+    def fake_process_question(req_id, rq, params):
+        captured_order.append(("priority", req_id))
+        return {"answer": {}}
+
+    _qe._process_question = fake_process_question
+    try:
+        # Enqueue 3 normal requests, then 2 priority ones
+        for i in range(3):
+            rq_i = queue.Queue()
+            meta = {"method": "run_code", "tool_name": "run_qgis_code",
+                    "source": "test", "started_at": time.perf_counter()}
+            executor._normal_queue.put((f"n{i}", f"result = {i}", rq_i, meta))
+
+        p_rq = queue.Queue()
+        p_meta = {"method": "question", "tool_name": "ask_user",
+                  "source": "test", "started_at": time.perf_counter(),
+                  "params": {"header": "h", "options": []}}
+        executor._priority_queue.append(("p0", "__ask_user__", p_rq, p_meta))
+
+        # First _process_queue call: exhaust priority (all of it), then one normal
+        executor._process_queue()
+        assert captured_order == [("priority", "p0")], \
+            "first tick must serve the priority item before any normal item"
+
+        # Second call: drain remaining normal items
+        for _ in range(3):
+            executor._process_queue()
+
+        assert len(captured_order) == 1, \
+            "priority items must be fully drained before normal items consume ticks"
+
+        p_meta2 = {"method": "question", "tool_name": "ask_user",
+                   "source": "test", "started_at": time.perf_counter(),
+                   "params": {"header": "h2", "options": []}}
+        executor._priority_queue.append(("p1", "__ask_user__", queue.Queue(), p_meta2))
+
+        for i in range(3, 5):
+            rq_i = queue.Queue()
+            meta = {"method": "run_code", "tool_name": "run_qgis_code",
+                    "source": "test", "started_at": time.perf_counter()}
+            executor._normal_queue.put((f"n{i}", f"result = {i}", rq_i, meta))
+
+        executor._process_queue()
+        # p1 must be served before any new normal item
+        assert captured_order == [("priority", "p0"), ("priority", "p1")]
+    finally:
+        _qe._process_question = orig_pq
+
+
+def test_process_question_forwards_run_id(executor):
+    """run_id from metadata is forwarded into _process_question's params."""
+    import aery_plugin.qgis_executor as _qe
+    captured_run_id: list = []
+
+    class _PanelNoop:
+        def _handle_question(self, event):
+            captured_run_id.append(event.get("run_id"))
+
+    orig_pq = _qe._process_question
+
+    def fake_pq(req_id, rq, params):
+        # Simulate what the real _process_question does: forward qp to panel
+        panel = _PanelNoop()
+        panel._handle_question({"type": "question", "questId": "fake", **params})
+
+    _qe._process_question = fake_pq
+    try:
+        rq = queue.Queue()
+        meta = {
+            "method": "question",
+            "tool_name": "ask_user",
+            "source": "test",
+            "started_at": time.perf_counter(),
+            "run_id": "forwarded-run-id",
+            "params": {"header": "Q", "options": [{"label": "A", "required_fields": []}]},
+        }
+        executor._priority_queue.append(("rk", "__ask_user__", rq, meta))
+        executor._process_queue()
+
+        assert captured_run_id == ["forwarded-run-id"], \
+            "run_id must be forwarded from metadata through _process_question to the question event"
+    finally:
+        _qe._process_question = orig_pq

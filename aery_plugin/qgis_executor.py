@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -250,8 +251,115 @@ def _build_globals() -> dict[str, Any]:
             raise RuntimeError("_build_leaflet_html not yet available — call after full import")
         g["_build_leaflet_html"] = _build_leaflet_html_stub
 
+    # Question-answer bridge: chat_panel calls this to deliver user answers
+    try:
+        g["_resolve_question"] = _resolve_question  # type: ignore[name-defined]
+    except NameError:
+        def _resolve_question_stub(*a, **kw):  # type: ignore[misc]
+            pass
+        g["_resolve_question"] = _resolve_question_stub
+
     _GLOBALS_CACHE = g
     return g
+
+
+# Pending question callbacks: quest_id → (result_queue, req_id)
+_pending_questions: dict[str, tuple[queue.Queue, str]] = {}
+
+
+def _resolve_question(quest_id: str, answer: dict) -> None:
+    """Called from chat_panel _on_event when the user submits a question card."""
+    pending = _pending_questions.pop(quest_id, None)
+    if pending:
+        result_queue, _ = pending
+        try:
+            result_queue.put(answer)
+        except Exception:
+            pass
+
+
+def _find_chat_panel() -> Optional[Any]:
+    """Walk top-level widgets and return the ChatPanel instance if present."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        _app = QApplication.instance()
+        if _app is None:
+            return None
+        for w in _app.topLevelWidgets():
+            if hasattr(w, "_handle_question") and hasattr(w, "_feed_layout"):
+                return w
+    except Exception:
+        pass
+    return None
+
+
+def _process_question(req_id: str, result_queue: queue.Queue, params: dict) -> dict:
+    """Render a question card in the chat panel OR post a QEvent as fallback.
+
+    Locates ChatPanel via _find_chat_panel() and calls _handle_question directly
+    so the card appears in the feed at once. When no panel is found (headless test
+    environments) a synthetic QEvent is posted via QApplication so that a
+    pre-seeded _resolve_question() call still wakes the poll loop.
+
+    Returns the answer dict or an error/timeout dict.
+    """
+    quest_id   = params.get("questId") or str(uuid.uuid4())
+    reply_q    = queue.Queue()
+    _pending_questions[quest_id] = (reply_q, req_id)
+
+    # Build event payload
+    event_payload = {"type": "question", "questId": quest_id, **params}
+
+    # ── Fast path: ChatPanel is live → call _handle_question directly ──────────
+    _QApp = None
+    delivered = False
+    try:
+        from PyQt6.QtWidgets import QApplication as _QApp
+        _app = _QApp.instance()
+        if _app is not None:
+            panel = _find_chat_panel()
+            if panel is not None:
+                panel._handle_question(event_payload)
+                delivered = True
+    except Exception:
+        pass
+
+    # ── Fallback: post a QEvent so a pre-seeded _resolve_question can deliver ──
+    if not delivered:
+        try:
+            from PyQt6.QtCore import QEvent as _QEvent
+            class _AskUserQEvent(_QEvent):
+                def __init__(self, payload):
+                    super().__init__(_QEvent.Type.User)
+                    self._payload = payload
+            _QApp.instance().postEvent(_QApp.instance(), _AskUserQEvent(event_payload))
+        except Exception:
+            pass   # best-effort; the poll loop handles absence of a panel
+
+    # ── Poll reply_q and deliver answer into the caller's result_queue ─────────
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except Exception:
+        QApplication = None  # type: ignore[assignment]
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            answer = reply_q.get(timeout=0.1)
+            _pending_questions.pop(quest_id, None)
+            response = {"answer": answer}
+            result_queue.put(response)
+            return response
+        except queue.Empty:
+            if QApplication is not None:
+                try:
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+
+    _pending_questions.pop(quest_id, None)
+    response = {"error": "Question timed out after 120 s"}
+    result_queue.put(response)
+    return response
 
 
 def _build_leaflet_html(layer_files, basemap="osm", include_search=False, title=None, bbox=None):
@@ -352,7 +460,10 @@ class QGISCodeExecutor(QObject):
         self.iface = iface
         self.audit_dir = audit_dir
         self.run_id = str(uuid.uuid4())
-        self._request_queue: queue.Queue = queue.Queue()
+        # Dual-queue: priority deque for interactive / blocking requests;
+        # normal queue for fire-and-forget run_code calls.
+        self._priority_queue: deque = deque()
+        self._normal_queue: queue.Queue = queue.Queue()
         self._result_queues: dict[str, queue.Queue] = {}
         self._running = False
         self.server: Optional[socket.socket] = None
@@ -391,6 +502,7 @@ class QGISCodeExecutor(QObject):
                 break
 
     def _handle_connection(self, conn: socket.socket):
+        _req_id: Optional[str] = None
         try:
             # Read until newline; hard cap at 1 MB to prevent memory exhaustion
             MAX_BODY = 1_048_576
@@ -407,7 +519,8 @@ class QGISCodeExecutor(QObject):
                     break
 
             request = json.loads(data.decode().strip())
-            req_id = request.get("id")
+            req_id = request.get("id") or str(__import__("uuid").uuid4())
+            _req_id = req_id
             method = request.get("method", "run_code")
             code = request.get("code", "")
 
@@ -434,10 +547,12 @@ class QGISCodeExecutor(QObject):
                         record_layer(pdir, lyr["name"], lyr.get("type",""), lyr.get("crs",""))
                 except Exception:
                     pass
+            elif method == "question":
+                self._priority_queue.append((req_id, "__ask_user__", result_queue, metadata))
             elif method == "capture_canvas":
-                self._request_queue.put((req_id, "__capture_canvas__", result_queue, metadata))
+                self._priority_queue.append((req_id, "__capture_canvas__", result_queue, metadata))
             else:
-                self._request_queue.put((req_id, code, result_queue, metadata))
+                self._normal_queue.put((req_id, code, result_queue, metadata))
 
             result = result_queue.get(timeout=300)
             conn.sendall((json.dumps(result) + "\n").encode())
@@ -446,14 +561,29 @@ class QGISCodeExecutor(QObject):
         except Exception as e:
             conn.sendall((json.dumps({"success": False, "error": str(e)}) + "\n").encode())
         finally:
-            conn.close()
+            # Close the socket unconditionally
+            try:
+                conn.close()
+            except Exception:
+                pass
+            # Only pop from _result_queues if we successfully registered one
+            if _req_id is not None:
+                self._result_queues.pop(_req_id, None)  # prevent stale queue leak
 
     def _process_queue(self):
         from qgis.core import QgsProject
         processed = 0
+
+        # Pull a queued item from either source, preferring priority (O(1) deque.popleft)
+        def _dequeue():
+            if self._priority_queue:
+                return self._priority_queue.popleft()
+            return self._normal_queue.get_nowait()
+
         try:
-            while processed < 10:  # max 10 per tick to stay responsive
-                req_id, code, result_queue, metadata = self._request_queue.get_nowait()
+            # Drain priority first (interactive / blocking requests), then normal queue up to 10
+            while processed < 10:
+                req_id, code, result_queue, metadata = _dequeue()
                 processed += 1
                 response: dict[str, Any]
                 project_dir = os.path.expanduser("~")
@@ -461,8 +591,23 @@ class QGISCodeExecutor(QObject):
                     project_path = QgsProject.instance().fileName()
                     project_dir = os.path.dirname(project_path) if project_path else os.path.expanduser("~")
 
-                    if code == "__capture_canvas__":
+                    if code == "__get_project_context__":
+                        ctx = self._get_project_context()
+                        response = {"id": req_id, "success": True, "result": ctx}
+                        try:
+                            from aery_plugin.graph_engine import record_layer, build_tool_capability_graph
+                            pdir = ctx.get("project_dir", os.path.expanduser("~"))
+                            build_tool_capability_graph(pdir)
+                            for lyr in ctx.get("layers", []):
+                                record_layer(pdir, lyr["name"], lyr.get("type",""), lyr.get("crs",""))
+                        except Exception:
+                            pass
+                    elif code == "__capture_canvas__":
                         response = {"id": req_id, "success": True, "result": self._capture_canvas()}
+                    elif code == "__ask_user__":
+                        # Forward run_id so the answer can be tied back to the triggering turn
+                        qp = {**metadata.get("params", {}), "run_id": metadata.get("run_id")}
+                        response = _process_question(req_id, result_queue, qp)
                     else:
                         risks = self.classify_code_risk(code)
                         # Warn about output file conflicts
@@ -507,7 +652,7 @@ class QGISCodeExecutor(QObject):
                         response = {
                             "id": req_id,
                             "success": True,
-                            "result": local_vars.get("result"),
+                            "result": self._safe_json_result(local_vars.get("result")),
                             "risks": risks,
                         }
                     result_queue.put(response)
@@ -584,6 +729,40 @@ class QGISCodeExecutor(QObject):
             return json.dumps(value, ensure_ascii=False)[:400]
         except TypeError:
             return str(value)[:400]
+
+    @staticmethod
+    def _safe_json_result(value: Any) -> Any:
+        """Coerce *value* to a JSON-serialisable form.
+
+        Called immediately before ``json.dumps`` is called to send a response
+        back to the socket caller so that bulky objects (numpy arrays,
+        non-resolved ``pathlib.Path`` s, generators, …) don't blow up OOM.
+        """
+        if value is None:
+            return None
+        # pathlib.Path – convert to string before json.dumps
+        try:
+            import pathlib as _pl
+        except ImportError:
+            _pl = None  # type: ignore[assignment]
+        if _pl is not None and isinstance(value, _pl.Path):
+            return str(value)
+        str_rep: Any
+        if isinstance(value, str):
+            str_rep = value
+        else:
+            try:
+                str_rep = json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                str_rep = str(value)
+        if not isinstance(str_rep, str):
+            return str(str_rep)
+        s = str_rep
+        if s.startswith("iVBORw0KGgo") and len(s) > 600_000:
+            return {"_aery_summary": f"[base64 image, {len(s)} chars — send to canvas instead]"}
+        if len(s) > 1_000_000:
+            return {"_aery_summary": f"[large result, {len(s)} chars — too big to serialise]"}
+        return value  # small enough; let json.dumps handle it normally
 
     def _get_audit_dir(self, project_dir: str) -> str:
         return self.audit_dir or os.path.join(project_dir, ".aery")
@@ -834,7 +1013,7 @@ class QGISCodeExecutor(QObject):
 
     def execute(self, code: str, timeout: int = 300) -> dict[str, Any]:
         result_queue: queue.Queue = queue.Queue()
-        self._request_queue.put(("direct", code, result_queue, {
+        self._normal_queue.put(("direct", code, result_queue, {
             "method": "run_code",
             "tool_name": "run_qgis_code",
             "source": "plugin",
@@ -845,6 +1024,10 @@ class QGISCodeExecutor(QObject):
 
     def shutdown(self):
         self._running = False
+        self._priority_queue.clear()
+        import aery_plugin.qgis_executor as _qe_mod
+        _qe_mod._pending_questions.clear()
+        self._result_queues.clear()
         if self._timer:
             self._timer.stop()
         if self.server:

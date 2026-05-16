@@ -1675,6 +1675,72 @@ result
             },
         });
 
+        // --- ask_user ---
+        aery.registerTool({
+            name: "ask_user",
+            label: "Ask User",
+            description:
+                "Ask the user a multiple-choice question with required fields per option. " +
+                "Renders an interactive card in the chat — user fills required fields, " +
+                "selects an option, and submits. The answer is returned as the tool result. " +
+                "Use for decisions that require human input.",
+            promptSnippet: "Ask the user for input via interactive question card",
+            parameters: {
+                type: "object",
+                properties: {
+                    header: { type: "string", description: "Question title/highlight text" },
+                    description: { type: "string", description: "Full question body text" },
+                    options: {
+                        type: "array",
+                        description: "Answer options",
+                        items: {
+                            type: "object",
+                            properties: {
+                                label: { type: "string", description: "Option label (displayed in chat)" },
+                                description: { type: "string", description: "Detailed description for this option" },
+                                required_fields: {
+                                    type: "array",
+                                    description: "Fields the user must fill before submitting",
+                                    items: {
+                                        type: "object",
+                                        properties: {
+                                            name: { type: "string", description: "Field key in the answer" },
+                                            label: { type: "string", description: "Human-friendly field label" },
+                                            placeholder: { type: "string", description: "Placeholder text in input" },
+                                        },
+                                        required: ["name", "label"],
+                                    },
+                                },
+                            },
+                            required: ["label", "required_fields"],
+                        },
+                    },
+                },
+                required: ["header", "description", "options"],
+            },
+            async execute(_id, params) {
+                const p    = params ?? {};
+                const header      = typeof p.header === "string"      ? p.header : "";
+                const description = typeof p.description === "string"   ? p.description : "";
+                const options     = Array.isArray(p.options)           ? p.options   : [];
+
+                if (!header || !description || options.length === 0) {
+                    throw new Error(
+                        "ask_user: header, description, and options[] are required. " +
+                        `Got header=${JSON.stringify(header)}, description=${JSON.stringify(description)}, ` +
+                        `options.length=${options.length}`,
+                    );
+                }
+                const r = await qgisRequest(port, "question", {
+                    params: { header, description, options },
+                });
+                return {
+                    content: [{ type: "text", text: JSON.stringify(r.result, null, 2) }],
+                    details: r.result,
+                };
+            },
+        });
+
         // --- Inject QGIS context before each turn ---
         aery.on("context", async (event) => {
             try {

@@ -494,6 +494,230 @@ class ProjectGuardWidget(QFrame):
             self.deleteLater()
 
 
+class _QuestionWidget(QFrame):
+    """Inline question card embedded in the chat feed.
+
+    Renders a question with multiple answer options, each carrying its own
+    required fields. User fills required fields, picks an option, and submits.
+    The card removes itself and delivers the answer via _resolve_callback.
+
+    Event schema:
+        { type: "question", questId: str, header: str, description: str,
+          options: [{ label, description, required_fields: [{name, label}] }] }
+    """
+
+    BG        = "#0D0E15"
+    SURFACE   = "#12131A"
+    ACCENT    = "#57F1DB"
+    BORDER    = "#3C4A46"
+    TEXT_MAIN = "#E3E1EC"
+    TEXT_DIM  = "#BACAC5"
+    TEXT_MUTED = "#859490"
+    WARN      = "#FFD1AA"
+
+    def __init__(
+        self,
+        event: dict,
+        parent: Optional[QWidget] = None,
+        feed_container: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._event     = event
+        self._quest_id  = event.get("questId", "")
+        self._options   = event.get("options", [])
+        self._header    = event.get("header", "Question")
+        self._body      = event.get("description", "")
+        self._feed      = feed_container  # host feed container (for scroll)
+
+        # Per-option field state and frame refs
+        self._field_states: list[dict] = [{} for _ in self._options]
+        self._option_frames: list[Optional[QFrame]] = [None for _ in self._options]
+        self._selected: int = -1
+        self._resolve_callback = None  # set by host before showing
+
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            f"QFrame {{ background:{self.SURFACE}; border:1px solid {self.BORDER}; border-radius:6px; padding:0; }}"
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(6)
+
+        # ── Header ──
+        hdr = QLabel(self._header)
+        hdr.setStyleSheet(f"color:{self.ACCENT};font-weight:700;font-size:13px;background:transparent;")
+        root.addWidget(hdr)
+
+        if self._body:
+            body_lbl = QLabel(self._body)
+            body_lbl.setWordWrap(True)
+            body_lbl.setStyleSheet(f"color:{self.TEXT_DIM};font-size:12px;background:transparent;")
+            root.addWidget(body_lbl)
+
+        # ── Options ──
+        for idx, option in enumerate(self._options):
+            opt_frame = QFrame()
+            opt_frame.setObjectName(f"qopt_{idx}")
+            opt_frame.setStyleSheet(
+                f"QFrame {{ background:{self.BG}; border:1px solid {self.BORDER}; border-radius:4px; }}"
+            )
+            opt_lay = QVBoxLayout(opt_frame)
+            opt_lay.setContentsMargins(10, 8, 10, 8)
+            opt_lay.setSpacing(4)
+
+            # Option label row
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            dot = QLabel("○")
+            dot.setFixedWidth(16)
+            dot.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:12px;background:transparent;")
+            row.addWidget(dot)
+
+            opt_label = QLabel(option.get("label", f"Option {idx + 1}"))
+            opt_label.setWordWrap(True)
+            opt_label.setStyleSheet(
+                f"color:{self.TEXT_MAIN};font-weight:600;font-size:12px;background:transparent;"
+            )
+            row.addWidget(opt_label, 1)
+
+            opt_desc = option.get("description", "")
+            if opt_desc:
+                d_lbl = QLabel(opt_desc)
+                d_lbl.setWordWrap(True)
+                d_lbl.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:11px;background:transparent;")
+                row.addWidget(d_lbl, 1)
+            opt_lay.addLayout(row)
+            opt_frame.setLayout(opt_lay)
+            self._option_frames[idx] = opt_frame
+            root.addWidget(opt_frame)
+
+            # ── Required fields ──
+            rfields = option.get("required_fields", [])
+            for f_def in rfields:
+                fname  = f_def.get("name", "")
+                flabel = f_def.get("label", fname)
+                f_wrap = QWidget()
+                fl = QHBoxLayout(f_wrap)
+                fl.setContentsMargins(0, 2, 0, 2)
+                fl.setSpacing(8)
+
+                lbl = QLabel(f"  {flabel}:")
+                lbl.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:10px;background:transparent;")
+                lbl.setFixedWidth(120)
+                fl.addWidget(lbl)
+
+                inp = QLineEdit()
+                inp.setPlaceholderText(f_def.get("placeholder", ""))
+                inp.setStyleSheet(
+                    f"QLineEdit {{ background:{self.BG}; color:{self.TEXT_MAIN}; "
+                    f"border:1px solid {self.BORDER}; border-radius:3px; padding:4px 6px; font-size:11px; }}"
+                    f"QLineEdit:focus {{ border-color:{self.ACCENT}; }}"
+                )
+                fl.addWidget(inp, 1)
+
+                def _on_change(_t, _fi=idx, _fn=fname, _in=inp):
+                    self._field_states[_fi][_fn] = _in.text().strip()
+                    self._update_submit()
+
+                inp.textChanged.connect(_on_change)
+                opt_lay.addWidget(f_wrap)
+
+            # Arrow toggle
+            arrow = QLabel("▶")
+            arrow.setObjectName(f"arrow_{idx}")
+            arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
+            arrow.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
+            opt_lay.addWidget(arrow)
+            arrow.setObjectName(f"arrow_{idx}")
+            arrow.setFixedWidth(14)
+            arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
+            arrow.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
+            opt_frame.layout().addWidget(arrow)
+            opt_frame.layout().addSpacing(2)
+
+        # ── Option selection handlers ──
+        for idx, frame in enumerate(self._option_frames):
+            if frame is None:
+                continue
+            prev_ref = [None]  # mutable ref to previously-selected frame
+
+            def _select(event=None, _idx=idx, _f=frame, _pr=prev_ref):
+                if _pr[0]:
+                    _pr[0].setStyleSheet(
+                        f"QFrame {{ background:{self.BG}; border:1px solid {self.BORDER}; border-radius:4px; }}"
+                    )
+                    a = _pr[0].findChild(QLabel, f"arrow_{_pr[0].objectName().replace('qopt_', '')}")
+                    if a:
+                        a.setText("▶")
+                        a.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
+                self._selected = _idx
+                prev_ref[0] = _f
+                _f.setStyleSheet(
+                    f"QFrame {{ background:{'#1E2936'}; border:1px solid {self.ACCENT}; border-radius:4px; }}"
+                )
+                a = _f.findChild(QLabel, f"arrow_{_idx}")
+                if a:
+                    a.setText("▼")
+                    a.setStyleSheet(f"color:{self.ACCENT};font-size:9px;background:transparent;")
+                self._update_submit()
+
+            frame.mousePressEvent = _select  # type: ignore[method-assign]
+
+        # ── Submit ──
+        self._submit_btn = QPushButton("Submit")
+        self._submit_btn.setEnabled(False)
+        self._submit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._submit_btn.setStyleSheet(
+            f"QPushButton {{ background:{self.ACCENT}; color:{self.BG}; border:none; "
+            f"border-radius:4px; font-weight:700; font-size:12px; padding:6px 16px; }}"
+            f"QPushButton:disabled {{ background:{'#3C4A46'}; color:{'#859490'}; }}"
+            f"QPushButton:hover {{ background:{'#45D8C8'}; }}"
+        )
+        self._submit_btn.clicked.connect(self._on_submit)
+        root.addWidget(self._submit_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+    # ────────────────────────────────────────────────────────────
+    def _on_submit(self) -> None:
+        idx = self._selected
+        if idx < 0:
+            return
+        option   = self._options[idx]
+        fields   = dict(self._field_states[idx])
+        # Validate required fields
+        missing = [
+            f.get("name")
+            for f in option.get("required_fields", [])
+            if not fields.get(f.get("name", ""), "").strip()
+        ]
+        if missing:
+            self._submit_btn.setText(f"Fill required: {', '.join(missing)}")
+            QTimer.singleShot(2000, lambda: self._submit_btn.setText("Submit"))
+            return
+        answer = {"option_label": option.get("label", ""), "fields": fields}
+        if self._resolve_callback:
+            self._resolve_callback(self._quest_id, answer)
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except Exception:
+            pass
+
+    def _update_submit(self) -> None:
+        self._submit_btn.setEnabled(self._selected >= 0)
+
+    def _resolve_answer(self, quest_id: str, answer: dict) -> None:
+        try:
+            from aery_plugin.qgis_executor import _resolve_question
+            _resolve_question(quest_id, answer)
+        except Exception:
+            pass
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except Exception:
+            pass
+
+
 class ChatPanel(QDockWidget):
     """Simplified QGIS AI agent panel with settings menu."""
 
@@ -1418,6 +1642,26 @@ class ChatPanel(QDockWidget):
                 return
             self._active_stream_role = ""
             self._end_streaming()
+        elif etype == "question":
+            self._handle_question(event)
+
+    def _handle_question(self, event: dict) -> None:
+        """Render inline question card in the feed and wait for user answer."""
+        quest_id = event.get("questId", "")
+        if not quest_id:
+            return
+        card = _QuestionWidget(event, self._feed_container, self)
+        card._resolve_callback = self._resolve_question  # wire answer callback
+        self._feed_layout.insertWidget(self._feed_layout.count() - 1, card)
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
+    def _resolve_question(self, quest_id: str, answer: dict) -> None:
+        """Deliver user's answer back to qgis_executor._pending_questions."""
+        try:
+            from aery_plugin.qgis_executor import _pending_questions, _resolve_question
+            _resolve_question(quest_id, answer)
+        except Exception:
+            pass
 
     def _on_response(self, _command: str, data: dict) -> None:
         if not data.get("success"):

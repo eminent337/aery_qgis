@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QTextEdit, QToolButton
 
-from aery_plugin.chat_panel import ChatPanel, MessageBubble, ToolBlock
+from aery_plugin.chat_panel import ChatPanel, MessageBubble, ToolBlock, _QuestionWidget
 
 
 @pytest.fixture(scope="session")
@@ -518,3 +518,135 @@ def test_show_history_window(panel):
     panel._history.append("test prompt")
     panel._show_history_window()
     assert len(panel._dialogs) >= 1
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Question / inline-answer tests
+# ════════════════════════════════════════════════════════════════════════════════
+
+def test_question_widget_construction(qapp):
+    """_QuestionWidget builds without raising for a valid question event."""
+    event = {
+        "type": "question",
+        "questId": "q1",
+        "header": "Choose a format",
+        "description": "What output format do you want?",
+        "options": [
+            {
+                "label": "GeoPackage",
+                "description": "Portable spatial database",
+                "required_fields": [{"name": "output_path", "label": "Output path", "placeholder": "~/data.gpkg"}],
+            },
+            {
+                "label": "Shapefile",
+                "description": "Legacy ESRI format",
+            },
+        ],
+    }
+    widget = _QuestionWidget(event)
+    assert widget._quest_id == "q1"
+    assert len(widget._options) == 2
+    assert widget._selected == -1
+    assert not widget._submit_btn.isEnabled()
+
+
+def test_question_widget_never_submits_without_selection(qapp):
+    """Submit button stays disabled until an option is selected."""
+    event = {"type": "question", "questId": "q2", "header": "?", "options": [{"label": "A", "required_fields": []}]}
+    widget = _QuestionWidget(event)
+    assert not widget._submit_btn.isEnabled()
+    widget.deleteLater()
+
+
+def test_question_widget_select_and_submit_complete(qapp):
+    """Selecting option with no required fields immediately enables submit."""
+    called = []
+    def on_ans(qid, ans):
+        called.append((qid, ans))
+
+    event = {
+        "type": "question", "questId": "q3",
+        "header": "Pick one",
+        "options": [{"label": "Yes", "required_fields": [{"name": "note", "label": "Note"}]}],
+    }
+    widget = _QuestionWidget(event)
+    widget._resolve_callback = on_ans
+
+    widget._selected = 0
+    widget._update_submit()
+    assert widget._submit_btn.isEnabled()
+
+    # Submit without filling required field shows error but doesn't call callback
+    widget._on_submit()
+    assert called == []
+
+    # Now fill the required field and submit
+    widget._field_states[0]["note"] = "hello"
+    widget._on_submit()
+    assert len(called) == 1
+    assert called[0][0] == "q3"
+    assert called[0][1]["option_label"] == "Yes"
+    assert called[0][1]["fields"]["note"] == "hello"
+    widget.deleteLater()
+
+
+def test_question_widget_renders_field_row(qapp):
+    """Required field input appears for option with required_fields."""
+    event = {
+        "type": "question", "questId": "q4",
+        "header": "Pick",
+        "options": [{"label": "A", "required_fields": [{"name": "path", "label": "Path", "placeholder": "e.g. /tmp/out.gpkg"}]}],
+    }
+    widget = _QuestionWidget(event)
+    # Required field widgets have been built — check _field_states is empty initially
+    assert widget._field_states[0] == {}
+    widget.deleteLater()
+
+
+def test_handle_question_inserts_widget_in_feed(panel):
+    """_handle_question inserts _QuestionWidget into _feed_layout."""
+    captured = []
+    orig_insert = panel._feed_layout.insertWidget
+    def _fake_insert(idx, w):
+        captured.append(w)
+        orig_insert(idx, w)
+    panel._feed_layout.insertWidget = _fake_insert
+
+    panel._handle_question({"questId": "qx", "header": "?", "options": [{"label": "A", "required_fields": []}]})
+    assert len(captured) == 1
+    assert isinstance(captured[0], _QuestionWidget)
+
+
+def test_on_event_routes_question(panel):
+    """_on_event dispatches to _handle_question when type=='question'."""
+    called = []
+    panel._handle_question = lambda ev: called.append(ev)
+    panel._on_event({"type": "question", "questId": "test1", "header": "Hi", "options": []})
+    assert len(called) == 1
+    assert called[0]["questId"] == "test1"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Integration: qgis_executor._resolve_question / _pending_questions
+# ════════════════════════════════════════════════════════════════════════════════
+
+def test_resolve_question_delivers_to_pending_queue():
+    """_resolve_question pops quest from _pending_questions and puts answer on queue."""
+    from aery_plugin.qgis_executor import _resolve_question, _pending_questions
+
+    q = __import__("queue").Queue()
+    _pending_questions["q_abc"] = (q, "req_abc")
+    _resolve_question("q_abc", {"option_label": "A", "fields": {}})
+
+    assert "q_abc" not in _pending_questions
+    result = q.get_nowait()
+    assert result["option_label"] == "A"
+    assert result["fields"] == {}
+
+
+def test_resolve_question_missing_quest_id_is_noop():
+    """_resolve_question for unknown quest_id does not raise."""
+    from aery_plugin.qgis_executor import _resolve_question, _pending_questions
+
+    _pending_questions.pop("absent", None)  # ensure clean
+    _resolve_question("absent", {"any": "data"})  # should not raise
