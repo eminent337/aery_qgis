@@ -29,14 +29,12 @@ def plugin(qapp):
     yield p
     if p.executor:
         p.executor.shutdown()
-    if p.rpc:
-        p.rpc.shutdown()
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_creates_executor(mock_chat, mock_rpc, mock_exec, plugin):
+def test_init_gui_creates_executor(mock_chat, mock_agent, mock_exec, plugin):
     """initGui starts the executor."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -49,24 +47,25 @@ def test_init_gui_creates_executor(mock_chat, mock_rpc, mock_exec, plugin):
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_spawns_rpc(mock_chat, mock_rpc, mock_exec, plugin):
-    """initGui spawns the RPC bridge with the executor port."""
+def test_init_gui_creates_agent(mock_chat, mock_agent, mock_exec, plugin):
+    """initGui creates the agent with the executor."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
     mock_exec.return_value = mock_exec_instance
 
     plugin.initGui()
 
-    mock_rpc.assert_called_once_with(cwd=plugin._get_project_dir(), port=12345)
-    mock_rpc.return_value.spawn.assert_called_once()
+    mock_agent.assert_called_once()
+    call_kwargs = mock_agent.call_args
+    assert call_kwargs[1]["executor"] == mock_exec_instance
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_creates_panel(mock_chat, mock_rpc, mock_exec, plugin):
+def test_init_gui_creates_panel(mock_chat, mock_agent, mock_exec, plugin):
     """initGui creates and adds the chat panel."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -82,9 +81,9 @@ def test_init_gui_creates_panel(mock_chat, mock_rpc, mock_exec, plugin):
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_init_gui_adds_menu_action(mock_chat, mock_rpc, mock_exec, plugin):
+def test_init_gui_adds_menu_action(mock_chat, mock_agent, mock_exec, plugin):
     """initGui adds a menu action."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -96,9 +95,9 @@ def test_init_gui_adds_menu_action(mock_chat, mock_rpc, mock_exec, plugin):
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_unload_cleans_up(mock_chat, mock_rpc, mock_exec, plugin):
+def test_unload_cleans_up(mock_chat, mock_agent, mock_exec, plugin):
     """unload() shuts down all components."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
@@ -106,22 +105,19 @@ def test_unload_cleans_up(mock_chat, mock_rpc, mock_exec, plugin):
 
     plugin.initGui()
 
-    rpc = plugin.rpc
     executor = plugin.executor
     panel = plugin.panel
 
     plugin.unload()
 
-    panel.disconnect_rpc.assert_called_once()
-    rpc.shutdown.assert_called_once()
     executor.shutdown.assert_called_once()
     plugin.iface.removeDockWidget.assert_called_once_with(panel)
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
-@patch("aery_plugin.plugin.RPCBridge")
+@patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
-def test_toggle_panel(mock_chat, mock_rpc, mock_exec, plugin):
+def test_toggle_panel(mock_chat, mock_agent, mock_exec, plugin):
     """Toggle panel shows/hides the panel."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345

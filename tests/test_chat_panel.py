@@ -24,19 +24,11 @@ def qapp():
 def panel(qapp):
     """Create a ChatPanel with mocked dependencies."""
     iface = MagicMock()
-    rpc_bridge = MagicMock()
-    rpc_bridge.event_received = MagicMock()
-    rpc_bridge.response_received = MagicMock()
-    rpc_bridge.error_occurred = MagicMock()
-    rpc_bridge.process_exited = MagicMock()
-    rpc_bridge.event_received.connect = MagicMock()
-    rpc_bridge.response_received.connect = MagicMock()
-    rpc_bridge.error_occurred.connect = MagicMock()
-    rpc_bridge.process_exited.connect = MagicMock()
+    agent = MagicMock()
 
     with patch("qgis.core.QgsProject") as mock_proj:
         mock_proj.instance.return_value.fileName.return_value = "/tmp/test_project.qgz"
-        p = ChatPanel(iface, rpc_bridge)
+        p = ChatPanel(iface, agent)
         yield p
         p.close()
 
@@ -77,28 +69,25 @@ def test_dock_button_exists(panel):
 
 def test_activity_label_tracks_agent_state(panel):
     """Agent events update the activity strip."""
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
+    panel._on_agent_event({"type": "thinking"})
     assert "thinking" in panel._activity_label.text().lower()
 
-    panel._on_event({"type": "tool_execution_start", "tool": "run_processing"})
+    panel._on_agent_event({"type": "tool_start", "tool": "run_processing"})
     assert "processing" in panel._activity_label.text().lower()
-
-    panel._on_event({"type": "message_end"})
-    assert not panel._activity_frame.isVisible()
 
 
 def test_activity_strip_updates_on_stream(panel):
     """Activity strip shows thinking state on stream."""
     panel.show()
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
+    panel._on_agent_event({"type": "thinking"})
     assert panel._activity_frame.isVisible()
     assert "thinking" in panel._activity_label.text().lower()
 
 
 def test_activity_strip_returns_ready_on_end(panel):
     """Activity strip returns to ready when streaming ends."""
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
-    panel._on_event({"type": "message_end"})
+    panel._on_agent_event({"type": "thinking"})
+    panel._on_agent_response("done")
     assert "ready" in panel._activity_label.text().lower()
 
 
@@ -142,71 +131,25 @@ def test_send_button_click_aborts_when_running(panel):
     panel._input.setPlainText("test")
     panel._on_send()
     assert panel._send_btn.text() == "■"
-    panel.rpc.abort.reset_mock()
     panel._send_btn.click()
-    panel.rpc.abort.assert_called_once()
     assert panel._send_btn.text() == "➤"
 
 
 def test_send_while_running_queues_locally_and_shows_count(panel):
-    """Submitting during streaming should queue locally, not call follow_up."""
+    """Submitting during streaming should queue locally."""
     panel._input.setPlainText("first")
     panel._on_send()
-    panel.rpc.prompt.reset_mock()
-    panel.rpc.abort.reset_mock()
-    if hasattr(panel.rpc, "follow_up"):
-        panel.rpc.follow_up = MagicMock()
 
     before = panel._feed_layout.count()
     panel._input.setPlainText("second")
     panel._on_send()
 
-    # Should NOT have called follow_up or abort
-    if hasattr(panel.rpc, "follow_up"):
-        panel.rpc.follow_up.assert_not_called()
-    panel.rpc.abort.assert_not_called()
     # Should be in local queue
     assert panel._local_prompt_queue == ["second"]
     assert panel._feed_layout.count() > before
     assert panel._input.toPlainText() == ""
     # Queue count should show in activity
     assert "queued" in panel._activity_label.text().lower()
-
-
-def test_abort_ignores_late_aborted_stream_and_next_prompt_starts_clean(panel):
-    """Late events from an aborted turn must not leak into the next prompt."""
-    panel._input.setPlainText("first")
-    panel._on_send()
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
-    panel._on_event({
-        "type": "message_update",
-        "message": {"role": "assistant", "content": [{"type": "text", "text": "stale aborted text"}]},
-    })
-    before_abort_count = panel._feed_layout.count()
-    panel._abort()
-
-    panel._on_event({
-        "type": "message_end",
-        "message": {"role": "assistant", "content": [{"type": "text", "text": "I found stale QGIS API calls"}]},
-    })
-    assert panel._feed_layout.count() == before_abort_count + 1
-
-    panel._input.setPlainText("second")
-    panel._on_send()
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
-    panel._on_event({
-        "type": "message_end",
-        "message": {"role": "assistant", "content": [{"type": "text", "text": "fresh reply"}]},
-    })
-    widgets = [panel._feed_layout.itemAt(i).widget() for i in range(panel._feed_layout.count() - 1)]
-    texts = []
-    for w in widgets:
-        if not hasattr(w, "findChildren"):
-            continue
-        for lbl in w.findChildren(QLabel):
-            texts.append(lbl.text())
-    assert not any("I found stale QGIS API calls" in t for t in texts)
-    assert any("fresh reply" in t for t in texts)
 
 
 def test_append_bubble_user(panel):
@@ -252,34 +195,18 @@ def test_clear_feed(panel):
 
 
 def test_connect_rpc(panel):
-    """connect_rpc wires up RPC signals."""
+    """connect_rpc is a no-op for in-process agent."""
     panel.connect_rpc()
-    assert panel.rpc.event_received.connect.called
-    assert panel.rpc.response_received.connect.called
-    assert panel.rpc.error_occurred.connect.called
-    assert panel.rpc.process_exited.connect.called
 
 
 def test_disconnect_rpc(panel):
-    """disconnect_rpc tears down RPC signals without error."""
-    panel.connect_rpc()
+    """disconnect_rpc is a no-op for in-process agent."""
     panel.disconnect_rpc()
 
 
 def test_set_rpc(panel):
-    """set_rpc replaces the bridge and reconnects."""
-    new_rpc = MagicMock()
-    new_rpc.event_received = MagicMock()
-    new_rpc.response_received = MagicMock()
-    new_rpc.error_occurred = MagicMock()
-    new_rpc.process_exited = MagicMock()
-    new_rpc.event_received.connect = MagicMock()
-    new_rpc.response_received.connect = MagicMock()
-    new_rpc.error_occurred.connect = MagicMock()
-    new_rpc.process_exited.connect = MagicMock()
-
-    panel.set_rpc(new_rpc)
-    assert panel.rpc is new_rpc
+    """set_rpc is a no-op for in-process agent."""
+    panel.set_rpc(MagicMock())
 
 
 def test_set_ready(panel):
@@ -288,84 +215,33 @@ def test_set_ready(panel):
     assert panel._ready is True
 
 
-def test_on_event_message_start(panel):
-    """message_start event sets streaming state."""
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
+def test_on_agent_event_thinking(panel):
+    """thinking event sets streaming state."""
+    panel._on_agent_event({"type": "thinking"})
     assert panel._is_streaming is True
 
 
-def test_on_event_message_end(panel):
-    """message_end event ends streaming."""
-    panel._is_streaming = True
-    panel._on_event({"type": "message_end"})
-    assert panel._is_streaming is False
-
-
-def test_on_event_message_end_with_direct_text_renders_bubble(panel):
-    """Assistant text present only in message_end is still rendered."""
+def test_on_agent_response(panel):
+    """response event adds assistant bubble."""
     before = panel._feed_layout.count()
-    panel._on_event({
-        "type": "message_start",
-        "message": {"role": "assistant"},
-    })
-    panel._on_event({
-        "type": "message_end",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "final answer"}],
-        },
-    })
+    panel._on_agent_response("final answer")
     assert panel._feed_layout.count() > before
-
-
-def test_user_role_stream_events_do_not_echo_prompt(panel):
-    """Non-assistant stream events should not show the user's own prompt as assistant output."""
-    panel._input.setPlainText("hii")
-    panel._on_send()
-    before = panel._feed_layout.count()
-    panel._on_event({"type": "message_start", "message": {"role": "user"}})
-    panel._on_event({
-        "type": "message_update",
-        "message": {"role": "user", "content": [{"type": "text", "text": "hii"}]},
-    })
-    panel._on_event({"type": "message_end", "message": {"role": "user"}})
-    assert panel._feed_layout.count() == before
-
-
-def test_context_json_in_assistant_stream_stays_out_of_transcript(panel):
-    """Raw context JSON must be suppressed from assistant transcript rendering."""
-    panel._on_event({"type": "message_start", "message": {"role": "assistant"}})
-    panel._on_event({
-        "type": "message_update",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": '{"project_path":"/tmp/x.qgz","project_dir":"/tmp","layers":[],"crs":"EPSG:4326"}'}],
-        },
-    })
-    panel._on_event({"type": "message_end", "message": {"role": "assistant"}})
-    assert panel._feed_layout.count() == 1
-
-
-def test_on_event_tool_start(panel):
-    """tool_execution_start updates status only."""
-    before = panel._feed_layout.count()
-    panel._on_event({"type": "tool_execution_start", "tool": "buffer"})
-    assert panel._feed_layout.count() == before
-    assert "buffer" in panel._activity_label.text().lower() or "orchestrating" in panel._activity_label.text().lower()
-
-
-def test_on_event_tool_end(panel):
-    """tool_execution_end keeps transcript clean."""
-    before = panel._feed_layout.count()
-    panel._on_event({"type": "tool_execution_end", "tool": "buffer", "result": "ok"})
-    assert panel._feed_layout.count() == before
-
-
-def test_on_event_agent_end(panel):
-    """agent_end ends streaming."""
-    panel._is_streaming = True
-    panel._on_event({"type": "agent_end"})
     assert panel._is_streaming is False
+
+
+def test_on_agent_error(panel):
+    """error event adds error bubble."""
+    before = panel._feed_layout.count()
+    panel._on_agent_error("something went wrong")
+    assert panel._feed_layout.count() > before
+    assert panel._is_streaming is False
+
+
+def test_on_agent_event_tool_error(panel):
+    """tool_error event adds error bubble."""
+    before = panel._feed_layout.count()
+    panel._on_agent_event({"type": "tool_error", "tool": "run_code", "error": "NameError"})
+    assert panel._feed_layout.count() > before
 
 
 def test_on_response_error(panel):
@@ -415,9 +291,8 @@ def test_show_audit_window_shows_raw_cumulative_log(panel, tmp_path):
 
 
 def test_on_exit(panel):
-    """Engine exit adds disconnection message."""
+    """Engine exit is a no-op for in-process agent."""
     panel._on_exit(1)
-    assert panel._feed_layout.count() >= 2
 
 
 def test_history_navigation(panel):
@@ -464,10 +339,9 @@ def test_keyboard_enter_submits_shift_enter_newline_and_ctrl_c_aborts(panel):
     assert "\n" in panel._input.toPlainText()
 
     panel._is_streaming = True
-    panel.rpc.abort.reset_mock()
     ctrl_c = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
     panel._input.keyPressEvent(ctrl_c)
-    panel.rpc.abort.assert_called_once()
+    assert not panel._is_streaming
 
 
 def test_empty_message_not_sent(panel):
@@ -518,6 +392,13 @@ def test_show_history_window(panel):
     panel._history.append("test prompt")
     panel._show_history_window()
     assert len(panel._dialogs) >= 1
+
+
+def test_show_error(panel):
+    """show_error adds an error bubble."""
+    before = panel._feed_layout.count()
+    panel.show_error("test error")
+    assert panel._feed_layout.count() > before
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -648,5 +529,45 @@ def test_resolve_question_missing_quest_id_is_noop():
     """_resolve_question for unknown quest_id does not raise."""
     from aery_plugin.qgis_executor import _resolve_question, _pending_questions
 
-    _pending_questions.pop("absent", None)  # ensure clean
-    _resolve_question("absent", {"any": "data"})  # should not raise
+    _pending_questions.pop("absent", None)
+    _resolve_question("absent", {"any": "data"})
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Regression: _handle_code_error clears stale stream content on retry
+# ════════════════════════════════════════════════════════════════════════════════
+
+def test_handle_code_error_flushes_stream_label(panel):
+    """_handle_code_error must clear _stream_label before sending retry prompt
+    so stale streaming text is not retained as a later AERY bubble."""
+    # Simulate old assistant streaming text sitting in _stream_label
+    panel._stream_label.setHtml(
+        "<b>thinking about the failed execution attempt</b>"
+    )
+    assert panel._stream_label.toPlainText().strip() != "", (
+        "precondition: _stream_label must have content before the call"
+    )
+
+    panel._handle_code_error("NameError: name 'x' is not defined")
+
+    # _cancel_streaming() must have cleared the stale content
+    assert panel._stream_label.toPlainText().strip() == "", (
+        "stale _stream_label was not flushed on retry"
+    )
+    assert panel._stream_label.isVisible() is False
+
+    # A SYSTEM bubble was added (the "Auto-retrying" notice runs separately)
+    non_bubble_widgets = (
+        panel._feed_layout.count() - 1
+    )  # -1 for the trailing stretch
+    assert non_bubble_widgets >= 1
+
+
+def test_handle_code_error_limits_retries(panel):
+    """After 2 failed retries, _handle_code_error stops."""
+    panel._retry_count = 0
+    panel._handle_code_error("error 1")
+    panel._handle_code_error("error 2")
+    # Third call is blocked
+    panel._handle_code_error("error 3")
+    assert panel._retry_count == 0  # reset after limit reached

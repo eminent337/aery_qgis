@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSlot, Q_ARG, QMetaObject
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QTextOption, QIcon, QPainter
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
@@ -720,13 +720,33 @@ class _QuestionWidget(QFrame):
 
 
 def _svg_pixmap(path: str, size: int) -> QPixmap:
-    """Render an SVG file to a QPixmap at *size*×*size*, smooth-scaled from 64×64."""
-    raw = QPixmap(64, 64)
-    raw.fill(Qt.GlobalColor.transparent)
-    p = QPainter(raw)
-    QSvgRenderer(path).render(p)
+    """Render an SVG file directly to a *size*×*size* QPixmap with full vector resolution.
+
+    Uses the device's native pixel ratio so the backing store is allocated in physical
+    pixels, draws the vector in a single pass, and sets antialiasing / smooth-pixel
+    hints before rendering — avoiding the bilinear-resize chain that made previous
+    artwork look washed-out.
+    """
+    try:
+        dpr = QApplication.primaryScreen().devicePixelRatioF()
+    except Exception:
+        dpr = 1.0
+    target = int(round(size * dpr))
+
+    pix = QPixmap(target, target)
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(Qt.GlobalColor.transparent)
+
+    renderer = QSvgRenderer(path)
+
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    renderer.render(p)
     p.end()
-    return raw.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+    return pix
 
 
 class ChatPanel(QDockWidget):
@@ -735,13 +755,15 @@ class ChatPanel(QDockWidget):
     def __init__(
         self,
         iface: Any,
-        rpc_bridge,
+        agent,
         on_config: Optional[callable] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__("Aery", parent)
+        self.setTitleBarWidget(QWidget())  # hide OS title bar when floating
+
         self.iface = iface
-        self.rpc = rpc_bridge
+        self.agent = agent
         self.on_config = on_config
         self._is_streaming = False
         self._history: list[str] = []
@@ -761,7 +783,7 @@ class ChatPanel(QDockWidget):
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.setMinimumWidth(230)
+        self.setMinimumWidth(260)
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -769,7 +791,7 @@ class ChatPanel(QDockWidget):
         )
 
         self._build_ui()
-        self.resize(240, 760)
+        self.resize(230, 760)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
         self._activity_timer = QTimer(self)
@@ -809,87 +831,92 @@ class ChatPanel(QDockWidget):
 
     def _build_header(self) -> QFrame:
         header = QFrame()
-        header.setFixedHeight(40)
+        header.setFixedHeight(50)
         header.setStyleSheet(f"background:{BG_SURFACE};border-bottom:1px solid {BORDER};")
         outer = QHBoxLayout(header)
-        outer.setContentsMargins(8, 0, 6, 0)
+        outer.setContentsMargins(8, 4, 6, 4)
         outer.setSpacing(0)
 
-        # ── Left: AERY brand block (SVG icon + name) ────────────────────────────
+        # ── Left: AERY brand block ────────────────────────────────────────────────
         brand_col = QVBoxLayout()
         brand_col.setContentsMargins(0, 0, 0, 0)
         brand_col.setSpacing(0)
 
-        row_top = QHBoxLayout()
-        row_top.setSpacing(5)
-        row_top.setContentsMargins(0, 3, 0, 0)   # top-align
+        # Row 1: [icon] [AERY "Geospatial Agent"]
+        top_row = QHBoxLayout()
+        top_row.setSpacing(5)
+        top_row.setContentsMargins(0, 0, 0, 0)
 
-        # Aery SVG icon (prominent) – natural 64×64, smooth-scaled to 28
         icon_lbl = QLabel()
         svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons", "aery.svg")
         icon_lbl.setPixmap(_svg_pixmap(svg_path, 28))
         icon_lbl.setFixedSize(28, 28)
         icon_lbl.setStyleSheet("background:transparent;")
-        row_top.addWidget(icon_lbl)
+        top_row.addWidget(icon_lbl)
 
-        # AERY text
+        # AERY + Geospatial Agent on the same row
+        name_row = QHBoxLayout()
+        name_row.setSpacing(0)
+        name_row.setContentsMargins(0, 0, 0, 0)
+
         brand = QLabel("AERY")
         brand.setStyleSheet(
             f"color:{ACCENT};font-family:{FONT_SANS};font-size:17px;"
             "font-weight:700;letter-spacing:0.05em;background:transparent;"
         )
-        row_top.addWidget(brand)
+        name_row.addWidget(brand)
 
-        brand_col.addLayout(row_top)
+        geo = QLabel("Geospatial Agent")
+        geo.setStyleSheet(
+            f"color:{TEXT_MUTED};font-size:9px;font-family:{FONT_SANS};"
+            "background:transparent;margin-left:6px;"
+        )
+        name_row.addWidget(geo)
+        name_row.addStretch(1)
+        top_row.addLayout(name_row)
 
+        brand_col.addLayout(top_row)
+
+        # Row 2: full provider name below AERY (small, dim)
+        self._provider_lbl = QLabel("")
+        self._provider_lbl.setStyleSheet(
+            f"color:{ACCENT_DIM};font-size:9px;font-weight:600;"
+            "background:transparent;letter-spacing:0.03em;margin-top:2px;"
+        )
+        brand_col.addWidget(self._provider_lbl)
+        self._refresh_provider_label()
+
+        brand_col.addStretch(1)
         outer.addLayout(brand_col)
 
-        # ── Right column: status + provider + buttons ────────────────────────────
+        # ── Right column: buttons only ───────────────────────────────────────────
         right_col = QVBoxLayout()
         right_col.setContentsMargins(0, 2, 0, 0)
         right_col.setSpacing(0)
 
-        # Row: status dot + label → top-aligns with AERY on the first row
+        # Status placeholder row (keeps right col balanced)
         status_row = QHBoxLayout()
         status_row.setSpacing(5)
         status_row.setContentsMargins(0, 0, 0, 0)
-
         self._status_dot = QLabel("\u25cf")
         self._status_dot.setStyleSheet(
             f"color:{TEXT_MUTED};font-size:10px;background:transparent;"
         )
         status_row.addWidget(self._status_dot)
-
-        status = QLabel("Geospatial Agent")
-        status.setStyleSheet(
-            f"color:{TEXT_MUTED};font-size:9px;font-family:{FONT_SANS};"
-            "background:transparent;"
-        )
-        status_row.addWidget(status)
         status_row.addStretch()
+        right_col.addLayout(status_row)
 
-        right_col.addLayout(status_row)   # first-line: status text, same top row as AERY
-
-        # Row: provider label + settings buttons (small, aligned below status)
+        # Settings buttons row
         control_row = QHBoxLayout()
         control_row.setSpacing(4)
         control_row.setContentsMargins(0, 2, 0, 1)
-
-        self._provider_lbl = QLabel("")
-        self._provider_lbl.setStyleSheet(
-            f"color:{ACCENT_DIM};font-size:9px;font-weight:600;"
-            "background:transparent;letter-spacing:0.03em;"
-        )
-        control_row.addWidget(self._provider_lbl)
-        self._refresh_provider_label()
-
         control_row.addStretch()
 
         self._dock_btn = QToolButton()
         self._dock_btn.setToolTip("Dock / Undock")
         self._dock_btn.setAutoRaise(True)
         self._dock_btn.setFixedSize(18, 18)
-        self._dock_btn.setText("⇱")
+        self._dock_btn.setText("\u21f1")
         self._dock_btn.setStyleSheet(
             f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
             f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
@@ -901,7 +928,7 @@ class ChatPanel(QDockWidget):
         self._gear_btn.setToolTip("Settings")
         self._gear_btn.setAutoRaise(True)
         self._gear_btn.setFixedSize(18, 18)
-        self._gear_btn.setText("⚙")
+        self._gear_btn.setText("\u2699")
         self._gear_btn.setStyleSheet(
             f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
             f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
@@ -909,39 +936,11 @@ class ChatPanel(QDockWidget):
         self._gear_btn.clicked.connect(self._show_settings_menu)
         control_row.addWidget(self._gear_btn)
 
-        right_col.addLayout(control_row)   # second line: provider + small buttons
+        right_col.addLayout(control_row)
 
         outer.addLayout(right_col)
 
         return header
-
-    def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if not path:
-                continue
-            ext = os.path.splitext(path)[1].lower()
-            try:
-                from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
-                raster_exts = {".tif", ".tiff", ".img", ".vrt", ".nc", ".hdf", ".h5"}
-                name = os.path.splitext(os.path.basename(path))[0]
-                if ext in raster_exts:
-                    lyr = QgsRasterLayer(path, name)
-                else:
-                    lyr = QgsVectorLayer(path, name, "ogr")
-                if lyr.isValid():
-                    QgsProject.instance().addMapLayer(lyr)
-                    self._add_bubble("SYSTEM", f"Loaded: {name}", "system")
-                    self._dispatch_prompt(f"I've loaded '{name}' ({ext} file). Describe it and suggest what I can do with it.")
-                else:
-                    self._add_bubble("ERROR", f"Could not load: {path}", "error")
-            except Exception as e:
-                self._add_bubble("ERROR", str(e), "error")
-
     def _refresh_provider_label(self) -> None:
         try:
             from aery_plugin import oauth_helper
@@ -1293,12 +1292,8 @@ class ChatPanel(QDockWidget):
             return ""
 
     def _dispatch_prompt(self, text: str) -> None:
-        """Send prompt to agent, injecting QGIS env + graph context on the first call."""
-        if self._discard_stale_events:
-            self._allow_next_assistant_stream = True
-        if not self.rpc:
-            return
         self._set_activity("thinking...", active=True)
+        self._allow_next_assistant_stream = True
 
         # Record prompt in session graph
         try:
@@ -1311,16 +1306,69 @@ class ChatPanel(QDockWidget):
         except Exception:
             pass
 
-        if not self._session_context_injected:
-            self._session_context_injected = True
-            env_ctx = self._build_qgis_env_context()
-            graph_ctx = self._build_graph_context(text)
-            parts = [p for p in [env_ctx, graph_ctx] if p]
-            full_prompt = "\n\n".join(parts) + f"\n\nUser request: {text}" if parts else text
-            self.rpc.prompt(full_prompt)
-        else:
-            graph_ctx = self._build_graph_context(text)
-            self.rpc.prompt(f"{graph_ctx}\n\nUser request: {text}" if graph_ctx else text)
+        import threading
+        import asyncio
+
+        def run_agent():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            def on_event(event):
+                QMetaObject.invokeMethod(
+                    self, "_on_agent_event",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(dict, event),
+                )
+
+            try:
+                response = loop.run_until_complete(self.agent.run(text, on_event=on_event))
+                QMetaObject.invokeMethod(
+                    self, "_on_agent_response",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, response),
+                )
+            except Exception as e:
+                QMetaObject.invokeMethod(
+                    self, "_on_agent_error",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, str(e)),
+                )
+            finally:
+                loop.close()
+
+        threading.Thread(target=run_agent, daemon=True).start()
+
+    @pyqtSlot(dict)
+    def _on_agent_event(self, event: dict) -> None:
+        """Handle streaming events from the agent."""
+        event_type = event.get("type", "")
+        if event_type == "thinking":
+            self._set_activity("thinking...", active=True)
+        elif event_type == "tool_start":
+            tool = event.get("tool", "")
+            label = self._activity_for_tool(tool)
+            self._set_activity(label, active=True, detail=tool)
+        elif event_type == "tool_done":
+            pass  # Tool completed, keep activity indicator
+        elif event_type == "tool_error":
+            tool = event.get("tool", "")
+            error = event.get("error", "")
+            self._add_bubble("ERROR", f"{tool}: {error}", "error")
+
+    @pyqtSlot(str)
+    def _on_agent_response(self, response: str) -> None:
+        """Handle final response from the agent."""
+        if response:
+            self._add_bubble("AERY", response, "assistant")
+        self._set_activity("ready", active=False)
+        self._allow_next_assistant_stream = False
+
+    @pyqtSlot(str)
+    def _on_agent_error(self, error: str) -> None:
+        """Handle errors from the agent."""
+        self._add_bubble("ERROR", error, "error")
+        self._set_activity("ready", active=False)
+        self._allow_next_assistant_stream = False
 
     def _build_graph_context(self, prompt: str = "") -> str:
         """Return compact graph context string filtered by prompt keywords."""
@@ -1340,8 +1388,6 @@ class ChatPanel(QDockWidget):
         self._active_stream_role = ""
         self._local_prompt_queue.clear()
         self._retry_count = 0
-        if self.rpc:
-            self.rpc.abort()
         self._cancel_streaming()
         self._add_bubble("SYSTEM", "Operation aborted.", "system")
 
@@ -1356,7 +1402,7 @@ class ChatPanel(QDockWidget):
         self._stream_label.setVisible(False)
         if final_text.strip():
             self._add_bubble("AERY", final_text, "assistant")
-        if self._local_prompt_queue and self.rpc and not self._discard_stale_events:
+        if self._local_prompt_queue and not self._discard_stale_events:
             next_text = self._local_prompt_queue.pop(0)
             qlen = len(self._local_prompt_queue)
             self._set_activity(str(qlen) + " queued" if qlen else "thinking...", active=True)
@@ -1381,8 +1427,9 @@ class ChatPanel(QDockWidget):
                 color:{TEXT_MAIN};
             }}
             QMenu::item {{
-                padding:7px 16px;
+                padding:6px 14px;
                 border-radius:2px;
+                font-size:11px;
             }}
             QMenu::item:selected {{
                 background:{BG_HIGH};
@@ -1539,13 +1586,12 @@ class ChatPanel(QDockWidget):
             self._add_bubble("SYSTEM", "Auto-retry limit reached (2). Please review the error.", "system")
             return
         self._retry_count += 1
+        self._cancel_streaming()
         retry_prompt = (
             f"The previous code execution failed with this error:\n{error_msg}\n\n"
             f"Fix the error and retry. Attempt {self._retry_count}/2."
         )
         self._add_bubble("SYSTEM", f"Auto-retrying ({self._retry_count}/2)…", "system")
-        if self.rpc:
-            self.rpc.prompt(retry_prompt)
 
     def _add_tool_block(self, name: str, status: str, details: str = "") -> None:
         if status == "running":
@@ -1561,29 +1607,20 @@ class ChatPanel(QDockWidget):
             scrollbar.setValue(scrollbar.maximum())
 
     def connect_rpc(self) -> None:
-        if not self.rpc:
-            return
-        self.rpc.event_received.connect(self._on_event)
-        self.rpc.response_received.connect(self._on_response)
-        self.rpc.error_occurred.connect(self._on_error)
-        self.rpc.process_exited.connect(self._on_exit)
+        """No-op — agent is in-process, no connection needed."""
+        pass
 
     def disconnect_rpc(self) -> None:
-        if not self.rpc:
-            return
-        for sig_name in ("event_received", "response_received", "error_occurred", "process_exited"):
-            try:
-                sig = getattr(self.rpc, sig_name, None)
-                if sig:
-                    sig.disconnect()
-            except TypeError:
-                pass
+        """No-op — agent is in-process, no disconnection needed."""
+        pass
+
+    def show_error(self, message: str) -> None:
+        """Show an error message in the chat feed."""
+        self._add_bubble("ERROR", message, "error")
 
     def set_rpc(self, rpc) -> None:
-        self.disconnect_rpc()
-        self.rpc = rpc
-        self.connect_rpc()
-        self._refresh_provider_label()
+        """No-op — agent is in-process, no RPC swap needed."""
+        pass
 
     def _extract_text(self, event: dict) -> str:
         blocks = []
@@ -1740,38 +1777,12 @@ class ChatPanel(QDockWidget):
         self._end_streaming()
 
     def _on_exit(self, code: int) -> None:
-        self._add_bubble("SYSTEM", f"Engine disconnected [{code}]", "error")
-        self._set_activity("engine disconnected", active=False, detail=f"exit {code}")
-        self._status_dot.setStyleSheet(
-            f"color:{ERROR_COLOR};font-size:9px;background:transparent;"
-        )
-        # Show restart button in the activity strip
-        if not hasattr(self, "_restart_btn"):
-            self._restart_btn = QPushButton("RESTART ENGINE")
-            self._restart_btn.setFixedHeight(24)
-            self._restart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._restart_btn.setStyleSheet(
-                f"QPushButton {{ background:transparent; color:{ERROR_COLOR}; border:1px solid {ERROR_COLOR};"
-                f" border-radius:3px; font-size:8px; font-weight:700; padding:0 10px; }}"
-                f" QPushButton:hover {{ background:{ERROR_COLOR}; color:{BG_BASE}; }}"
-            )
-            self._restart_btn.clicked.connect(self._restart_engine)
-            self._activity_frame.layout().addWidget(self._restart_btn)
-        self._activity_frame.setVisible(True)
-        self._restart_btn.setVisible(True)
+        """No-op — agent is in-process, no process exit to handle."""
+        pass
 
     def _restart_engine(self) -> None:
-        if hasattr(self, "_restart_btn"):
-            self._restart_btn.setVisible(False)
-        if self.rpc and not getattr(self, "_restarting", False):
-            self._restarting = True
-            try:
-                self.rpc.shutdown()
-                self.rpc.spawn()
-                self._set_activity("restarting...", active=True)
-                self._add_bubble("SYSTEM", "Engine restarting…", "system")
-            finally:
-                self._restarting = False
+        """No-op — agent is in-process, no restart needed."""
+        pass
 
     def append_message(self, sender: str, text: str, msg_type: str = "assistant") -> None:
         self._add_bubble(sender, text, msg_type)
@@ -1867,24 +1878,8 @@ class ChatPanel(QDockWidget):
             pass
 
     def _health_check(self) -> None:
-        """Check binary exists and agent dir is writable on startup."""
-        import os
-        from aery_plugin.rpc_bridge import _find_aery_binary, _get_agent_dir
-        issues = []
-        binary = _find_aery_binary()
-        if not os.path.isfile(binary) and binary != "aery":
-            issues.append(f"Binary not found: {binary}")
-        agent_dir = _get_agent_dir()
-        try:
-            os.makedirs(agent_dir, exist_ok=True)
-            test = os.path.join(agent_dir, ".write_test")
-            with open(test, "w") as f:
-                f.write("ok")
-            os.unlink(test)
-        except Exception as e:
-            issues.append(f"Agent dir not writable: {e}")
-        if issues:
-            self._add_bubble("ERROR", "Plugin health check failed:\n" + "\n".join(issues), "error")
+        """No-op — agent is in-process, no binary health check needed."""
+        pass
 
     def _export_html_report(self) -> None:
         """Export the current session as an HTML report to project_dir/.aery/report.html."""
@@ -2034,7 +2029,7 @@ class ChatPanel(QDockWidget):
 
     def _show_tool_registry(self) -> None:
         from aery_plugin.tool_registry import ToolRegistryDialog
-        dlg = ToolRegistryDialog(parent=self, rpc=self.rpc)
+        dlg = ToolRegistryDialog(parent=self)
         self._dialogs.append(dlg)
         dlg.exec()
         self._dialogs.remove(dlg)

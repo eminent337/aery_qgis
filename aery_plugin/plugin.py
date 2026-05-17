@@ -10,20 +10,19 @@ from qgis.core import QgsProject
 from aery_plugin.chat_panel import ChatPanel
 from aery_plugin.provider_settings import AeryConfigDialog
 from aery_plugin.qgis_executor import QGISCodeExecutor
-from aery_plugin.rpc_bridge import RPCBridge
+from aery_plugin.agent import Agent
 
 
 class AeryPlugin:
     """Main plugin class.
 
-    Starts the QGIS code executor (TCP socket), spawns the specialized
-    Aery standalone binary, and creates the chat panel.
+    Starts the QGIS code executor and creates the chat panel with a direct LLM agent.
     """
 
     def __init__(self, iface):
         self.iface = iface
         self.executor: Optional[QGISCodeExecutor] = None
-        self.rpc: Optional[RPCBridge] = None
+        self.agent: Optional[Agent] = None
         self.panel: Optional[ChatPanel] = None
         self.action: Optional[QAction] = None
 
@@ -33,17 +32,13 @@ class AeryPlugin:
         self.executor = QGISCodeExecutor(iface=self.iface)
         self.executor.start_socket_server()
 
-        # Start RPC bridge — spawns specialized binary
-        self.rpc = RPCBridge(
-            cwd=self._get_project_dir(),
-            port=self.executor.port,
-        )
-        self.rpc.spawn()
+        # Create agent
+        self.agent = Agent(executor=self.executor, iface=self.iface)
 
         # Create chat panel
         self.panel = ChatPanel(
             self.iface.mainWindow(),
-            self.rpc,
+            self.agent,
             on_config=self._open_config,
         )
         self.iface.addDockWidget(
@@ -60,10 +55,6 @@ class AeryPlugin:
 
         # Mark panel as ready
         self.panel.set_ready()
-
-        # Kill child processes on abort
-        if self.rpc:
-            self.rpc.disconnected.connect(lambda: self.executor and self.executor.abort_children())
 
         # ── Project & layer change signals ──
         QgsProject.instance().readProject.connect(self._on_project_changed)
@@ -97,22 +88,15 @@ class AeryPlugin:
             QgsProject.instance().layersRemoved.disconnect(self._on_layers_removed)
         except Exception:
             pass
-        # Disconnect UI before terminating the process so reader-thread exit
-        # signals cannot update a closing/deleted dock widget.
-        if self.panel:
-            self.panel.disconnect_rpc()
-        if self.rpc:
-            self.rpc.shutdown()
-            self.rpc = None
-
-        if self.executor:
-            self.executor.shutdown()
-            self.executor = None
 
         if self.panel:
             self.iface.removeDockWidget(self.panel)
             self.panel.close()
             self.panel = None
+
+        if self.executor:
+            self.executor.shutdown()
+            self.executor = None
 
         if self.action:
             self.iface.removePluginMenu("Aery", self.action)
@@ -127,18 +111,13 @@ class AeryPlugin:
         """Open the engine configuration dialog."""
         dialog = AeryConfigDialog(self.iface.mainWindow())
         if dialog.exec():
-            # Restart engine with new technical config
-            if self.panel:
-                self.panel.disconnect_rpc()
-            if self.rpc:
-                self.rpc.shutdown()
-            self.rpc = RPCBridge(
-                cwd=self._get_project_dir(),
-                port=self.executor.port
-            )
-            self.rpc.spawn()
-            if self.panel:
-                self.panel.set_rpc(self.rpc)
+            # Reinitialize agent with new provider config
+            if self.agent:
+                try:
+                    self.agent.initialize()
+                except Exception as e:
+                    if self.panel:
+                        self.panel.show_error(f"Failed to initialize agent: {e}")
 
     def _get_project_dir(self) -> str:
         """Get the current QGIS project directory."""
