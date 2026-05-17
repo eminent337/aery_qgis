@@ -34,10 +34,10 @@ def panel(qapp):
 
 
 def test_panel_created(panel):
-    """Panel is a QDockWidget with compact QGIS-style width."""
+    """Panel is a QDockWidget with comfortable width for reading."""
     assert panel.windowTitle() == "Aery"
     assert panel.minimumWidth() >= 200
-    assert panel.minimumWidth() <= 280
+    assert panel.minimumWidth() <= 400
 
 
 def test_input_field_exists(panel):

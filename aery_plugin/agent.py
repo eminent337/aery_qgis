@@ -168,7 +168,7 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
         if not self._messages:
             ctx = self._build_context_message()
             if ctx:
-                self._messages.append({"role": "system", "content": ctx})
+                self._messages.append({"role": "user", "content": f"[QGIS Context]\n{ctx}"})
 
         self._messages.append({"role": "user", "content": user_message})
 
@@ -180,30 +180,67 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
             # Build messages with system prompt
             api_messages = [{"role": "system", "content": self._system_prompt}] + self._messages
 
-            # Call LLM
+            # Call LLM with streaming
             try:
                 tools = self.tools.list_tools()
-                response = self._client.chat(
+                full_content = ""
+                tool_calls = []
+
+                # Stream the response
+                for chunk in self._client.chat_stream(
                     messages=api_messages,
                     model=self._model,
                     max_tokens=8192,
                     tools=tools if tools else None,
-                )
+                ):
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    # Extract text content
+                    content = delta.get("content", "")
+                    if content:
+                        full_content += content
+                        if on_event:
+                            on_event({"type": "text_chunk", "text": content})
+                    # Extract tool calls (may arrive in separate chunks)
+                    if delta.get("tool_calls"):
+                        for tc in delta["tool_calls"]:
+                            # Merge with existing tool calls by index
+                            idx = tc.get("index", 0)
+                            while len(tool_calls) <= idx:
+                                tool_calls.append({"id": "", "function": {"name": "", "arguments": ""}})
+                            existing = tool_calls[idx]
+                            if tc.get("id"):
+                                existing["id"] = tc["id"]
+                            if tc.get("function"):
+                                if tc["function"].get("name"):
+                                    existing["function"]["name"] += tc["function"]["name"]
+                                if tc["function"].get("arguments"):
+                                    existing["function"]["arguments"] += tc["function"]["arguments"]
+
+                if not full_content and not tool_calls:
+                    # Fallback: non-streaming response (some providers don't stream tools well)
+                    response = self._client.chat(
+                        messages=api_messages,
+                        model=self._model,
+                        max_tokens=8192,
+                        tools=tools if tools else None,
+                    )
+                    choice = response.get("choices", [{}])[0]
+                    message = choice.get("message", {})
+                    full_content = message.get("content", "")
+                    tool_calls = message.get("tool_calls", [])
+
             except APIError as e:
                 return f"API error: {e}"
-
-            # Parse response
-            choice = response.get("choices", [{}])[0]
-            message = choice.get("message", {})
-            content = message.get("content", "")
-            tool_calls = message.get("tool_calls", [])
 
             if tool_calls:
                 # Execute tools
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     name = func.get("name", "")
-                    args = json.loads(func.get("arguments", "{}"))
+                    try:
+                        args = json.loads(func.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
 
                     if on_event:
                         on_event({"type": "tool_start", "tool": name, "params": args})
@@ -230,9 +267,9 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
                     })
             else:
                 # Final response
-                if content:
-                    self._messages.append({"role": "assistant", "content": content})
-                return content
+                if full_content:
+                    self._messages.append({"role": "assistant", "content": full_content})
+                return full_content
 
         return "Agent reached maximum turns."
 

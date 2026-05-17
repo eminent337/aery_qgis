@@ -4,6 +4,7 @@ Each tool is a dict with name, description, parameters (JSON Schema),
 and an execute function that takes params and returns a result.
 """
 
+import asyncio
 import json
 import os
 from typing import Any, Callable, Optional
@@ -99,20 +100,21 @@ class ToolRegistry:
 
     async def _execute_qgis_code(self, params: dict) -> str:
         code = params["code"]
-        result = self.executor.execute(code, timeout=300)
+        # Run sync executor in thread pool to avoid blocking the event loop
+        result = await asyncio.to_thread(self.executor.execute, code, 300)
         if result.get("success"):
             r = result.get("result")
             return json.dumps(r, indent=2) if isinstance(r, dict) else str(r)
         raise RuntimeError(result.get("error", "Execution failed"))
 
     async def _execute_get_project_context(self, params: dict) -> str:
-        result = self.executor.execute("__get_project_context__", timeout=30)
+        result = await asyncio.to_thread(self.executor.execute, "__get_project_context__", 30)
         if result.get("success"):
             return json.dumps(result["result"], indent=2)
         raise RuntimeError(result.get("error", "Failed to get project context"))
 
     async def _execute_capture_canvas(self, params: dict) -> str:
-        result = self.executor.execute("__capture_canvas__", timeout=30)
+        result = await asyncio.to_thread(self.executor.execute, "__capture_canvas__", 30)
         if result.get("success"):
             return result["result"]
         raise RuntimeError(result.get("error", "Canvas capture failed"))

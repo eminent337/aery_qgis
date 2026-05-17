@@ -783,7 +783,7 @@ class ChatPanel(QDockWidget):
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.setMinimumWidth(260)
+        self.setMinimumWidth(320)
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -791,7 +791,7 @@ class ChatPanel(QDockWidget):
         )
 
         self._build_ui()
-        self.resize(230, 760)
+        self.resize(320, 760)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
         self._activity_timer = QTimer(self)
@@ -1344,6 +1344,13 @@ class ChatPanel(QDockWidget):
         event_type = event.get("type", "")
         if event_type == "thinking":
             self._set_activity("thinking...", active=True)
+        elif event_type == "text_chunk":
+            text = event.get("text", "")
+            if text:
+                self._stream_label.setVisible(True)
+                current = self._stream_label.toPlainText()
+                self._stream_label.setPlainText(current + text)
+                QTimer.singleShot(10, self._scroll_to_bottom)
         elif event_type == "tool_start":
             tool = event.get("tool", "")
             label = self._activity_for_tool(tool)

@@ -6,16 +6,39 @@ Uses the existing oauth_helper.py for credential resolution.
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
-from typing import Any, Optional
+from typing import Any, Optional, Iterator
 
 
 class APIError(Exception):
     """Raised when an API call fails."""
-    def __init__(self, message: str, status_code: int = 0):
+    def __init__(self, message: str, status_code: int = 0, retryable: bool = False):
         super().__init__(message)
         self.status_code = status_code
+        self.retryable = retryable
+
+
+def _is_retryable(status_code: int) -> bool:
+    """Return True if the HTTP status code indicates a retryable error."""
+    return status_code in (429, 500, 502, 503, 504)
+
+
+def _retry_with_backoff(fn, max_retries: int = 3, initial_delay: float = 1.0):
+    """Retry a function with exponential backoff on retryable errors."""
+    delay = initial_delay
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except APIError as e:
+            last_exc = e
+            if not e.retryable or attempt == max_retries:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    raise last_exc
 
 
 class OpenAIClient:
@@ -33,10 +56,8 @@ class OpenAIClient:
             **kwargs,
         }
 
-    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
-        """Send a chat completion request. Returns the parsed JSON response."""
-        payload = self._build_payload(messages, model, max_tokens, **kwargs)
-        url = f"{self.base_url}/chat/completions"
+    def _do_request(self, url: str, payload: dict) -> dict:
+        """Make a single HTTP POST request. Raises APIError on failure."""
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -51,12 +72,10 @@ class OpenAIClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
-            raise APIError(f"HTTP {e.code}: {body}", e.code)
+            raise APIError(f"HTTP {e.code}: {body}", e.code, retryable=_is_retryable(e.code))
 
-    def chat_stream(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs):
-        """Yield streaming chunks from the API."""
-        payload = self._build_payload(messages, model, max_tokens, stream=True, **kwargs)
-        url = f"{self.base_url}/chat/completions"
+    def _do_stream_request(self, url: str, payload: dict) -> Iterator[dict]:
+        """Make a streaming HTTP POST request. Yields parsed JSON chunks."""
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -80,7 +99,20 @@ class OpenAIClient:
                             pass
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
-            raise APIError(f"HTTP {e.code}: {body}", e.code)
+            raise APIError(f"HTTP {e.code}: {body}", e.code, retryable=_is_retryable(e.code))
+
+    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
+        """Send a chat completion request with retry. Returns the parsed JSON response."""
+        payload = self._build_payload(messages, model, max_tokens, **kwargs)
+        url = f"{self.base_url}/chat/completions"
+        return _retry_with_backoff(lambda: self._do_request(url, payload))
+
+    def chat_stream(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> Iterator[dict]:
+        """Yield streaming chunks from the API with retry."""
+        payload = self._build_payload(messages, model, max_tokens, stream=True, **kwargs)
+        url = f"{self.base_url}/chat/completions"
+        # Streaming doesn't retry mid-stream; retry is for connection errors only
+        return self._do_stream_request(url, payload)
 
 
 class AnthropicClient:
@@ -91,7 +123,6 @@ class AnthropicClient:
         self.api_key = api_key
 
     def _build_payload(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
-        # Convert OpenAI-format messages to Anthropic format
         system_msg = ""
         anthropic_messages = []
         for msg in messages:
@@ -110,9 +141,7 @@ class AnthropicClient:
             payload["system"] = system_msg
         return payload
 
-    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
-        payload = self._build_payload(messages, model, max_tokens, **kwargs)
-        url = f"{self.base_url}/v1/messages"
+    def _do_request(self, url: str, payload: dict) -> dict:
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -128,11 +157,9 @@ class AnthropicClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
-            raise APIError(f"HTTP {e.code}: {body}", e.code)
+            raise APIError(f"HTTP {e.code}: {body}", e.code, retryable=_is_retryable(e.code))
 
-    def chat_stream(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs):
-        payload = self._build_payload(messages, model, max_tokens, stream=True, **kwargs)
-        url = f"{self.base_url}/v1/messages"
+    def _do_stream_request(self, url: str, payload: dict) -> Iterator[dict]:
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -157,7 +184,17 @@ class AnthropicClient:
                             pass
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
-            raise APIError(f"HTTP {e.code}: {body}", e.code)
+            raise APIError(f"HTTP {e.code}: {body}", e.code, retryable=_is_retryable(e.code))
+
+    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
+        payload = self._build_payload(messages, model, max_tokens, **kwargs)
+        url = f"{self.base_url}/v1/messages"
+        return _retry_with_backoff(lambda: self._do_request(url, payload))
+
+    def chat_stream(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> Iterator[dict]:
+        payload = self._build_payload(messages, model, max_tokens, stream=True, **kwargs)
+        url = f"{self.base_url}/v1/messages"
+        return self._do_stream_request(url, payload)
 
 
 class GeminiClient:
@@ -168,7 +205,6 @@ class GeminiClient:
         self.api_key = api_key
 
     def _build_payload(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
-        # Convert messages to Gemini format
         contents = []
         system_instruction = None
         for msg in messages:
@@ -190,9 +226,7 @@ class GeminiClient:
         }
         return payload
 
-    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
-        payload = self._build_payload(messages, model, max_tokens, **kwargs)
-        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+    def _do_request(self, url: str, payload: dict) -> dict:
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -204,7 +238,12 @@ class GeminiClient:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""
-            raise APIError(f"HTTP {e.code}: {body}", e.code)
+            raise APIError(f"HTTP {e.code}: {body}", e.code, retryable=_is_retryable(e.code))
+
+    def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
+        payload = self._build_payload(messages, model, max_tokens, **kwargs)
+        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+        return _retry_with_backoff(lambda: self._do_request(url, payload))
 
 
 def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, str]:
