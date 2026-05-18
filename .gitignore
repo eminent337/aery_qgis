@@ -29,3 +29,10 @@ aery_plugin/bin/aery-qgis-runner
 # Generated database files
 *.db
 .worktrees/
+
+# Agent runtime files (credentials, settings, sessions)
+aery_plugin/agent/auth.json
+aery_plugin/agent/settings.json
+aery_plugin/agent/models.json
+aery_plugin/agent/sessions/
+graphify-out/

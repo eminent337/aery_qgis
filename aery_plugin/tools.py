@@ -73,6 +73,13 @@ class ToolRegistry:
             "execute": self._execute_web_fetch,
         })
 
+        # Register geospatial tools (export_webmap, publish_geoserver, set_layer_style,
+        # multi_map_layout, save_map_theme, load_map_theme, list_map_themes, refresh_canvas)
+        self._register_geospatial_tools()
+
+        # Register graph query tools
+        self._register_graph_tools()
+
     def register(self, tool: dict):
         """Register a tool definition."""
         self._tools[tool["name"]] = tool
@@ -145,3 +152,136 @@ class ToolRegistry:
                 return resp.read().decode()[:10000]
         except Exception as e:
             return f"Fetch failed: {e}"
+
+    def _register_geospatial_tools(self):
+        """Register geospatial tools from geospatial_tools.py."""
+        from aery_plugin.geospatial_tools import GEOSPATIAL_TOOLS
+        for tool_def in GEOSPATIAL_TOOLS:
+            fn = tool_def["execute"]
+            self.register({
+                "name": tool_def["name"],
+                "description": tool_def["description"],
+                "parameters": tool_def["parameters"],
+                "execute": self._make_geospatial_executor(fn),
+            })
+
+    def _make_geospatial_executor(self, fn):
+        """Create an async executor that injects iface into geospatial tool calls."""
+        async def executor(params: dict) -> str:
+            import inspect
+            sig = inspect.signature(fn)
+            if "iface" in sig.parameters:
+                params["iface"] = self.iface
+            result = await asyncio.to_thread(fn, **params)
+            if isinstance(result, dict):
+                return json.dumps(result, indent=2)
+            return str(result)
+        return executor
+
+    def _register_graph_tools(self):
+        """Register graph query tools for provenance, tool chains, and spatial relationships."""
+        self.register({
+            "name": "query_provenance",
+            "description": (
+                "Query the provenance chain of a layer: what produced it, what it was derived from. "
+                "Use when the user asks 'where did this layer come from?' or 'what created this?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "layer_name": {"type": "string", "description": "Name of the layer to trace"},
+                },
+                "required": ["layer_name"],
+            },
+            "execute": self._execute_query_provenance,
+        })
+
+        self.register({
+            "name": "query_tool_chain",
+            "description": (
+                "Query what tools can follow a given tool in a processing pipeline. "
+                "Use when the user asks 'what should I do after buffer?' or 'what comes next?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string", "description": "Name of the tool to query"},
+                },
+                "required": ["tool_name"],
+            },
+            "execute": self._execute_query_tool_chain,
+        })
+
+        self.register({
+            "name": "query_graph",
+            "description": (
+                "Query the project knowledge graph for spatial relationships, layer lineage, "
+                "and tool capability chains. Use when the user asks about relationships "
+                "between layers or wants to understand the project structure."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language query about the graph"},
+                },
+                "required": ["query"],
+            },
+            "execute": self._execute_query_graph,
+        })
+
+        self.register({
+            "name": "query_spatial_relationships",
+            "description": (
+                "Query spatial relationships between layers (overlaps, contains, within, touches). "
+                "Use when the user asks 'which layers overlap?' or 'what layers are near roads?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "layer_name": {"type": "string", "description": "Layer to query relationships for (optional)"},
+                },
+            },
+            "execute": self._execute_query_spatial,
+        })
+
+    async def _execute_query_provenance(self, params: dict) -> str:
+        from aery_plugin.graph_engine import query_provenance
+        project_dir = self._get_project_dir()
+        if not project_dir:
+            return "No project directory available."
+        return query_provenance(project_dir, params["layer_name"])
+
+    async def _execute_query_spatial(self, params: dict) -> str:
+        from aery_plugin.graph_engine import query_spatial_relationships
+        project_dir = self._get_project_dir()
+        if not project_dir:
+            return "No project directory available."
+        return query_spatial_relationships(project_dir, params.get("layer_name", ""))
+
+    async def _execute_query_tool_chain(self, params: dict) -> str:
+        from aery_plugin.graph_engine import query_what_can_follow
+        project_dir = self._get_project_dir()
+        if not project_dir:
+            return "No project directory available."
+        followers = query_what_can_follow(project_dir, params["tool_name"])
+        if not followers:
+            return f"No tool chains found for '{params['tool_name']}'."
+        return json.dumps({"tool": params["tool_name"], "can_follow": followers}, indent=2)
+
+    async def _execute_query_graph(self, params: dict) -> str:
+        from aery_plugin.graph_engine import get_context_for_prompt
+        project_dir = self._get_project_dir()
+        if not project_dir:
+            return "No project directory available."
+        return get_context_for_prompt(project_dir, params["query"])
+
+    def _get_project_dir(self) -> str:
+        """Get the current QGIS project directory."""
+        try:
+            from qgis.core import QgsProject
+            proj = QgsProject.instance()
+            if proj.fileName():
+                return os.path.dirname(proj.fileName())
+        except Exception:
+            pass
+        return ""

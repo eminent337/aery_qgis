@@ -4,7 +4,7 @@
 QGIS Processing script to smoke-test all Aery plugin modules.
 Run with: qgis_process run /path/to/smoke_test.py
 """
-from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterFile,
+from qgis.core import QgsProcessingAlgorithm, QgsProcessingParameterFile
 import sys, importlib, traceback as tb, os
 
 class AerySmokeTest(QgsProcessingAlgorithm):

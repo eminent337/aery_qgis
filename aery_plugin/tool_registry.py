@@ -1,8 +1,7 @@
 """Tool Registry dialog for Aery QGIS plugin.
-Populates from the live runner via get_state; falls back to a static list.
+Displays all available tools from the Python agent.
 """
 
-import uuid
 from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -142,10 +141,7 @@ class ToolRegistryDialog(QDialog):
         self.setFixedSize(450, 580)
         self.setStyleSheet(f"background-color: {BG_BASE}; color: {TEXT_MAIN}; font-family: 'Public Sans';")
         self._build_ui()
-        if rpc:
-            self._load_from_runner(rpc)
-        else:
-            self._populate(_FALLBACK_TOOLS, source="static")
+        self._populate(_FALLBACK_TOOLS, source="Python agent")
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -194,23 +190,6 @@ class ToolRegistryDialog(QDialog):
         f_layout.addStretch()
         f_layout.addWidget(close_btn)
         layout.addWidget(footer)
-
-    def _load_from_runner(self, rpc) -> None:
-        """Send get_state to the runner; populate on response, fall back on timeout."""
-        cmd_id = f"tool-registry-{uuid.uuid4().hex[:8]}"
-        cmd = {"type": "get_state", "id": cmd_id}
-
-        def on_response(data: dict) -> None:
-            tools_raw = data.get("data", {}).get("tools", [])
-            if tools_raw:
-                tools = [(t.get("name", ""), t.get("description", "")) for t in tools_raw]
-                self._populate(tools, source=f"live · {len(tools)} tools")
-            else:
-                self._populate(_FALLBACK_TOOLS, source="static (no tools in state)")
-
-        rpc.send_command(cmd, callback=on_response)
-        # Show fallback immediately; on_response will replace it if runner replies
-        self._populate(_FALLBACK_TOOLS, source="static (awaiting runner…)")
 
     def _populate(self, tools: list[tuple[str, str]], source: str) -> None:
         """Clear and repopulate the tool list."""

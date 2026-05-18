@@ -2,7 +2,6 @@
 set -euo pipefail
 
 VERSION="${1:-}"
-REBUILD=false
 DEPLOY=false
 SKIP_TESTS=false
 PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +9,6 @@ QGIS_PROFILE="${QGIS_PROFILE:-$HOME/.local/share/QGIS/QGIS4/profiles/default}"
 
 for arg in "$@"; do
     case "$arg" in
-        --rebuild) REBUILD=true ;;
         --deploy) DEPLOY=true ;;
         --skip-tests) SKIP_TESTS=true ;;
     esac
@@ -41,15 +39,6 @@ fi
 echo "--- Updating metadata.txt ---"
 sed -i "s/^version=.*/version=$VERSION/" "$PLUGIN_DIR/aery_plugin/metadata.txt"
 echo "Version set to $VERSION"
-
-if [ "$REBUILD" = true ]; then
-    echo "--- Rebuilding binary ---"
-    cd "$PLUGIN_DIR/../aery-core/packages/coding-agent"
-    npm run build
-    npm run build:binary 2>/dev/null || true  # copy-binary-assets may fail for non-critical files
-    cp dist/pi "$PLUGIN_DIR/aery_plugin/bin/aery-qgis-runner"
-    echo "Binary rebuilt and copied."
-fi
 
 echo "--- Assembling ZIP ---"
 ZIP_NAME="aery_qgis_$VERSION.zip"

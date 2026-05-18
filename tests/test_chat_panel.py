@@ -194,21 +194,6 @@ def test_clear_feed(panel):
     assert panel._feed_layout.count() == 1
 
 
-def test_connect_rpc(panel):
-    """connect_rpc is a no-op for in-process agent."""
-    panel.connect_rpc()
-
-
-def test_disconnect_rpc(panel):
-    """disconnect_rpc is a no-op for in-process agent."""
-    panel.disconnect_rpc()
-
-
-def test_set_rpc(panel):
-    """set_rpc is a no-op for in-process agent."""
-    panel.set_rpc(MagicMock())
-
-
 def test_set_ready(panel):
     """set_ready marks panel as ready and adds system message."""
     panel.set_ready()
@@ -244,31 +229,6 @@ def test_on_agent_event_tool_error(panel):
     assert panel._feed_layout.count() > before
 
 
-def test_on_response_error(panel):
-    """Error response adds error message."""
-    panel._on_response("prompt", {"success": False, "error": "API error"})
-    assert panel._feed_layout.count() >= 2
-
-
-def test_on_response_success(panel):
-    """Successful response does nothing special."""
-    panel._on_response("prompt", {"success": True})
-
-
-def test_on_error(panel):
-    """Error handler adds error message."""
-    panel._on_error("connection failed")
-    assert panel._feed_layout.count() >= 2
-
-
-def test_startup_noise_errors_stay_out_of_transcript(panel):
-    """Known startup/debug noise should not be shown in transcript."""
-    before = panel._feed_layout.count()
-    panel._on_error("'QgisInterface' object has no attribute 'project'")
-    panel._on_error("name 'os' is not defined")
-    assert panel._feed_layout.count() == before
-
-
 def test_show_audit_window_shows_raw_cumulative_log(panel, tmp_path):
     """Audit window should show the raw cumulative JSONL tail without formatting or filtering."""
     panel._last_context = {"project_dir": str(tmp_path)}
@@ -288,11 +248,6 @@ def test_show_audit_window_shows_raw_cumulative_log(panel, tmp_path):
     title, body = panel._show_dialog.call_args[0]
     assert title == "Audit Trail"
     assert body == "".join([line + "\n" for line in lines])
-
-
-def test_on_exit(panel):
-    """Engine exit is a no-op for in-process agent."""
-    panel._on_exit(1)
 
 
 def test_history_navigation(panel):

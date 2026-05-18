@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-mock
+        run: pip install pytest pytest-mock PyQt6
 
       - name: Run unit tests
         run: python3 -m pytest tests/ -v --tb=short
@@ -31,18 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Build binary
-        run: |
-          cd runner
-          bun install
-          bun build --compile --target=bun-linux-x64-modern \
-            --outfile=../aery_plugin/bin/aery-qgis-runner entry.ts
 
       - name: Build distribution ZIP
         run: bash build-zip.sh

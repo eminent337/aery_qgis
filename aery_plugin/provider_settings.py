@@ -49,15 +49,10 @@ AUTH_APIKEY = "apikey"
 AUTH_GATEWAY = "gateway"
 
 # ── System font fallback ──────────────────────────────────────────────────────
-try:
-    from PyQt6.QtWidgets import QApplication as _QA
-    _BASE = _QA.font().pixelSize() or 12
-except Exception:
-    _BASE = 12
-F_S  = max(_BASE - 1,  9)   # small labels, section headers
-F_M  = _BASE              # body / normal
-F_H  = _BASE + 2          # headings / emphasis
-F_B  = _BASE + 4          # big title
+F_S  = 10   # small labels, section headers
+F_M  = 11   # body / normal
+F_H  = 12   # headings / emphasis
+F_B  = 14   # big title
 
 def _fs(size: int) -> str:
     """Return a font-size CSS token clamped to sensible bounds."""
@@ -125,10 +120,11 @@ class _ListButton(QPushButton):
     """Dark two-row list button: title + optional subtitle. Signals: clicked(pid)."""
 
     def __init__(self, title: str, subtitle: str = "", pid: str = "",
-                 parent: Optional[QWidget] = None):
+                 bold: bool = False, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._pid = pid
         self._selected = False
+        self._bold = bold
 
         self.setText(f"{title}\n{subtitle}" if subtitle else title)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -144,10 +140,11 @@ class _ListButton(QPushButton):
     def _update_style(self) -> None:
         bg       = "#0f2020" if self._selected else "transparent"
         border   = ACCENT   if self._selected else BORDER
-        title_clr = ACCENT  if self._selected else TEXT
+        title_clr = ACCENT  if self._selected else (ACCENT if self._bold else TEXT)
         has_sub  = "\n" in self.text()
         sub_clr   = ACCENT if self._selected else DIM
         pad = "padding:7px 14px;" if has_sub else "padding:0 14px;"
+        fw = 900 if self._selected else (800 if self._bold else 500)
         self.setStyleSheet(
             f"QPushButton {{"
             f"  background:{bg};"
@@ -156,7 +153,7 @@ class _ListButton(QPushButton):
             f"  {pad}"
             f"  text-align:left;"
             f"  font-size:{_fs(F_H)};"
-            f"  font-weight:{700 if self._selected else 500};"
+            f"  font-weight:{fw};"
             f"  color:{title_clr};"
             f"}}"
             f" QPushButton:hover {{"
@@ -199,7 +196,7 @@ class AuthMethodList(QWidget):
 
         self._btns: dict[str, _ListButton] = {}
         for method, title, sub in _items:
-            btn = _ListButton(title, sub, pid=method)
+            btn = _ListButton(title, sub, pid=method, bold=True)
             btn.clicked.connect(lambda _, m=method: self.method_selected.emit(m))
             root.addWidget(btn)
             self._btns[method] = btn
@@ -228,7 +225,6 @@ class ProviderOAuthList(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header row
         hdr = QLabel("SELECT OAUTH PROVIDER")
         hdr.setStyleSheet(
             f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
@@ -266,7 +262,6 @@ class ProviderOAuthList(QWidget):
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(8)
 
-            # Dot
             dot = QLabel("●" if connected else "○")
             dot.setFixedSize(16, 16)
             dc = GREEN if connected else DIM
@@ -274,7 +269,6 @@ class ProviderOAuthList(QWidget):
                 f"color:{dc}; font-size:{_fs(F_H)}; border:none; background:transparent;")
             row.addWidget(dot)
 
-            # Name
             nm = QLabel(cfg["name"])
             nm.setStyleSheet(
                 f"font-size:{_fs(F_H)}; font-weight:600; color:{TEXT};"
@@ -292,7 +286,6 @@ class ProviderOAuthList(QWidget):
                 login.clicked.connect(lambda _, p=pid: self.provider_selected.emit(p))
                 row.addWidget(login)
 
-            # Wrap row in container
             wrap = QWidget()
             wrap.setLayout(row)
             wrap.setStyleSheet(
@@ -336,22 +329,45 @@ class ProviderApiKeyList(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
 
-        body = QWidget()
-        blay = QVBoxLayout(body)
-        blay.setContentsMargins(0, 0, 0, 0)
-        blay.setSpacing(4)
+        self._body = QWidget()
+        self._blay = QVBoxLayout(self._body)
+        self._blay.setContentsMargins(0, 0, 0, 0)
+        self._blay.setSpacing(4)
+
+        scroll.setWidget(self._body)
+        root.addWidget(scroll, 1)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        while self._blay.count():
+            item = self._blay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
         auth = oauth_helper._load_auth()
-        # Order: gateway first, then api_key providers from oauth_helper
-        known = set()
+        # Order: custom providers first, then gateway, then api_key providers
+
+        # Custom providers from models.json
+        custom_providers = oauth_helper.get_custom_providers()
+        for cp in custom_providers:
+            sub = f"{'✓ configured' if cp['connected'] else 'API key required'} · {len(cp.get('models', []))} models"
+            btn = _ListButton(cp["name"], sub, pid=cp["id"])
+            btn.clicked.connect(lambda _, p=cp["id"]: self.provider_clicked.emit(p))
+            self._blay.addWidget(btn)
+
+        # Custom OpenAI-compatible add button
+        add_btn = _ListButton("＋ Custom OpenAI-compatible", "Add a new provider", pid="__add_custom__")
+        add_btn.clicked.connect(lambda _, p="__add_custom__": self.provider_clicked.emit(p))
+        self._blay.addWidget(add_btn)
+
         # Gateway shortcut
         gw_name = oauth_helper.API_PROVIDERS.get("aery-gateway", {}).get("name", "Aery Gateway")
         gw_creds = bool(auth.get("aery-gateway", {}).get("key"))
         sub = f"{'✓ connected' if gw_creds else 'not configured'} · {len(oauth_helper.API_PROVIDERS.get('aery-gateway', {}).get('models', []))} models"
         btn = _ListButton("Aery Gateway", sub, pid="aery-gateway")
         btn.clicked.connect(lambda _, p="aery-gateway": self.provider_clicked.emit(p))
-        blay.addWidget(btn)
-        known.add("aery-gateway")
+        self._blay.addWidget(btn)
 
         for pid, cfg in oauth_helper.API_PROVIDERS.items():
             if pid == "aery-gateway":
@@ -360,12 +376,9 @@ class ProviderApiKeyList(QWidget):
             sub = f"{'✓ configured' if connected else 'API key required'} · {len(cfg.get('models', []))} models"
             btn = _ListButton(cfg["name"], sub, pid=pid)
             btn.clicked.connect(lambda _, p=pid: self.provider_clicked.emit(p))
-            blay.addWidget(btn)
-            known.add(pid)
+            self._blay.addWidget(btn)
 
-        blay.addStretch()
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        self._blay.addStretch()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -375,13 +388,12 @@ class ProviderApiKeyList(QWidget):
 def _dialog_auth_hint(pid: str) -> str:
     """Return the field variant for this provider's API-key dialog.
 
-    Returns one of: minimal | account_id | base_url | custom | gateway | aws
+    Returns one of: minimal | account_id | base_url | gateway | aws | custom
     """
     if pid == "aery-gateway":
         return "gateway"
     if pid == "amazon-bedrock":
         return "aws"
-    # openai-compatible / claude-local need base_url + api_key + model_id entry
     if pid in ("openai-compatible", "claude-local"):
         return "custom"
     cfg = oauth_helper.API_PROVIDERS.get(pid, {})
@@ -392,8 +404,113 @@ def _dialog_auth_hint(pid: str) -> str:
     return "minimal"
 
 
+class CustomProviderDialog(QDialog):
+    """Dialog to add a custom OpenAI-compatible provider."""
+
+    _FONT_SIZE = "14px"  # Fixed font size for dialog labels
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("ADD CUSTOM PROVIDER")
+        self.setModal(True)
+        self.setMinimumWidth(460)
+        _apply_dialog_style(self)
+        self._build()
+
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        title = QLabel("ADD CUSTOM OPENAI-COMPATIBLE PROVIDER")
+        title.setStyleSheet(
+            f"font-size:15px; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
+            f" border:none; background:transparent;")
+        root.addWidget(title)
+
+        sub = QLabel(
+            "Enter the base URL, model ID, and API key for any "
+            "OpenAI-compatible API endpoint."
+        )
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
+        root.addWidget(sub)
+
+        # Base URL
+        row_b = QHBoxLayout()
+        row_b.setSpacing(8)
+        blbl = QLabel("Base URL")
+        blbl.setFixedWidth(80)
+        blbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
+        row_b.addWidget(blbl)
+        self._url_inp = _input("https://api.example.com/v1", 280)
+        row_b.addWidget(self._url_inp, 1)
+        root.addLayout(row_b)
+
+        # Model ID
+        row_m = QHBoxLayout()
+        row_m.setSpacing(8)
+        mlbl = QLabel("Model ID")
+        mlbl.setFixedWidth(80)
+        mlbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
+        row_m.addWidget(mlbl)
+        self._model_inp = _input("e.g. gpt-4o, llama-3.1-8b", 280)
+        row_m.addWidget(self._model_inp, 1)
+        root.addLayout(row_m)
+
+        # API Key
+        row_k = QHBoxLayout()
+        row_k.setSpacing(8)
+        klbl = QLabel("API Key")
+        klbl.setFixedWidth(80)
+        klbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
+        row_k.addWidget(klbl)
+        self._key_inp = _input("sk-...", 280)
+        self._key_inp.setEchoMode(QLineEdit.EchoMode.Password)
+        row_k.addWidget(self._key_inp, 1)
+        root.addLayout(row_k)
+
+        root.addSpacing(8)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+        cancel = _btn("CANCEL", DIM)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        save = _btn("ADD", ACCENT, ACCENT)
+        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
+        save.clicked.connect(self._save)
+        btn_row.addWidget(save)
+        root.addLayout(btn_row)
+
+    def _save(self) -> None:
+        base_url = self._url_inp.text().strip()
+        model_id = self._model_inp.text().strip()
+        api_key = self._key_inp.text().strip()
+        if not base_url:
+            QMessageBox.warning(self, "Missing URL", "Base URL is required.")
+            return
+        if not model_id:
+            QMessageBox.warning(self, "Missing Model", "Model ID is required.")
+            return
+        if not api_key:
+            QMessageBox.warning(self, "Missing Key", "API key is required.")
+            return
+        try:
+            result = oauth_helper.save_custom_provider(base_url, model_id, api_key)
+            QMessageBox.information(self, "Provider Added",
+                                    f"Provider '{result['provider_id']}' added with model '{result['model_id']}'.")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+
+
 class ApiKeyDialog(QDialog):
     """Per-provider API key / credential dialog."""
+
+    _FONT_SIZE = "14px"  # Fixed font size for dialog labels
 
     def __init__(self, pid: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -416,7 +533,7 @@ class ApiKeyDialog(QDialog):
         # Title
         title = QLabel(f"LOGIN {self._cfg.get('name', self._pid).upper()}")
         title.setStyleSheet(
-            f"font-size:{_fs(F_M)}; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
+            f"font-size:15px; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
             f" border:none; background:transparent;")
         root.addWidget(title)
 
@@ -429,7 +546,7 @@ class ApiKeyDialog(QDialog):
             )
             banner.setWordWrap(True)
             banner.setStyleSheet(
-                f"font-size:{_fs(F_M)}; color:{DIM}; border:1px solid {BORDER};"
+                f"font-size:{self._FONT_SIZE}; color:{DIM}; border:1px solid {BORDER};"
                 f" border-radius:3px; padding:10px 12px; background:{SURFACE};")
             root.addWidget(banner)
             root.addStretch()
@@ -440,9 +557,11 @@ class ApiKeyDialog(QDialog):
         row_k.setSpacing(8)
         klbl = QLabel("API Key")
         klbl.setFixedWidth(80)
-        klbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+        klbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
         row_k.addWidget(klbl)
         self._key_inp = _input("Enter API key…", 260)
+        self._key_inp.setStyleSheet(
+            self._key_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
         row_k.addWidget(self._key_inp, 1)
         root.addLayout(row_k)
 
@@ -452,9 +571,11 @@ class ApiKeyDialog(QDialog):
             row_a.setSpacing(8)
             albl = QLabel("Account ID")
             albl.setFixedWidth(80)
-            albl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+            albl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
             row_a.addWidget(albl)
             self._acct_inp = _input("Enter account ID…", 260)
+            self._acct_inp.setStyleSheet(
+                self._acct_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
             row_a.addWidget(self._acct_inp, 1)
             root.addLayout(row_a)
 
@@ -464,10 +585,12 @@ class ApiKeyDialog(QDialog):
             row_b.setSpacing(8)
             blbl = QLabel("Base URL")
             blbl.setFixedWidth(80)
-            blbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+            blbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
             row_b.addWidget(blbl)
             default_url = self._cfg.get("base_url", "https://api.openai.com/v1")
             self._url_inp = _input(default_url, 260)
+            self._url_inp.setStyleSheet(
+                self._url_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
             self._url_inp.setText(default_url)
             row_b.addWidget(self._url_inp, 1)
             root.addLayout(row_b)
@@ -478,13 +601,13 @@ class ApiKeyDialog(QDialog):
             row_m.setSpacing(8)
             mlbl = QLabel("Model")
             mlbl.setFixedWidth(80)
-            mlbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+            mlbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
             row_m.addWidget(mlbl)
             self._model_combo = QComboBox()
             self._model_combo.setFixedWidth(260)
             self._model_combo.setStyleSheet(
                 f"QComboBox {{ background:{BG}; color:{TEXT}; border:1px solid {BORDER};"
-                f" border-radius:2px; padding:4px 6px; font-size:{_fs(F_M)}; }}"
+                f" border-radius:2px; padding:4px 6px; font-size:{self._FONT_SIZE}; }}"
                 f" QComboBox:hover {{ border-color:{ACCENT}; }}"
                 f" QComboBox QAbstractItemView {{ background:{SURFACE}; color:{TEXT}; selection-background-color:{ACCENT}; }}"
             )
@@ -508,9 +631,7 @@ class ApiKeyDialog(QDialog):
         cancel.clicked.connect(self.reject)
         btn_row.addWidget(cancel)
         save = _btn("SAVE", ACCENT, ACCENT)
-        save.setStyleSheet(
-            save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}")
-        )
+        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
         save.clicked.connect(self._save)
         btn_row.addWidget(save)
         root.addLayout(btn_row)
@@ -826,7 +947,7 @@ class ScopesDialog(QDialog):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main entry: OAuth login thread worker (shared by provider screen and wizard)
+# OAuth login thread worker
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _run_login(pid: str, on_done) -> None:
@@ -834,10 +955,73 @@ def _run_login(pid: str, on_done) -> None:
     try:
         ok = oauth_helper.login_provider(pid)
         QTimer.singleShot(0, lambda: on_done(None if ok else "Login cancelled or failed"))
-    except RuntimeError as e:
-        QTimer.singleShot(0, lambda: on_done(str(e)))
-    except Exception as e:
-        QTimer.singleShot(0, lambda: on_done(str(e)))
+    except RuntimeError as exc:
+        err_msg = str(exc)
+        QTimer.singleShot(0, lambda: on_done(err_msg))
+    except Exception as exc:
+        err_msg = str(exc)
+        QTimer.singleShot(0, lambda: on_done(err_msg))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GitHub Copilot device-flow sub-dialog
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _DeviceFlowDialog(QDialog):
+    """Shows GitHub Copilot device-code; polls until authorised or timeout."""
+
+    def __init__(self, pid: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._pid = pid
+        self.setWindowTitle(f"LOGIN {oauth_helper.OAUTH_CONFIGS[pid]['name'].upper()}")
+        self.setFixedWidth(400)
+        self.setModal(True)
+        _apply_dialog_style(self)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        self._code_lbl = QLabel("Opening browser…")
+        self._code_lbl.setWordWrap(True)
+        self._code_lbl.setStyleSheet(
+            f"font-size:12px; font-weight:700; color:{ACCENT};"
+            f" border:none; background:{SURFACE}; border-radius:4px; padding:12px;")
+        root.addWidget(self._code_lbl)
+
+        hint = QLabel(
+            "Enter the code above at github.com/login/device\n"
+            "This window will close automatically when complete."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(
+            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+        root.addWidget(hint)
+
+        threading.Thread(target=self._poll, daemon=True).start()
+
+    def _poll(self) -> None:
+        QTimer.singleShot(0, lambda: self._code_lbl.setText(
+            "Opening browser — enter code at github.com/login/device…"))
+        try:
+            cfg = oauth_helper.OAUTH_CONFIGS.get(self._pid, {})
+            ok = oauth_helper._device_flow_login(self._pid, cfg)
+        except Exception as e:
+            err_msg = str(e)
+            QTimer.singleShot(0, lambda: self._fail(err_msg))
+            return
+        QTimer.singleShot(0, lambda: self._done(ok))
+
+    def _fail(self, msg: str) -> None:
+        QMessageBox.critical(self, "Login Failed", msg)
+        self.reject()
+
+    def _done(self, ok: bool) -> None:
+        if ok:
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Login Failed", "Device flow timed out or was cancelled.")
+            self.reject()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -967,14 +1151,11 @@ class AuthMethodWizard(QDialog):
         self._set_page(self._oauth_list, "SELECT OAUTH PROVIDER", show_back=True)
 
     def _on_oauth_click(self, pid: str) -> None:
-        # Launch login in worker thread; show code/dispatch polling manually
         cfg = oauth_helper.OAUTH_CONFIGS.get(pid, {})
         if cfg.get("device_flow"):
-            # GitHub Copilot — device flow: tell user the code
             dlg = _DeviceFlowDialog(pid, self)
             dlg.exec()
         else:
-            # PKCE flow: just fire browser; _run_login handles polling
             self._set_busy(f"Opening browser for {pid}…")
             def done(err):
                 self._set_busy("")
@@ -984,7 +1165,7 @@ class AuthMethodWizard(QDialog):
                 else:
                     QMessageBox.information(self, "Login Success",
                                             f"{oauth_helper.OAUTH_CONFIGS[pid]['name']} connected.")
-            _run_login(pid, done)
+            threading.Thread(target=_run_login, args=(pid, done), daemon=True).start()
 
     def _on_oauth_logout(self, pid: str) -> None:
         oauth_helper.logout_provider(pid)
@@ -1002,7 +1183,14 @@ class AuthMethodWizard(QDialog):
         self._set_page(self._api_list, "SELECT PROVIDER", show_back=True)
 
     def _on_apikey_click(self, pid: str) -> None:
-        self._show_apikey_dialog(pid)
+        if pid == "__add_custom__":
+            dlg = CustomProviderDialog(self)
+            if dlg.exec():
+                if self._api_list:
+                    self._api_list._refresh()
+                self._show_auth_method()
+        else:
+            self._show_apikey_dialog(pid)
 
     def _show_apikey_dialog(self, pid: str) -> None:
         hint = _dialog_auth_hint(pid)
@@ -1047,6 +1235,7 @@ class AuthMethodWizard(QDialog):
 class GatewayPage(QWidget):
     """Simple Aery gateway key entry."""
 
+    _FONT_SIZE = "14px"
     saved = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -1061,16 +1250,18 @@ class GatewayPage(QWidget):
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(
-            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+            f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
         root.addWidget(sub)
 
         row = QHBoxLayout()
         row.setSpacing(8)
         lbl = QLabel("Aery Key")
         lbl.setFixedWidth(70)
-        lbl.setStyleSheet(f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
+        lbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
         row.addWidget(lbl)
         self._key_inp = _input("Paste key…", 260)
+        self._key_inp.setStyleSheet(
+            self._key_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
         row.addWidget(self._key_inp, 1)
         root.addLayout(row)
 
@@ -1078,7 +1269,7 @@ class GatewayPage(QWidget):
             '<a href="https://aery-web.pages.dev" style="color:#8abeb7;">'
             'Open aery-web.pages.dev →</a>')
         link.setOpenExternalLinks(True)
-        link.setStyleSheet(f"font-size:{_fs(F_S)}; color:{ACCENT}; border:none; background:transparent;")
+        link.setStyleSheet(f"font-size:13px; color:{ACCENT}; border:none; background:transparent;")
         root.addWidget(link)
         root.addSpacing(12)
 
@@ -1099,66 +1290,6 @@ class GatewayPage(QWidget):
             return
         oauth_helper.save_gateway_key(key)
         self.saved.emit()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# GitHub Copilot device-flow sub-dialog
-# ══════════════════════════════════════════════════════════════════════════════
-
-class _DeviceFlowDialog(QDialog):
-    """Shows GitHub Copilot device-code; polls until authorised or timeout."""
-
-    def __init__(self, pid: str, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._pid = pid
-        self.setWindowTitle(f"LOGIN {oauth_helper.OAUTH_CONFIGS[pid]['name'].upper()}")
-        self.setFixedWidth(400)
-        self.setModal(True)
-        _apply_dialog_style(self)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
-
-        self._code_lbl = QLabel("Opening browser…")
-        self._code_lbl.setWordWrap(True)
-        self._code_lbl.setStyleSheet(
-            f"font-size:12px; font-weight:700; color:{ACCENT};"
-            f" border:none; background:{SURFACE}; border-radius:4px; padding:12px;")
-        root.addWidget(self._code_lbl)
-
-        hint = QLabel(
-            "Enter the code above at github.com/login/device\n"
-            "This window will close automatically when complete."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
-        root.addWidget(hint)
-
-        threading.Thread(target=self._poll, daemon=True).start()
-
-    def _poll(self) -> None:
-        QTimer.singleShot(0, lambda: self._code_lbl.setText(
-            "Opening browser — enter code at github.com/login/device…"))
-        try:
-            cfg = oauth_helper.OAUTH_CONFIGS.get(self._pid, {})
-            ok = oauth_helper._device_flow_login(self._pid, cfg)
-        except Exception as e:
-            QTimer.singleShot(0, lambda: self._fail(str(e)))
-            return
-        QTimer.singleShot(0, lambda: self._done(ok))
-
-    def _fail(self, msg: str) -> None:
-        QMessageBox.critical(self, "Login Failed", msg)
-        self.reject()
-
-    def _done(self, ok: bool) -> None:
-        if ok:
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Login Failed", "Device flow timed out or was cancelled.")
-            self.reject()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

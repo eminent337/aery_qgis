@@ -166,7 +166,7 @@ def test_wizard_on_method_select_shows_oauth_screen(qtbot):
     from aery_plugin.provider_settings import AuthMethodWizard
     dlg = AuthMethodWizard()
     qtbot.addWidget(dlg)
-    dlg.show()  # must show to populate visibility chain for isVisible()
+    dlg.show()
     dlg._on_method_selected("oauth")
     assert dlg._back_btn.isVisible()
     assert "SELECT OAUTH PROVIDER" in dlg._title_lbl.text()
@@ -262,16 +262,16 @@ def test_azure_dialog_has_base_url_and_model(empty_auth, qtbot):
         dlg.close()
 
 
-def test_openai_compatible_dialog_has_base_url_model(empty_auth, qtbot):
-    """openai-compatible ApiKeyDialog has base URL + API key + model_id fields."""
-    from aery_plugin.provider_settings import ApiKeyDialog
+def test_custom_provider_dialog_has_fields(empty_auth, qtbot):
+    """CustomProviderDialog has base URL, model ID, and API key fields."""
+    from aery_plugin.provider_settings import CustomProviderDialog
     with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
          patch.object(oauth_helper, "AUTH_PATH", os.path.join(empty_auth, "auth.json")):
-        dlg = ApiKeyDialog("openai-compatible")
+        dlg = CustomProviderDialog()
         qtbot.addWidget(dlg)
-        assert hasattr(dlg, "_key_inp")
         assert hasattr(dlg, "_url_inp")
-        assert hasattr(dlg, "_model_combo")
+        assert hasattr(dlg, "_model_inp")
+        assert hasattr(dlg, "_key_inp")
         dlg.close()
 
 
@@ -322,9 +322,23 @@ def test_dialog_auth_hint_base_url():
 
 
 def test_dialog_auth_hint_custom():
+    """openai-compatible and claude-local use CustomProviderDialog, so hint is 'custom'."""
     from aery_plugin.provider_settings import _dialog_auth_hint
-    assert _dialog_auth_hint("openai-compatible")  == "custom"
-    assert _dialog_auth_hint("claude-local")        == "custom"
+    assert _dialog_auth_hint("openai-compatible") == "custom"
+    assert _dialog_auth_hint("claude-local") == "custom"
+
+
+def test_custom_provider_dialog_has_fields(empty_auth, qtbot):
+    """CustomProviderDialog lets user add a new OpenAI-compatible provider."""
+    from aery_plugin.provider_settings import CustomProviderDialog
+    with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
+         patch.object(oauth_helper, "AUTH_PATH", os.path.join(empty_auth, "auth.json")):
+        dlg = CustomProviderDialog()
+        qtbot.addWidget(dlg)
+        assert hasattr(dlg, "_url_inp")
+        assert hasattr(dlg, "_model_inp")
+        assert hasattr(dlg, "_key_inp")
+        dlg.close()
 
 
 def test_dialog_auth_hint_gateway():
@@ -551,7 +565,7 @@ def test_list_button_selected_state(qtbot):
     assert btn._selected is False
     btn.set_selected(True)
     assert btn._selected is True
-    assert "font-weight:700" in btn.styleSheet()   # selected = bold
+    assert "font-weight:900" in btn.styleSheet()   # selected = boldest
     btn.set_selected(False)
     assert btn._selected is False
     assert "font-weight:500" in btn.styleSheet()   # deselected = normal

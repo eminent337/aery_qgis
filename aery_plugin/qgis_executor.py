@@ -242,14 +242,38 @@ def _build_globals() -> dict[str, Any]:
         except ImportError:
             pass
 
-    # Deferred lookup — function may be defined after this call during import;
-    # the real function is resolved when _build_globals() is called at runtime.
+    # Import _build_leaflet_html from geospatial_tools (single source of truth)
     try:
-        g["_build_leaflet_html"] = _build_leaflet_html  # type: ignore[name-defined]
-    except NameError:
-        def _build_leaflet_html_stub(*a, **kw):  # type: ignore[misc]
-            raise RuntimeError("_build_leaflet_html not yet available — call after full import")
-        g["_build_leaflet_html"] = _build_leaflet_html_stub
+        from aery_plugin.geospatial_tools import _build_leaflet_html
+        g["_build_leaflet_html"] = _build_leaflet_html
+    except ImportError:
+        pass
+
+    # Inject geospatial helper functions into globals so they're available
+    # inside run_qgis_code blocks (Approach 2)
+    try:
+        from aery_plugin.geospatial_tools import (
+            export_webmap as _export_webmap,
+            publish_geoserver as _publish_geoserver,
+            set_layer_style as _set_layer_style,
+            multi_map_layout as _multi_map_layout,
+            save_map_theme as _save_map_theme,
+            load_map_theme as _load_map_theme,
+            list_map_themes as _list_map_themes,
+            refresh_canvas as _refresh_canvas,
+        )
+        g.update({
+            "export_webmap": _export_webmap,
+            "publish_geoserver": _publish_geoserver,
+            "set_layer_style": _set_layer_style,
+            "multi_map_layout": _multi_map_layout,
+            "save_map_theme": _save_map_theme,
+            "load_map_theme": _load_map_theme,
+            "list_map_themes": _list_map_themes,
+            "refresh_canvas": _refresh_canvas,
+        })
+    except ImportError:
+        pass
 
     # Question-answer bridge: chat_panel calls this to deliver user answers
     try:
@@ -603,7 +627,23 @@ class QGISCodeExecutor(QObject):
                         except Exception:
                             pass
                     elif code == "__capture_canvas__":
-                        response = {"id": req_id, "success": True, "result": self._capture_canvas()}
+                        try:
+                            b64 = self._capture_canvas()
+                        except Exception:
+                            b64 = ""
+                        PNG_PREFIX = "iVBORw0KGgo"
+                        if not b64 or len(b64.strip()) < 16:
+                            response = {
+                                "id": req_id, "success": False,
+                                "error": "Canvas capture returned empty image data. Canvas may be uninitialised.",
+                            }
+                        elif not b64.strip().startswith(PNG_PREFIX):
+                            response = {
+                                "id": req_id, "success": True,
+                                "result": f"[non-image base64, {len(b64)} chars]",
+                            }
+                        else:
+                            response = {"id": req_id, "success": True, "result": b64}
                     elif code == "__ask_user__":
                         # Forward run_id so the answer can be tied back to the triggering turn
                         qp = {**metadata.get("params", {}), "run_id": metadata.get("run_id")}
@@ -673,7 +713,12 @@ class QGISCodeExecutor(QObject):
             pass
 
     def _capture_canvas(self) -> str:
-        """Capture the QGIS map canvas as a base64 PNG string."""
+        """Capture the QGIS map canvas as a base64 PNG string.
+
+        Validates the buffer before encoding — raises RuntimeError if the image is
+        empty/invalid so `__capture_canvas__` can return a text error instead of an
+        empty data URL that would produce an Anthropic insertBlob validation error.
+        """
         from PyQt6.QtGui import QImage, QPainter
         from PyQt6.QtCore import QSize
         import io
@@ -686,7 +731,10 @@ class QGISCodeExecutor(QObject):
         painter.end()
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode()
+        raw = buf.getvalue()
+        if not raw or len(raw) < 8:
+            raise RuntimeError("Canvas capture produced an empty/invalid image buffer")
+        return base64.b64encode(raw).decode()
 
     @staticmethod
     def classify_code_risk(code: str) -> list[dict[str, str]]:
@@ -758,6 +806,11 @@ class QGISCodeExecutor(QObject):
         if not isinstance(str_rep, str):
             return str(str_rep)
         s = str_rep
+        # Guard: empty/invalid base64 — collapse before it can reach the runner
+        # as {type:"image",data:""} which produces "empty base64-encoded bytes"
+        # in the Anthropic/insertBlob API call
+        if s.startswith("iVBORw0KGgo") and len(s) <= 16:
+            return {"_aery_summary": "[empty/invalid base64 image — collapsed]"}
         if s.startswith("iVBORw0KGgo") and len(s) > 600_000:
             return {"_aery_summary": f"[base64 image, {len(s)} chars — send to canvas instead]"}
         if len(s) > 1_000_000:

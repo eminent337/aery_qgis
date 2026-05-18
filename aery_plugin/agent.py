@@ -23,6 +23,8 @@ class Agent:
         self._client = None
         self._model = ""
         self._system_prompt = self._build_system_prompt()
+        self._session_id: Optional[str] = None
+        self._project_dir: Optional[str] = None
 
     def _build_system_prompt(self) -> str:
         """Build the geospatial system prompt from the rules JSON."""
@@ -121,8 +123,6 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
 
         auth = oauth_helper._load_auth()
         auth_entry = auth.get(provider_id, {})
-        if not auth_entry.get("key") and not auth_entry.get("access"):
-            raise RuntimeError(f"No credentials for provider '{provider_id}'. Please configure it in Settings.")
 
         return provider_id, auth_entry, model
 
@@ -131,8 +131,14 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
         provider_id, auth_entry, model = self._load_credentials()
         self._client, self._model = create_client(provider_id, auth_entry, model)
 
+    def reinitialize(self):
+        """Force re-create the API client (call after provider/model change)."""
+        self._client = None
+        self._model = ""
+        self.initialize()
+
     def _build_context_message(self) -> str:
-        """Build a QGIS environment context message."""
+        """Build a QGIS environment context message with graph context."""
         try:
             from qgis.core import QgsProject
             proj = QgsProject.instance()
@@ -151,6 +157,17 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
                 f"Layers ({len(layers)}):",
             ] + (layers if layers else ["  (none)"])
             lines.append("=== END ENVIRONMENT ===")
+
+            # Add graph context if available
+            if self._project_dir:
+                from aery_plugin.graph_engine import get_context_for_prompt, build_tool_capability_graph, auto_detect_spatial_relationships, prune_graph
+                build_tool_capability_graph(self._project_dir)
+                auto_detect_spatial_relationships(self._project_dir)
+                prune_graph(self._project_dir)
+                graph_ctx = get_context_for_prompt(self._project_dir)
+                if graph_ctx:
+                    lines.append(graph_ctx)
+
             return "\n".join(lines)
         except Exception:
             return ""
@@ -164,13 +181,32 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
         if not self._client:
             self.initialize()
 
-        # Add context on first message
+        # Add context on first message, refresh graph context on subsequent messages
         if not self._messages:
             ctx = self._build_context_message()
             if ctx:
                 self._messages.append({"role": "user", "content": f"[QGIS Context]\n{ctx}"})
+        elif self._project_dir:
+            # Refresh graph context on each turn (layers may have changed)
+            try:
+                from aery_plugin.graph_engine import get_context_for_prompt, auto_detect_spatial_relationships
+                auto_detect_spatial_relationships(self._project_dir)
+                graph_ctx = get_context_for_prompt(self._project_dir, user_message)
+                if graph_ctx:
+                    self._messages.append({"role": "user", "content": f"[Graph Context]\n{graph_ctx}"})
+            except Exception:
+                pass
 
         self._messages.append({"role": "user", "content": user_message})
+        self._persist_message({"role": "user", "content": user_message})
+
+        # Record prompt in graph
+        if self._project_dir:
+            try:
+                from aery_plugin.graph_engine import record_prompt
+                record_prompt(self._project_dir, user_message, [], [])
+            except Exception:
+                pass
 
         max_turns = 10
         for turn in range(max_turns):
@@ -250,6 +286,25 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
                         tool_result = str(result)
                         if on_event:
                             on_event({"type": "tool_done", "tool": name, "result": tool_result[:500]})
+
+                        # Record in graph
+                        if self._project_dir:
+                            try:
+                                from aery_plugin.graph_engine import record_code_execution
+                                input_layers = args.get("layers", args.get("layer", ""))
+                                if isinstance(input_layers, str):
+                                    input_layers = [input_layers] if input_layers else []
+                                output_files = []
+                                if isinstance(result, dict):
+                                    output_files = result.get("files", result.get("output_files", []))
+                                    if isinstance(output_files, str):
+                                        output_files = [output_files]
+                                record_code_execution(
+                                    self._project_dir, name, args.get("code", ""),
+                                    tool_result[:200], input_layers, output_files, True,
+                                )
+                            except Exception:
+                                pass
                     except Exception as e:
                         tool_result = f"Error: {e}"
                         if on_event:
@@ -265,18 +320,60 @@ multi_map_layout(layout_name='comparison', output_path='/path/multi.pdf', paper_
                         "tool_call_id": tc.get("id", ""),
                         "content": tool_result,
                     })
+                    self._persist_message({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "tool_name": name,
+                        "content": tool_result[:2000],  # truncate for persistence
+                    })
             else:
                 # Final response
                 if full_content:
                     self._messages.append({"role": "assistant", "content": full_content})
+                    self._persist_message({"role": "assistant", "content": full_content})
                 return full_content
 
         return "Agent reached maximum turns."
 
     def reset(self):
-        """Clear conversation history."""
+        """Clear conversation history and start fresh session."""
         self._messages = []
+        if self._project_dir:
+            from aery_plugin.session import create_session
+            self._session_id = create_session(self._project_dir)
 
     def get_history(self) -> list[dict]:
         """Return conversation history."""
         return list(self._messages)
+
+    def list_sessions(self, project_dir: str) -> list[dict]:
+        """List all sessions for a project."""
+        from aery_plugin.session import list_sessions
+        return list_sessions(project_dir)
+
+    def start_session(self, project_dir: str) -> str:
+        """Start a new persisted session. Returns session ID."""
+        from aery_plugin.session import create_session
+        self._project_dir = project_dir
+        self._session_id = create_session(project_dir)
+        return self._session_id
+
+    def resume_session(self, project_dir: str, session_id: str) -> list[dict]:
+        """Resume a previous session. Returns loaded messages."""
+        from aery_plugin.session import load_session
+        self._project_dir = project_dir
+        self._session_id = session_id
+        messages = load_session(project_dir, session_id)
+        # Filter out session_start headers and context messages
+        self._messages = [
+            m for m in messages
+            if m.get("role") in ("user", "assistant", "tool")
+        ]
+        return self._messages
+
+    def _persist_message(self, msg: dict):
+        """Persist a message to the session file."""
+        if not self._session_id or not self._project_dir:
+            return
+        from aery_plugin.session import append_message
+        append_message(self._project_dir, self._session_id, msg)

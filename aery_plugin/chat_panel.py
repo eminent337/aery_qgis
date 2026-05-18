@@ -1486,6 +1486,12 @@ class ChatPanel(QDockWidget):
     def _on_cfg_clicked(self) -> None:
         if self.on_config:
             self.on_config()
+        # Reinitialize agent after config changes
+        try:
+            self.agent.reinitialize()
+            self._refresh_provider_label()
+        except Exception:
+            pass
 
     def _show_model_switcher(self) -> None:
         try:
@@ -1495,6 +1501,11 @@ class ChatPanel(QDockWidget):
             dlg.exec()
             self._dialogs.remove(dlg)
             self._refresh_provider_label()
+            # Reinitialize agent with new provider/model
+            try:
+                self.agent.reinitialize()
+            except Exception:
+                pass
         except Exception as e:
             self._add_bubble("ERROR", f"Model switcher: {e}", "error")
 
@@ -1506,6 +1517,11 @@ class ChatPanel(QDockWidget):
             dlg.exec()
             self._dialogs.remove(dlg)
             self._refresh_provider_label()
+            # Reinitialize agent with new provider/model
+            try:
+                self.agent.reinitialize()
+            except Exception:
+                pass
         except Exception as e:
             self._add_bubble("ERROR", f"Scopes dialog: {e}", "error")
 
@@ -1613,63 +1629,9 @@ class ChatPanel(QDockWidget):
         if scrollbar:
             scrollbar.setValue(scrollbar.maximum())
 
-    def connect_rpc(self) -> None:
-        """No-op — agent is in-process, no connection needed."""
-        pass
-
-    def disconnect_rpc(self) -> None:
-        """No-op — agent is in-process, no disconnection needed."""
-        pass
-
     def show_error(self, message: str) -> None:
         """Show an error message in the chat feed."""
         self._add_bubble("ERROR", message, "error")
-
-    def set_rpc(self, rpc) -> None:
-        """No-op — agent is in-process, no RPC swap needed."""
-        pass
-
-    def _extract_text(self, event: dict) -> str:
-        blocks = []
-        for key in ("message", "partial"):
-            msg = event.get(key)
-            if isinstance(msg, dict):
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    blocks.extend(
-                        block.get("text", "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    )
-                if not blocks and isinstance(msg.get("errorMessage"), str):
-                    blocks.append(msg.get("errorMessage", ""))
-        return "".join(blocks)
-
-    def _event_role(self, event: dict) -> str:
-        for key in ("message", "partial"):
-            msg = event.get(key)
-            if isinstance(msg, dict) and isinstance(msg.get("role"), str):
-                return msg["role"]
-        return ""
-
-    def _is_background_noise(self, msg: str) -> bool:
-        text = (msg or "").strip()
-        if not text:
-            return True
-        lowered = text.lower()
-        if "qgisinterface" in lowered and "has no attribute 'project'" in lowered:
-            return True
-        if "name 'os' is not defined" in lowered:
-            return True
-        if text.startswith("{") and text.endswith("}"):
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                data = None
-            if isinstance(data, dict) and {"project_path", "project_dir", "layers", "crs"}.issubset(data.keys()):
-                self._last_context = data
-                return True
-        return False
 
     def _on_event(self, event: dict) -> None:
         etype = event.get("type", "")
@@ -1770,38 +1732,15 @@ class ChatPanel(QDockWidget):
         except Exception:
             pass
 
-    def _on_response(self, _command: str, data: dict) -> None:
-        if not data.get("success"):
-            self._add_bubble("ERROR", str(data.get("error", "Engine error")), "error")
-            self._end_streaming()
-
-    def _on_error(self, msg: str) -> None:
-        text = str(msg)
-        if self._is_background_noise(text):
-            self._set_activity("thinking..." if self._is_streaming else "ready", active=self._is_streaming)
-            return
-        self._add_bubble("ERROR", text, "error")
-        self._end_streaming()
-
-    def _on_exit(self, code: int) -> None:
-        """No-op — agent is in-process, no process exit to handle."""
-        pass
-
-    def _restart_engine(self) -> None:
-        """No-op — agent is in-process, no restart needed."""
-        pass
-
     def append_message(self, sender: str, text: str, msg_type: str = "assistant") -> None:
         self._add_bubble(sender, text, msg_type)
 
     def set_ready(self) -> None:
         if not self._ready:
             self._ready = True
-            self.connect_rpc()
             self._set_activity("ready", active=False)
             _refresh_layer_cache()
             self._load_session()
-            self._health_check()
 
     def on_project_changed(self) -> None:
         """Called when user opens/saves a different project."""
@@ -1883,10 +1822,6 @@ class ChatPanel(QDockWidget):
                 self._add_bubble("SYSTEM", f"Resumed session ({len(msgs)} messages)", "system")
         except Exception:
             pass
-
-    def _health_check(self) -> None:
-        """No-op — agent is in-process, no binary health check needed."""
-        pass
 
     def _export_html_report(self) -> None:
         """Export the current session as an HTML report to project_dir/.aery/report.html."""

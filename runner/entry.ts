@@ -1351,6 +1351,16 @@ result = buf.data().toBase64().data().decode()
                 const r = await qgisRequest(port, "run_code", { code });
                 const b64 = typeof r.result === "string" ? r.result : "";
                 const quality = scale === 2 ? "high" : "fast";
+                // Guard: reject empty, missing iVBOR magic prefix, or truncated PNG base64
+                // so the runner never emits {type:"image",data:""} to the Anthropic API
+                const PNG_PREFIX = "iVBORw0KGgo";
+                const ok_b64 = b64 && b64.length >= 16 && b64.startsWith(PNG_PREFIX);
+                if (!ok_b64) {
+                    return {
+                        content: [{ type: "text", text: `Canvas capture failed: ${r.error || "empty or invalid image data"}` }],
+                        details: { width, height, scale, quality },
+                    };
+                }
                 return {
                     content: [
                         { type: "text", text: `Map captured (${width}x${height}, ${quality})` },

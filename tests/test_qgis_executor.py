@@ -431,6 +431,84 @@ def test_safe_json_result_small_string_passthrough():
     assert QGISCodeExecutor._safe_json_result("hello") == "hello"
 
 
+def test_safe_json_result_empty_base64_collapsed():
+    """A bare PNG magic prefix with no payload is collapsed to a summary dict so the
+    runner can never receive an empty data:image/png;base64 URL in an LLM API call."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    collapsed = QGISCodeExecutor._safe_json_result("iVBORw0KGgo")
+    assert isinstance(collapsed, dict)
+    assert "_aery_summary" in collapsed
+
+
+def test_safe_json_result_valid_base64_under_threshold_passthrough():
+    """A real base64 PNG (valid; under 256-bytes threshold) passes through as-is."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+    import base64 as _b64
+
+    raw = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+                 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+                 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xFF, 0xFF, 0xFF,
+                 0x7F, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0x41, 0xD1,
+                 0x80, 0x84, 0x08, 0x10, 0x00, 0x00, 0x00, 0x00,
+                 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82])
+    b64 = _b64.b64encode(raw).decode()
+    result = QGISCodeExecutor._safe_json_result(b64)
+    assert result == b64
+
+
+def test_safe_json_result_large_base64_like_collapsed():
+    """PNG-signature base64 over 600 KB is collapsed to a summary dict."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    big = "iVBORw0KGgo" + ("A" * 600_000)
+    result = QGISCodeExecutor._safe_json_result(big)
+    assert isinstance(result, dict)
+    assert "_aery_summary" in result
+
+
+def test_safe_json_result_empty_base64_collapsed():
+    """A bare PNG magic prefix with no payload is collapsed to a summary dict so the
+    runner can never receive an empty data:image/png;base64 URL in an LLM API call."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    collapsed = QGISCodeExecutor._safe_json_result("iVBORw0KGgo")
+    assert isinstance(collapsed, dict)
+    assert "_aery_summary" in collapsed
+
+
+def test_safe_json_result_valid_base64_under_threshold_passthrough():
+    """A real base64 PNG (valid; under 256-byte threshold) passes through as-is."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+    import base64 as _b64
+
+    raw = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+                 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+                 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xFF, 0xFF, 0xFF,
+                 0x7F, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0x41, 0xD1,
+                 0x80, 0x84, 0x08, 0x10, 0x00, 0x00, 0x00, 0x00,
+                 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82])
+    b64 = _b64.b64encode(raw).decode()
+    result = QGISCodeExecutor._safe_json_result(b64)
+    assert result == b64
+
+
+def test_safe_json_result_large_base64_like_collapsed():
+    """PNG-signature base64 over 600 KB is collapsed to a summary dict."""
+    from aery_plugin.qgis_executor import QGISCodeExecutor
+
+    big = "iVBORw0KGgo" + ("A" * 600_000)
+    result = QGISCodeExecutor._safe_json_result(big)
+    assert isinstance(result, dict)
+    assert "_aery_summary" in result
+
+
 def test_executor_shutdown_clears_pending_questions_and_result_queues(tmp_path):
     """shutdown() clears _pending_questions and _result_queues so stale entries do not leak."""
     import aery_plugin.qgis_executor as _qe

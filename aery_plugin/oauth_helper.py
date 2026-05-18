@@ -619,6 +619,33 @@ def _oauth_models(pid: str) -> list[tuple]:
     return models.get(pid, [])
 
 
+def get_custom_providers() -> list[dict]:
+    """Return custom OpenAI-compatible providers from models.json."""
+    models_path = os.path.join(AGENT_DIR, "models.json")
+    if not os.path.exists(models_path):
+        return []
+    try:
+        with open(models_path) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    auth = _load_auth()
+    result = []
+    for pid, cfg in data.get("providers", {}).items():
+        entry = auth.get(pid, {})
+        result.append({
+            "id": pid,
+            "name": cfg.get("name", pid.replace("-", " ").title()),
+            "type": "custom",
+            "connected": bool(entry.get("key") or entry.get("access")),
+            "models": cfg.get("models", []),
+            "model_names": [(m, m) for m in cfg.get("models", [])],
+            "base_url": cfg.get("baseUrl", ""),
+        })
+    return result
+
+
 def get_active_provider() -> Optional[dict]:
     settings_path = os.path.join(AGENT_DIR, "settings.json")
     if not os.path.exists(settings_path):
@@ -653,6 +680,47 @@ def set_active_provider(provider_id: str, model: str = "") -> None:
     existing.setdefault("defaultThinkingLevel", "off")
     with open(settings_path, "w") as f:
         json.dump(existing, f, indent=2)
+
+
+def save_custom_provider(base_url: str, model_id: str, api_key: str) -> dict:
+    """Save a custom OpenAI-compatible provider.
+
+    Returns {"provider_id": ..., "model_id": ...} on success.
+    """
+    _ensure_agent_dir()
+    models_path = os.path.join(AGENT_DIR, "models.json")
+
+    # Load existing models.json
+    data = {"providers": {}}
+    if os.path.exists(models_path):
+        try:
+            with open(models_path) as f:
+                data = json.load(f)
+        except Exception:
+            pass
+
+    # Generate provider ID from base URL
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "custom"
+    provider_id = f"custom-{host.replace('.', '-')}"
+
+    # Add or update provider
+    data.setdefault("providers", {})
+    data["providers"][provider_id] = {
+        "name": f"Custom ({host})",
+        "baseUrl": base_url.rstrip("/"),
+        "api": "openai-completions",
+        "models": [model_id],
+    }
+
+    with open(models_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    # Save API key
+    save_api_key(provider_id, api_key)
+
+    return {"provider_id": provider_id, "model_id": model_id}
 
 
 def logout_provider(provider_id: str) -> bool:

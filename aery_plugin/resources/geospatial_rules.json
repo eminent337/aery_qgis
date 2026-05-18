@@ -9,11 +9,12 @@
     "2. EXPLORE: Get project context, inspect layers, check CRS",
     "3. PLAN: Select the right operations, handle CRS mismatches",
     "4. EXECUTE: Discover/describe/run live QGIS algorithms before falling back to custom Python",
-    "5. STYLE: Use set_layer_style for colormap/multiband/graduated styling — capture_canvas to verify",
-    "6. SNAPSHOT: save_map_theme freezes current visual state — load_map_theme to rewind",
-    "7. MAP OUTPUT: export_webmap for Leaflet interactive map, or print_layout/multi_map_layout for PDFs",
+    "5. STYLE: Use set_layer_style for colormap/multiband/graduated styling — refresh_canvas after — capture_canvas to verify",
+    "6. SNAPSHOT: save_map_theme freezes current visual state — list_map_themes to see saved themes — load_map_theme to rewind",
+    "7. MAP OUTPUT: export_webmap for Leaflet interactive map, or multi_map_layout for print PDFs",
     "8. PUBLISH: publish_geoserver pushes layers to a GeoServer REST endpoint for WFS/WMS sharing",
-    "9. CONFIRM: Show results, offer follow-up operations"
+    "9. GRAPH: Use query_provenance to trace layer lineage, query_tool_chain for pipeline suggestions, query_graph for spatial relationships",
+    "10. CONFIRM: Show results, offer follow-up operations"
   ],
   "processing_search_filter": "# Search algorithms by keyword instead of listing all:\nimport processing\nalgs = [a.id() for a in processing.algorithmProvider('native').algorithms() if 'buffer' in a.id()]\n# Or search across all providers:\nfrom qgis.core import QgsApplication\nalgs = [a.id() for a in QgsApplication.processingRegistry().algorithms() if 'interpolat' in a.id().lower()]\nresult = algs[:20]  # return top 20 matches",
   "globals_available": [

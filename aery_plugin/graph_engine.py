@@ -474,6 +474,45 @@ def query_what_can_follow(project_dir: str, tool_name: str) -> list[str]:
     return [n["label"] for n in g.neighbors(tool_id, EDGE_CHAINS_TO)]
 
 
+def query_spatial_relationships(project_dir: str, layer_name: str = "") -> str:
+    """Query spatial relationships between layers.
+
+    If layer_name is provided, returns relationships for that layer.
+    Otherwise returns all spatial relationships.
+    """
+    g = get_graph(project_dir)
+    if g.stats()["nodes"] == 0:
+        return "No graph data available."
+
+    spatial_edges = [EDGE_OVERLAPS, EDGE_CONTAINS, EDGE_WITHIN, EDGE_TOUCHES, EDGE_NEAR, EDGE_SAME_CRS]
+    lines = []
+
+    for edge in g._edges:
+        if edge.get("rel") not in spatial_edges:
+            continue
+        src_node = g._nodes.get(edge["src"], {})
+        dst_node = g._nodes.get(edge["dst"], {})
+        src_label = src_node.get("label", edge["src"])
+        dst_label = dst_node.get("label", edge["dst"])
+
+        # Filter by layer_name if provided
+        if layer_name:
+            if layer_name.lower() not in src_label.lower() and layer_name.lower() not in dst_label.lower():
+                continue
+
+        rel = edge["rel"]
+        weight = edge.get("weight", 1.0)
+        lines.append(f"  {src_label} --[{rel}]--> {dst_label} (confidence: {weight:.1%})")
+
+    if not lines:
+        if layer_name:
+            return f"No spatial relationships found for '{layer_name}'."
+        return "No spatial relationships detected."
+
+    header = f"Spatial relationships for '{layer_name}':" if layer_name else "All spatial relationships:"
+    return header + "\n" + "\n".join(lines)
+
+
 def get_context_for_prompt(project_dir: str, prompt: str = "") -> str:
     """Return a compact graph context string, filtered by prompt keywords."""
     g = get_graph(project_dir)
