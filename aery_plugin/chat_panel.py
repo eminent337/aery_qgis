@@ -1,13 +1,12 @@
 """Simplified Aery QGIS chat panel with settings menu."""
-
 import base64
 import json
 import os
-import re
 from datetime import datetime
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSlot, Q_ARG, QMetaObject
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QTextOption, QIcon, QPainter
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
@@ -20,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -30,81 +30,22 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from aery_plugin.activity_strip import ActivityStrip
+from aery_plugin.input_area import InputArea
+from aery_plugin.transcript_view import TranscriptView, MessageBubble, ToolBlock
+from aery_plugin.ui_constants import (
+    BG_BASE, BG_SURFACE, BG_PANEL, BG_HIGH, BG_CARD,
+    ACCENT, ACCENT_DIM, BORDER, TEXT_MAIN, TEXT_DIM,
+    TEXT_MUTED, ERROR_COLOR, WARNING_COLOR, SUCCESS_COLOR,
+    FONT_SANS, FONT_MONO,
+)
+from aery_plugin.ui_helpers import SessionState, refresh_layer_cache
+from aery_plugin.ui_utils import format_text_html
+from aery_plugin.ui_dialogs import InfoDialog, _QuestionWidget
 
-BG_BASE = "#0D0E15"
-BG_SURFACE = "#12131A"
-BG_PANEL = "#1A1B22"
-BG_HIGH = "#292931"
-BG_CARD = "#1E1F26"
-ACCENT = "#57F1DB"
-ACCENT_DIM = "#2DD4BF"
-BORDER = "#3C4A46"
-TEXT_MAIN = "#E3E1EC"
-TEXT_DIM = "#BACAC5"
-TEXT_MUTED = "#859490"
-ERROR_COLOR = "#FFB4AB"
-WARNING_COLOR = "#FFD1AA"
-SUCCESS_COLOR = "#8EE7A8"
-FONT_SANS = "Inter, Aptos, Segoe UI, sans-serif"
-FONT_MONO = "JetBrains Mono, Consolas, monospace"
+# backward-compat alias (function body lives in ui_helpers)
+_refresh_layer_cache = refresh_layer_cache
 
-
-def _escape_html(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-# Cache of layer names for linkification — refreshed on project/layer change
-_layer_name_cache: list[str] = []
-
-
-def _refresh_layer_cache() -> None:
-    global _layer_name_cache
-    try:
-        from qgis.core import QgsProject
-        _layer_name_cache = [lyr.name() for lyr in QgsProject.instance().mapLayers().values()]
-    except Exception:
-        _layer_name_cache = []
-
-
-def _format_text_html(text: str) -> str:
-    """Convert agent text into compact readable HTML, linkifying layer names."""
-    if not text:
-        return ""
-    html = _escape_html(text)
-    html = re.sub(
-        r"```(\w*)\n?(.*?)```",
-        lambda m: (
-            f"<pre style='background:{BG_BASE};border:1px solid {BORDER};"
-            f"border-radius:4px;padding:8px;font-family:{FONT_MONO};"
-            f"font-size:11px;line-height:1.45;color:{ACCENT};white-space:pre-wrap;'>"
-            f"{m.group(2).strip()}</pre>"
-        ),
-        html,
-        flags=re.DOTALL,
-    )
-    html = re.sub(
-        r"`([^`]+)`",
-        lambda m: (
-            f"<code style='background:{BG_HIGH};padding:1px 5px;border-radius:3px;"
-            f"font-family:{FONT_MONO};color:{ACCENT};'>{m.group(1)}</code>"
-        ),
-        html,
-    )
-    html = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", html)
-    # Linkify layer names using cache (no QGIS API call per render)
-    for name in _layer_name_cache:
-        esc = _escape_html(name)
-        if esc in html:
-            html = html.replace(
-                esc,
-                f"<a href='layer://{esc}' style='color:{ACCENT_DIM};text-decoration:underline;'>{esc}</a>",
-                1,
-            )
-    return html.replace("\n", "<br>")
-
-
-def _now_stamp() -> str:
-    return datetime.now().strftime("%H:%M")
 
 
 def _style_button(btn: QPushButton, active: bool = False, danger: bool = False) -> None:
@@ -131,209 +72,30 @@ def _style_button(btn: QPushButton, active: bool = False, danger: bool = False) 
     """)
 
 
-class MessageBubble(QFrame):
-    """Structured transcript card for one message."""
+def _svg_pixmap(path: str, size: int) -> QPixmap:
+    try:
+        dpr = QApplication.primaryScreen().devicePixelRatioF()
+    except Exception:
+        dpr = 1.0
+    target = int(round(size * dpr))
 
-    def __init__(
-        self,
-        sender: str,
-        text: str,
-        msg_type: str = "assistant",
-        parent: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self.setObjectName(f"msg_{msg_type}")
+    pix = QPixmap(target, target)
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(Qt.GlobalColor.transparent)
 
-        colors = {
-            "assistant": ACCENT,
-            "user": TEXT_DIM,
-            "error": ERROR_COLOR,
-            "system": TEXT_MUTED,
-            "tool": WARNING_COLOR,
-        }
-        border = colors.get(msg_type, TEXT_DIM)
-        title = {
-            "assistant": "AERY",
-            "user": "YOU",
-            "error": "ERROR",
-            "system": "SYSTEM",
-            "tool": "TOOL",
-        }.get(msg_type, sender.upper())
+    from PyQt6.QtSvg import QSvgRenderer
+    renderer = QSvgRenderer(path)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    renderer.render(p)
+    p.end()
 
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        label = QLabel(title)
-        label.setStyleSheet(
-            f"color:{border};font-family:{FONT_MONO};font-size:10px;"
-            "font-weight:800;letter-spacing:0.08em;background:transparent;"
-        )
-        header.addWidget(label)
-        header.addStretch()
-        time_lbl = QLabel(_now_stamp())
-        time_lbl.setStyleSheet(
-            f"color:{TEXT_MUTED};font-family:{FONT_MONO};font-size:9px;background:transparent;"
-        )
-        header.addWidget(time_lbl)
-        layout.addLayout(header)
-
-        body = QLabel(_format_text_html(text))
-        body.setWordWrap(True)
-        body.setTextFormat(Qt.TextFormat.RichText)
-        body.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse
-        )
-        body.setOpenExternalLinks(False)
-        body.linkActivated.connect(self.on_link)
-        body.setStyleSheet(
-            f"color:{TEXT_MAIN};font-family:{FONT_SANS};font-size:14px;"
-            "line-height:1.6;background:transparent;"
-        )
-        layout.addWidget(body)
-
-    def on_link(self, url: str) -> None:
-        if url.startswith("layer://"):
-            layer_name = url[8:]
-            try:
-                from qgis.core import QgsProject
-                from qgis.utils import iface as _iface
-                for lyr in QgsProject.instance().mapLayers().values():
-                    if lyr.name() == layer_name:
-                        _iface.setActiveLayer(lyr)
-                        _iface.layerTreeView().setCurrentLayer(lyr)
-                        break
-            except Exception:
-                pass
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    return pix
 
 
-class ToolBlock(QFrame):
-    """Compact tool trace card."""
-
-    def __init__(
-        self,
-        name: str,
-        status: str = "running",
-        details: str = "",
-        parent: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self.setObjectName("toolBlock")
-        status_color = {
-            "running": ACCENT,
-            "done": SUCCESS_COLOR,
-            "error": ERROR_COLOR,
-        }.get(status, TEXT_MUTED)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        nm = QLabel(name.upper())
-        nm.setStyleSheet(
-            f"color:{WARNING_COLOR};font-family:{FONT_MONO};font-size:10px;"
-            "font-weight:800;letter-spacing:0.07em;background:transparent;"
-        )
-        row.addWidget(nm)
-        row.addStretch()
-        st = QLabel(status.upper())
-        st.setStyleSheet(
-            f"color:{status_color};font-family:{FONT_MONO};font-size:9px;"
-            "font-weight:800;background:transparent;"
-        )
-        row.addWidget(st)
-        layout.addLayout(row)
-        if details:
-            body = QLabel(_escape_html(details))
-            body.setWordWrap(True)
-            body.setStyleSheet(
-                f"color:{TEXT_DIM};font-family:{FONT_MONO};font-size:10px;background:transparent;"
-            )
-            layout.addWidget(body)
-            # Copy button
-            copy_btn = QPushButton("COPY")
-            copy_btn.setFixedHeight(20)
-            copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            copy_btn.setStyleSheet(
-                f"QPushButton {{ background:transparent; color:{TEXT_MUTED}; border:1px solid {BORDER};"
-                f" border-radius:2px; font-size:7px; font-weight:700; padding:0 6px; }}"
-                f" QPushButton:hover {{ color:{ACCENT}; border-color:{ACCENT}; }}"
-            )
-            _details = details
-            copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(_details))
-            row.addWidget(copy_btn)
-        self.setStyleSheet(f"""
-            #toolBlock {{
-                background: {BG_PANEL};
-                border: 1px solid {BORDER};
-                border-left: 3px solid {WARNING_COLOR};
-                border-radius: 6px;
-            }}
-        """)
-
-
-class PromptTextEdit(QTextEdit):
-    """Prompt editor with submit/newline/abort/history keyboard behavior."""
-
-    def __init__(self, submit_callback, abort_callback, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._submit_callback = submit_callback
-        self._abort_callback = abort_callback
-        self._history: list[str] = []
-        self._history_idx = -1
-        self._saved_draft = ""
-
-    def set_history(self, history: list[str]) -> None:
-        self._history = history
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
-                super().keyPressEvent(event)
-                return
-            if event.modifiers() == Qt.KeyboardModifier.NoModifier:
-                self._submit_callback()
-                self._history_idx = -1
-                event.accept()
-                return
-        if event.key() == Qt.Key.Key_C and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            self._abort_callback()
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Up and not self._history:
-            super().keyPressEvent(event)
-            return
-        if event.key() == Qt.Key.Key_Up:
-            if self._history_idx == -1:
-                self._saved_draft = self.toPlainText()
-                self._history_idx = len(self._history) - 1
-            elif self._history_idx > 0:
-                self._history_idx -= 1
-            self.setPlainText(self._history[self._history_idx])
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Down:
-            if self._history_idx == -1:
-                super().keyPressEvent(event)
-                return
-            if self._history_idx < len(self._history) - 1:
-                self._history_idx += 1
-                self.setPlainText(self._history[self._history_idx])
-            else:
-                self._history_idx = -1
-                self.setPlainText(self._saved_draft)
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-class InfoDialog(QDialog):
-    """Utility window for settings menu items."""
 
     def __init__(self, title: str, body: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -364,148 +126,8 @@ class InfoDialog(QDialog):
         layout.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
 
 
-class ProjectGuardWidget(QFrame):
-    """Inline card shown when no QGIS project is saved.
-    Lets the user create a new project or load an existing one,
-    then fires the queued prompt automatically.
-    """
-
-    def __init__(self, queued_prompt: str, on_ready, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._queued_prompt = queued_prompt
-        self._on_ready = on_ready  # callable(project_path: str)
-
-        self.setStyleSheet(
-            f"QFrame {{ background:{BG_PANEL}; border:1px solid {ACCENT};"
-            f" border-radius:6px; }}"
-        )
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(8)
-
-        # Header
-        hdr = QLabel("⚠  NO PROJECT OPEN")
-        hdr.setStyleSheet(
-            f"color:{ACCENT};font-family:{FONT_MONO};font-size:10px;"
-            "font-weight:900;letter-spacing:0.1em;background:transparent;"
-        )
-        root.addWidget(hdr)
-
-        sub = QLabel("Save your work to a project before running the agent.")
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;background:transparent;")
-        root.addWidget(sub)
-
-        # Project name row
-        name_row = QHBoxLayout()
-        name_lbl = QLabel("Name")
-        name_lbl.setFixedWidth(40)
-        name_lbl.setStyleSheet(f"color:{TEXT_MUTED};font-size:9px;font-weight:700;background:transparent;")
-        name_row.addWidget(name_lbl)
-        self._name_input = QLineEdit("my_project")
-        self._name_input.setStyleSheet(
-            f"QLineEdit {{ background:{BG_BASE}; color:{TEXT_MAIN}; border:1px solid {BORDER};"
-            f" border-radius:3px; padding:4px 8px; font-size:11px; }}"
-            f" QLineEdit:focus {{ border-color:{ACCENT}; }}"
-        )
-        name_row.addWidget(self._name_input)
-        root.addLayout(name_row)
-
-        # Directory row
-        dir_row = QHBoxLayout()
-        dir_lbl = QLabel("Dir")
-        dir_lbl.setFixedWidth(40)
-        dir_lbl.setStyleSheet(f"color:{TEXT_MUTED};font-size:9px;font-weight:700;background:transparent;")
-        dir_row.addWidget(dir_lbl)
-        self._dir_input = QLineEdit(os.path.expanduser("~/Documents"))
-        self._dir_input.setStyleSheet(
-            f"QLineEdit {{ background:{BG_BASE}; color:{TEXT_MAIN}; border:1px solid {BORDER};"
-            f" border-radius:3px; padding:4px 8px; font-size:11px; }}"
-            f" QLineEdit:focus {{ border-color:{ACCENT}; }}"
-        )
-        dir_row.addWidget(self._dir_input)
-        browse_btn = QPushButton("…")
-        browse_btn.setFixedSize(28, 28)
-        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse_btn.setStyleSheet(
-            f"QPushButton {{ background:{BG_HIGH}; color:{TEXT_DIM}; border:1px solid {BORDER};"
-            f" border-radius:3px; font-size:12px; }}"
-            f" QPushButton:hover {{ color:{ACCENT}; border-color:{ACCENT}; }}"
-        )
-        browse_btn.clicked.connect(self._browse)
-        dir_row.addWidget(browse_btn)
-        root.addLayout(dir_row)
-
-        # Action buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        create_btn = QPushButton("CREATE PROJECT")
-        create_btn.setFixedHeight(30)
-        create_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        create_btn.setStyleSheet(
-            f"QPushButton {{ background:{ACCENT}; color:{BG_BASE}; border:none;"
-            f" border-radius:3px; font-size:9px; font-weight:900; padding:0 14px; }}"
-            f" QPushButton:hover {{ background:#9ecec7; }}"
-        )
-        create_btn.clicked.connect(self._create_project)
-        btn_row.addWidget(create_btn)
-
-        load_btn = QPushButton("LOAD EXISTING")
-        load_btn.setFixedHeight(30)
-        load_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        load_btn.setStyleSheet(
-            f"QPushButton {{ background:transparent; color:{ACCENT}; border:1px solid {ACCENT};"
-            f" border-radius:3px; font-size:9px; font-weight:700; padding:0 14px; }}"
-            f" QPushButton:hover {{ background:{ACCENT}; color:{BG_BASE}; }}"
-        )
-        load_btn.clicked.connect(self._load_project)
-        btn_row.addWidget(load_btn)
-        btn_row.addStretch()
-        root.addLayout(btn_row)
-
-    def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Project Directory", self._dir_input.text())
-        if path:
-            self._dir_input.setText(path)
-
-    def _create_project(self):
-        from qgis.core import QgsProject
-        name = self._name_input.text().strip() or "my_project"
-        base_dir = self._dir_input.text().strip() or os.path.expanduser("~/Documents")
-        project_dir = os.path.join(base_dir, name)
-        os.makedirs(project_dir, exist_ok=True)
-        project_path = os.path.join(project_dir, f"{name}.qgz")
-        proj = QgsProject.instance()
-        proj.setFileName(project_path)
-        proj.write()
-        self._on_ready(project_path)
-        self.setVisible(False)
-        self.deleteLater()
-
-    def _load_project(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open QGIS Project", os.path.expanduser("~"),
-            "QGIS Projects (*.qgz *.qgs)"
-        )
-        if path:
-            from qgis.core import QgsProject
-            QgsProject.instance().read(path)
-            self._on_ready(path)
-            self.setVisible(False)
-            self.deleteLater()
-
-
 class _QuestionWidget(QFrame):
-    """Inline question card embedded in the chat feed.
-
-    Renders a question with multiple answer options, each carrying its own
-    required fields. User fills required fields, picks an option, and submits.
-    The card removes itself and delivers the answer via _resolve_callback.
-
-    Event schema:
-        { type: "question", questId: str, header: str, description: str,
-          options: [{ label, description, required_fields: [{name, label}] }] }
-    """
+    """Inline question card embedded in the chat feed."""
 
     BG        = "#0D0E15"
     SURFACE   = "#12131A"
@@ -528,13 +150,11 @@ class _QuestionWidget(QFrame):
         self._options   = event.get("options", [])
         self._header    = event.get("header", "Question")
         self._body      = event.get("description", "")
-        self._feed      = feed_container  # host feed container (for scroll)
-
-        # Per-option field state and frame refs
+        self._feed      = feed_container
         self._field_states: list[dict] = [{} for _ in self._options]
         self._option_frames: list[Optional[QFrame]] = [None for _ in self._options]
         self._selected: int = -1
-        self._resolve_callback = None  # set by host before showing
+        self._resolve_callback = None
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
@@ -544,7 +164,6 @@ class _QuestionWidget(QFrame):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(6)
 
-        # ── Header ──
         hdr = QLabel(self._header)
         hdr.setStyleSheet(f"color:{self.ACCENT};font-weight:700;font-size:13px;background:transparent;")
         root.addWidget(hdr)
@@ -555,7 +174,6 @@ class _QuestionWidget(QFrame):
             body_lbl.setStyleSheet(f"color:{self.TEXT_DIM};font-size:12px;background:transparent;")
             root.addWidget(body_lbl)
 
-        # ── Options ──
         for idx, option in enumerate(self._options):
             opt_frame = QFrame()
             opt_frame.setObjectName(f"qopt_{idx}")
@@ -566,10 +184,9 @@ class _QuestionWidget(QFrame):
             opt_lay.setContentsMargins(10, 8, 10, 8)
             opt_lay.setSpacing(4)
 
-            # Option label row
             row = QHBoxLayout()
             row.setSpacing(6)
-            dot = QLabel("○")
+            dot = QLabel("\u25cb")
             dot.setFixedWidth(16)
             dot.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:12px;background:transparent;")
             row.addWidget(dot)
@@ -592,7 +209,6 @@ class _QuestionWidget(QFrame):
             self._option_frames[idx] = opt_frame
             root.addWidget(opt_frame)
 
-            # ── Required fields ──
             rfields = option.get("required_fields", [])
             for f_def in rfields:
                 fname  = f_def.get("name", "")
@@ -623,24 +239,18 @@ class _QuestionWidget(QFrame):
                 inp.textChanged.connect(_on_change)
                 opt_lay.addWidget(f_wrap)
 
-            # Arrow toggle
-            arrow = QLabel("▶")
+            arrow = QLabel("\u25b6")
             arrow.setObjectName(f"arrow_{idx}")
             arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
-            arrow.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
-            opt_lay.addWidget(arrow)
-            arrow.setObjectName(f"arrow_{idx}")
             arrow.setFixedWidth(14)
-            arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
             arrow.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
             opt_frame.layout().addWidget(arrow)
             opt_frame.layout().addSpacing(2)
 
-        # ── Option selection handlers ──
         for idx, frame in enumerate(self._option_frames):
             if frame is None:
                 continue
-            prev_ref = [None]  # mutable ref to previously-selected frame
+            prev_ref = [None]
 
             def _select(event=None, _idx=idx, _f=frame, _pr=prev_ref):
                 if _pr[0]:
@@ -649,7 +259,7 @@ class _QuestionWidget(QFrame):
                     )
                     a = _pr[0].findChild(QLabel, f"arrow_{_pr[0].objectName().replace('qopt_', '')}")
                     if a:
-                        a.setText("▶")
+                        a.setText("\u25b6")
                         a.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
                 self._selected = _idx
                 prev_ref[0] = _f
@@ -658,13 +268,12 @@ class _QuestionWidget(QFrame):
                 )
                 a = _f.findChild(QLabel, f"arrow_{_idx}")
                 if a:
-                    a.setText("▼")
+                    a.setText("\u25bc")
                     a.setStyleSheet(f"color:{self.ACCENT};font-size:9px;background:transparent;")
                 self._update_submit()
 
-            frame.mousePressEvent = _select  # type: ignore[method-assign]
+            frame.mousePressEvent = _select
 
-        # ── Submit ──
         self._submit_btn = QPushButton("Submit")
         self._submit_btn.setEnabled(False)
         self._submit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -677,14 +286,12 @@ class _QuestionWidget(QFrame):
         self._submit_btn.clicked.connect(self._on_submit)
         root.addWidget(self._submit_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
-    # ────────────────────────────────────────────────────────────
     def _on_submit(self) -> None:
         idx = self._selected
         if idx < 0:
             return
         option   = self._options[idx]
         fields   = dict(self._field_states[idx])
-        # Validate required fields
         missing = [
             f.get("name")
             for f in option.get("required_fields", [])
@@ -700,8 +307,8 @@ class _QuestionWidget(QFrame):
         try:
             self.setParent(None)
             self.deleteLater()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: widget cleanup error: {e}")
 
     def _update_submit(self) -> None:
         self._submit_btn.setEnabled(self._selected >= 0)
@@ -710,43 +317,13 @@ class _QuestionWidget(QFrame):
         try:
             from aery_plugin.qgis_executor import _resolve_question
             _resolve_question(quest_id, answer)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: question resolve error: {e}")
         try:
             self.setParent(None)
             self.deleteLater()
-        except Exception:
-            pass
-
-
-def _svg_pixmap(path: str, size: int) -> QPixmap:
-    """Render an SVG file directly to a *size*×*size* QPixmap with full vector resolution.
-
-    Uses the device's native pixel ratio so the backing store is allocated in physical
-    pixels, draws the vector in a single pass, and sets antialiasing / smooth-pixel
-    hints before rendering — avoiding the bilinear-resize chain that made previous
-    artwork look washed-out.
-    """
-    try:
-        dpr = QApplication.primaryScreen().devicePixelRatioF()
-    except Exception:
-        dpr = 1.0
-    target = int(round(size * dpr))
-
-    pix = QPixmap(target, target)
-    pix.setDevicePixelRatio(dpr)
-    pix.fill(Qt.GlobalColor.transparent)
-
-    renderer = QSvgRenderer(path)
-
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-    renderer.render(p)
-    p.end()
-
-    return pix
+        except Exception as e:
+            print(f"Aery: widget cleanup error: {e}")
 
 
 class ChatPanel(QDockWidget):
@@ -760,25 +337,30 @@ class ChatPanel(QDockWidget):
         parent: Optional[QWidget] = None,
     ):
         super().__init__("Aery", parent)
-        self.setTitleBarWidget(QWidget())  # hide OS title bar when floating
+        self.setTitleBarWidget(QWidget())
 
         self.iface = iface
         self.agent = agent
         self.on_config = on_config
-        self._is_streaming = False
+        self._session_state = SessionState.IDLE
         self._history: list[str] = []
         self._history_idx = -1
         self._ready = False
-        self._blink_on = True
         self._last_context: dict[str, Any] = {}
         self._dialogs: list[QDialog] = []
         self._active_stream_role: str = ""
         self._discard_stale_events = False
         self._allow_next_assistant_stream = False
         self._local_prompt_queue: list[str] = []
-        self._session_context_injected = False  # inject QGIS env on first prompt
-        self._session_messages: list[dict] = []  # persistent session memory
-        self._retry_count = 0  # auto-correction retry counter
+        self._session_context_injected = False
+        self._retry_count = 0
+        self._got_assistant_event = False
+        self._streamlined_mode: bool = True
+        self._stream_label = QTextBrowser()
+        self._stream_label.setMaximumHeight(36)
+        self._stream_label.setMinimumHeight(0)
+        self._stream_label.setFrameShape(QFrame.Shape.NoFrame)
+        self._stream_label.setStyleSheet(f"background:{BG_SURFACE};border:none;padding:4px 8px;font-size:12px;color:{TEXT_DIM};")
 
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -790,22 +372,105 @@ class ChatPanel(QDockWidget):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
 
+        self._transcript = TranscriptView(self)
+        self._activity = ActivityStrip(self)
+        self._input_area = InputArea(self._on_send, self._abort, self)
+
+        self._transcript.set_save_callback(self._save_session)
+        self._input_area.input.textChanged.connect(self._on_input_changed)
+        self._input_area.input.textChanged.connect(self._autosize_input)
+        self._input_area.send_btn.clicked.connect(self._on_send_button)
+
         self._build_ui()
         self.resize(320, 760)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
-        self._activity_timer = QTimer(self)
-        self._activity_timer.timeout.connect(self._tick_activity)
-        self._activity_timer.start(650)
         self._sync_dock_button()
         self.setAcceptDrops(True)
-        # Wire layer cache invalidation to QGIS layer signals
         try:
             from qgis.core import QgsProject
             QgsProject.instance().layersAdded.connect(_refresh_layer_cache)
             QgsProject.instance().layersRemoved.connect(_refresh_layer_cache)
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"Aery: could not connect layer-change signals: {_e}")
+
+    @property
+    def session_state(self) -> SessionState:
+        return self._session_state
+
+    @property
+    def _is_streaming(self) -> bool:
+        """Backward-compat alias (ChatPanel refactored to session_state enum)."""
+        return self._session_state == SessionState.RUNNING
+
+    @_is_streaming.setter
+    def _is_streaming(self, value: bool) -> None:
+        if value:
+            self._set_session_state(SessionState.RUNNING)
+        else:
+            self._set_session_state(SessionState.IDLE)
+
+    @property
+    def _feed_layout(self):
+        """Backward-compat alias (feed_layout moved to TranscriptView)."""
+        return self._transcript.feed_layout
+
+    @property
+    def _input(self):
+        """Backward-compat alias (input moved to InputArea)."""
+        return self._input_area.input
+
+    @property
+    def _send_btn(self):
+        """Backward-compat alias (send_btn moved to InputArea)."""
+        return self._input_area.send_btn
+
+    @property
+    def _activity_frame(self):
+        """Backward-compat alias (activity_frame replaced by ActivityStrip)."""
+        return self._activity
+
+    @_activity_frame.setter
+    def _activity_frame(self, value):
+        self._activity.setVisible(value)
+
+    @property
+    def _input_bar(self):
+        """Backward-compat alias (input area widget)."""
+        return self._input_area
+
+    @property
+    def _activity_star(self):
+        """Backward-compat alias (star moved to ActivityStrip)."""
+        return self._activity.star
+
+    @property
+    def _activity_label(self):
+        """Backward-compat alias (label moved to ActivityStrip)."""
+        return self._activity.label
+
+    def _set_session_state(self, state: SessionState) -> None:
+        if self._session_state == state:
+            return
+        self._session_state = state
+        if state == SessionState.RUNNING:
+            self._activity.set_active("working...")
+            self._update_send_btn(streaming=True)
+            self._status_dot.setStyleSheet(
+                f"color:{ACCENT};font-size:9px;background:transparent;"
+            )
+        elif state == SessionState.IDLE:
+            self._activity.set_idle()
+            self._update_send_btn(streaming=False)
+            self._status_dot.setStyleSheet(
+                f"color:{SUCCESS_COLOR};font-size:9px;background:transparent;"
+            )
+        elif state == SessionState.REQUIRES_ACTION:
+            self._activity.set_active("action required")
+            self._update_send_btn(streaming=False)
+            self._status_dot.setStyleSheet(
+                f"color:{WARNING_COLOR};font-size:9px;background:transparent;"
+            )
 
     def _build_ui(self) -> None:
         container = QWidget()
@@ -814,18 +479,9 @@ class ChatPanel(QDockWidget):
         root.setSpacing(0)
 
         root.addWidget(self._build_header())
-        root.addWidget(self._build_transcript(), stretch=1)
-        self._stream_label = QTextBrowser()
-        self._stream_label.setVisible(False)
-        self._stream_label.setOpenExternalLinks(False)
-        self._stream_label.setMaximumHeight(200)
-        self._stream_label.setStyleSheet(
-            f"background:{BG_PANEL};color:{ACCENT};border:none;border-top:1px solid {BORDER};"
-            f"padding:8px 12px;font-family:{FONT_SANS};font-size:13px;"
-        )
-        root.addWidget(self._stream_label)
-        root.addWidget(self._build_activity_strip())
-        root.addWidget(self._build_input())
+        root.addWidget(self._transcript, stretch=1)
+        root.addWidget(self._activity)
+        root.addWidget(self._input_area)
 
         self.setWidget(container)
 
@@ -837,12 +493,10 @@ class ChatPanel(QDockWidget):
         outer.setContentsMargins(8, 4, 6, 4)
         outer.setSpacing(0)
 
-        # ── Left: AERY brand block ────────────────────────────────────────────────
         brand_col = QVBoxLayout()
         brand_col.setContentsMargins(0, 0, 0, 0)
         brand_col.setSpacing(0)
 
-        # Row 1: [icon] [AERY "Geospatial Agent"]
         top_row = QHBoxLayout()
         top_row.setSpacing(5)
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -854,7 +508,6 @@ class ChatPanel(QDockWidget):
         icon_lbl.setStyleSheet("background:transparent;")
         top_row.addWidget(icon_lbl)
 
-        # AERY + Geospatial Agent on the same row
         name_row = QHBoxLayout()
         name_row.setSpacing(0)
         name_row.setContentsMargins(0, 0, 0, 0)
@@ -877,7 +530,6 @@ class ChatPanel(QDockWidget):
 
         brand_col.addLayout(top_row)
 
-        # Row 2: full provider name below AERY (small, dim)
         self._provider_lbl = QLabel("")
         self._provider_lbl.setStyleSheet(
             f"color:{ACCENT_DIM};font-size:9px;font-weight:600;"
@@ -889,12 +541,10 @@ class ChatPanel(QDockWidget):
         brand_col.addStretch(1)
         outer.addLayout(brand_col)
 
-        # ── Right column: buttons only ───────────────────────────────────────────
         right_col = QVBoxLayout()
         right_col.setContentsMargins(0, 2, 0, 0)
         right_col.setSpacing(0)
 
-        # Status placeholder row (keeps right col balanced)
         status_row = QHBoxLayout()
         status_row.setSpacing(5)
         status_row.setContentsMargins(0, 0, 0, 0)
@@ -906,7 +556,6 @@ class ChatPanel(QDockWidget):
         status_row.addStretch()
         right_col.addLayout(status_row)
 
-        # Settings buttons row
         control_row = QHBoxLayout()
         control_row.setSpacing(4)
         control_row.setContentsMargins(0, 2, 0, 1)
@@ -937,10 +586,10 @@ class ChatPanel(QDockWidget):
         control_row.addWidget(self._gear_btn)
 
         right_col.addLayout(control_row)
-
         outer.addLayout(right_col)
 
         return header
+
     def _refresh_provider_label(self) -> None:
         try:
             from aery_plugin import oauth_helper
@@ -948,92 +597,11 @@ class ChatPanel(QDockWidget):
             if active:
                 model = active.get("model", "")
                 short_model = model.split("/")[-1] if "/" in model else model
-                self._provider_lbl.setText(f"● {active['name']}  {short_model}".strip())
+                self._provider_lbl.setText(f"\u25cf {active['name']}  {short_model}".strip())
             else:
-                self._provider_lbl.setText("● no provider")
+                self._provider_lbl.setText("\u25cf no provider")
         except Exception:
-            self._provider_lbl.setText("● no provider")
-
-    def _build_transcript(self) -> QScrollArea:
-        self._feed_container = QWidget()
-        self._feed_layout = QVBoxLayout(self._feed_container)
-        self._feed_layout.setContentsMargins(12, 12, 12, 12)
-        self._feed_layout.setSpacing(10)
-        self._feed_layout.addStretch()
-        self._scroll = QScrollArea()
-        self._scroll.setWidget(self._feed_container)
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet(f"""
-            QScrollArea {{ background:{BG_BASE}; border:none; }}
-            QScrollBar:vertical {{ width:5px; background:{BG_BASE}; }}
-            QScrollBar::handle:vertical {{ background:{BORDER}; border-radius:2px; }}
-        """)
-        return self._scroll
-
-    def _build_activity_strip(self) -> QFrame:
-        self._activity_frame = QFrame()
-        self._activity_frame.setFixedHeight(40)
-        self._activity_frame.setVisible(False)
-        self._activity_frame.setStyleSheet(
-            f"background:{BG_SURFACE};border-top:1px solid {BORDER};"
-        )
-        layout = QHBoxLayout(self._activity_frame)
-        layout.setContentsMargins(12, 0, 12, 0)
-        layout.setSpacing(8)
-        self._activity_star = QLabel("\u273b")
-        self._activity_star.setStyleSheet(
-            f"color:{ACCENT};font-size:20px;font-family:{FONT_MONO};background:transparent;"
-        )
-        layout.addWidget(self._activity_star)
-        self._activity_label = QLabel("ready")
-        self._activity_label.setStyleSheet(
-            f"color:{TEXT_DIM};font-family:{FONT_MONO};font-size:11px;"
-            "font-weight:700;background:transparent;"
-        )
-        layout.addWidget(self._activity_label)
-        layout.addStretch()
-        self._activity_detail = QLabel("")
-        self._activity_detail.setStyleSheet(
-            f"color:{TEXT_MUTED};font-family:{FONT_MONO};font-size:10px;background:transparent;"
-        )
-        layout.addWidget(self._activity_detail)
-        return self._activity_frame
-
-    def _build_input(self) -> QFrame:
-        bar = QFrame()
-        self._input_bar = bar
-        bar.setFixedHeight(66)
-        bar.setStyleSheet(f"background:{BG_SURFACE};border-top:1px solid {BORDER};")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-        self._input = PromptTextEdit(self._on_send, self._abort)
-        self._input.set_history(self._history)
-        self._input.setFixedHeight(46)
-        self._input.setMinimumHeight(46)
-        self._input.setMaximumHeight(140)
-        self._input.setPlaceholderText("Enter geospatial command...")
-        self._input.textChanged.connect(self._on_input_changed)
-        self._input.textChanged.connect(self._autosize_input)
-        self._input.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self._input.setStyleSheet(f"""
-            QTextEdit {{
-                background:{BG_BASE}; border:1px solid {BORDER}; border-radius:6px;
-                color:{TEXT_MAIN}; padding:6px 12px; font-family:{FONT_SANS}; font-size:14px;
-                selection-background-color:{ACCENT}; selection-color:{BG_BASE};
-            }}
-            QTextEdit:focus {{ border-color:{ACCENT}; }}
-        """)
-        layout.addWidget(self._input, stretch=1)
-        self._send_btn = QPushButton("➤")
-        self._send_btn.setFixedSize(34, 34)
-        self._send_btn.clicked.connect(self._on_send_button)
-        self._update_send_btn(streaming=False)
-        layout.addWidget(self._send_btn)
-        return bar
+            self._provider_lbl.setText("\u25cf no provider")
 
     def _apply_global_styles(self) -> None:
         self.setStyleSheet(f"""
@@ -1050,165 +618,64 @@ class ChatPanel(QDockWidget):
             }}
         """)
 
-    def _tick_activity(self) -> None:
-        self._blink_on = not self._blink_on
-        color = ACCENT if self._blink_on or not self._is_streaming else TEXT_MUTED
-        self._activity_star.setStyleSheet(
-            f"color:{color};font-size:20px;font-family:{FONT_MONO};background:transparent;"
-        )
-
     def _set_activity(self, text: str, active: bool = True, detail: str = "") -> None:
-        self._is_streaming = active
-        self._activity_label.setText(text)
-        self._activity_detail.setText(detail if detail else "")
-        self._activity_frame.setVisible(active)
-        self._activity_star.setVisible(active)
-        self._update_send_btn(streaming=active)
-        dot_color = ACCENT if active else SUCCESS_COLOR
-        self._status_dot.setStyleSheet(
-            f"color:{dot_color};font-size:9px;background:transparent;"
-        )
-
-    def _activity_for_tool(self, name: str) -> str:
-        normalized = name.lower()
-        # QGIS execution tools
-        if normalized in ("run_qgis_code", "qgis_code"):
-            return "running QGIS code..."
-        if normalized in ("run_processing", "run_processing_algorithm"):
-            return "running processing..."
-        if normalized in ("list_processing_algorithms",):
-            return "listing algorithms..."
-        if normalized in ("describe_processing_algorithm",):
-            return "reading algorithm details..."
-        if normalized in ("validate_processing_runtime",):
-            return "checking processing runtime..."
-        # Layer / data tools
-        if "add_layer" in normalized:
-            return "adding layer..."
-        if "get_layer_info" in normalized:
-            return "reading layer info..."
-        if "export_layer" in normalized:
-            return "exporting layer..."
-        if "select_by_attribute" in normalized or "select_by_location" in normalized:
-            return "selecting features..."
-        # Context / validation
-        if "get_project_context" in normalized:
-            return "reading project context..."
-        if "validate_project" in normalized:
-            return "validating project..."
-        # Capture
-        if "capture" in normalized or "canvas" in normalized:
-            return "capturing canvas..."
-        # Web / search
-        if "web_search" in normalized or normalized == "search":
-            return "searching web..."
-        if "web_fetch" in normalized or "fetch" in normalized:
-            return "fetching web page..."
-        # Code / file tools
-        if normalized in ("read",):
-            return "reading file..."
-        if normalized in ("write", "edit"):
-            return "writing file..."
-        if "bash" in normalized:
-            return "running command..."
-        if "grep" in normalized or "search_files" in normalized:
-            return "searching files..."
-        if "find" in normalized:
-            return "finding files..."
-        if normalized in ("glob", "ls"):
-            return "listing files..."
-        # GEE
-        if "gee" in normalized or "earth_engine" in normalized:
-            return "running Earth Engine..."
-        # User interaction
-        if "ask_user" in normalized:
-            return "asking you..."
-        if "confirm_action" in normalized:
-            return "waiting for confirmation..."
-        # Tool registry
-        if "register_tool" in normalized:
-            return "registering tool..."
-        if "list_registered_tools" in normalized or "list_tools" in normalized:
-            return "listing tools..."
-        if "remove_registered_tool" in normalized:
-            return "removing tool..."
-        # Audit
-        if "audit" in normalized:
-            return "reading audit trail..."
-        # Fallback: strip common prefixes and underscores, make it a clean verb phrase
-        stripped = normalized.replace("_", " ").replace("-", " ")
-        return f"using {stripped}..."
+        if active:
+            if self._session_state != SessionState.RUNNING:
+                self._set_session_state(SessionState.RUNNING)
+            self._activity.set_active(text, detail)
+        else:
+            if self._session_state != SessionState.IDLE:
+                self._set_session_state(SessionState.IDLE)
+            self._activity.set_idle()
 
     def _update_send_btn(self, streaming: bool) -> None:
-        self._send_btn.setText("■" if streaming else "➤")
-        if streaming:
-            self._send_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background:{BG_HIGH}; border:1px solid {ERROR_COLOR};
-                    border-radius:17px; color:{ERROR_COLOR}; font-size:10px; font-weight:900;
-                }}
-                QPushButton:hover {{ background:{ERROR_COLOR}; color:{BG_BASE}; }}
-            """)
-        else:
-            has_text = bool(getattr(self, "_input", None) and self._input.toPlainText().strip())
-            bg = ACCENT if has_text else BG_HIGH
-            fg = BG_BASE if has_text else TEXT_MUTED
-            self._send_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background:{bg}; border:1px solid {BORDER}; border-radius:17px;
-                    color:{fg}; font-size:12px; font-weight:900;
-                }}
-                QPushButton:hover {{ border-color:{ACCENT}; color:{ACCENT}; }}
-            """)
+        has_text = bool(self._input_area.get_text())
+        self._input_area.update_button(streaming, has_text)
 
     def _on_input_changed(self, *_args) -> None:
-        self._update_send_btn(streaming=self._is_streaming)
+        self._update_send_btn(streaming=self._session_state == SessionState.RUNNING)
 
     def _on_send_button(self) -> None:
-        if self._is_streaming:
+        if self._session_state == SessionState.RUNNING:
             self._abort()
             return
         self._on_send()
 
     def _on_send(self) -> None:
-        text = self._input.toPlainText().strip()
+        text = self._input_area.get_text()
         if not text:
             return
         self._history.append(text)
         self._history_idx = -1
-        self._add_bubble("YOU", text, "user")
-        self._input.clear()
+        self._transcript.add_bubble("YOU", text, "user")
+        self._input_area.clear()
         self._autosize_input()
-        if self._is_streaming:
+        if self._session_state == SessionState.RUNNING:
             self._local_prompt_queue.append(text)
             self._set_activity(f"{len(self._local_prompt_queue)} queued", active=True)
             return
-        # ── Project guard ──
         if self._check_project_guard(text):
-            return  # guard widget shown; prompt will be replayed after project setup
+            return
         self._dispatch_prompt(text)
 
     def _check_project_guard(self, text: str) -> bool:
-        """Return True (and show guard widget) if no project is saved yet."""
         try:
             from qgis.core import QgsProject
             if QgsProject.instance().fileName():
-                return False  # project is saved — all good
+                return False
         except Exception:
             return False
 
         def on_ready(project_path: str):
-            self._add_bubble("SYSTEM", f"Project ready: {project_path}", "system")
+            self._transcript.add_bubble("SYSTEM", f"Project ready: {project_path}", "system")
             self._refresh_provider_label()
             self._dispatch_prompt(text)
 
-        guard = ProjectGuardWidget(text, on_ready, self._feed_container)
-        self._feed_layout.insertWidget(self._feed_layout.count() - 1, guard)
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        self._transcript.show_project_guard(text, on_ready)
+        QTimer.singleShot(50, self._transcript.scroll_to_bottom)
         return True
 
     def _build_qgis_env_context(self) -> str:
-        """Build a rich QGIS environment snapshot to inject into the first prompt."""
         try:
             from qgis.core import QgsProject, QgsApplication
             import os, sys
@@ -1224,15 +691,13 @@ class ChatPanel(QDockWidget):
                     info += f" {lyr.bandCount()} bands"
                 layers.append(info)
 
-            # Processing providers
             providers = []
             try:
                 for p in QgsApplication.processingRegistry().providers():
                     providers.append(p.id())
-            except Exception:
+            except Exception as _e:
                 pass
 
-            # Canvas state
             canvas_info = ""
             try:
                 canvas = self.iface.mapCanvas() if hasattr(self, "iface") and self.iface else None
@@ -1240,7 +705,7 @@ class ChatPanel(QDockWidget):
                     crs = canvas.mapSettings().destinationCrs().authid()
                     scale = int(canvas.scale())
                     canvas_info = f"Canvas CRS: {crs}, Scale: 1:{scale:,}"
-            except Exception:
+            except Exception as _e:
                 pass
 
             lines = [
@@ -1251,33 +716,30 @@ class ChatPanel(QDockWidget):
                 f"Layers ({len(layers)}):",
             ] + (layers if layers else ["  (none)"])
 
-            # ── Record all existing layers in the graph ──────────────────
             try:
                 from aery_plugin.graph_engine import record_layer
                 for _lyr in proj.mapLayers().values():
                     record_layer(project_dir, _lyr.name(), _lyr.type().name,
                                  _lyr.crs().authid() if _lyr.crs() else "",
                                  _lyr.source())
-            except Exception:
+            except Exception as _e:
                 pass
 
-            # ── Detect spatial relationships between same-CRS layers ──────
             try:
                 from aery_plugin.graph_engine import auto_detect_spatial_relationships
                 auto_detect_spatial_relationships(project_dir)
-            except Exception:
+            except Exception as _e:
                 pass
 
-            # ── CRS health summary ───────────────────────────────────────
             _crs_groups: dict[str, list[str]] = {}
             for _lyr in proj.mapLayers().values():
                 _auth = _lyr.crs().authid() if _lyr.crs() else "unknown"
                 _crs_groups.setdefault(_auth, []).append(_lyr.name())
             if len(_crs_groups) > 1:
-                _warn = ["⚠️  CRS MISMATCH: project has " + str(len(_crs_groups)) + " different CRS systems:"]
+                _warn = ["\u26a0\ufe0f  CRS MISMATCH: project has " + str(len(_crs_groups)) + " different CRS systems:"]
                 for _crs, _names in sorted(_crs_groups.items()):
                     _preview = ", ".join(_names[:3]) + ("..." if len(_names) > 3 else "")
-                    _warn.append(f"  {_crs} — {len(_names)} layers ({_preview})")
+                    _warn.append(f"  {_crs} \u2014 {len(_names)} layers ({_preview})")
                 _warn.append('Run "Reproject all layers to a common CRS" before spatial operations.')
                 lines += _warn
 
@@ -1292,10 +754,12 @@ class ChatPanel(QDockWidget):
             return ""
 
     def _dispatch_prompt(self, text: str) -> None:
+        if not text:
+            return
         self._set_activity("thinking...", active=True)
         self._allow_next_assistant_stream = True
+        self._got_assistant_event = False
 
-        # Record prompt in session graph
         try:
             from qgis.core import QgsProject
             import os
@@ -1303,82 +767,204 @@ class ChatPanel(QDockWidget):
             if path:
                 from aery_plugin.graph_engine import record_prompt
                 record_prompt(os.path.dirname(path), text, [], [])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: record prompt error: {e}")
 
-        import threading
-        import asyncio
+        # Wire per-turn callbacks so ChatPanel receives QThread worker signals
+        self.agent._on_worker_finished = self._on_agent_response
+        self.agent._on_worker_error   = self._on_agent_error
 
-        def run_agent():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            def on_event(event):
-                QMetaObject.invokeMethod(
-                    self, "_on_agent_event",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(dict, event),
-                )
-
-            try:
-                response = loop.run_until_complete(self.agent.run(text, on_event=on_event))
-                QMetaObject.invokeMethod(
-                    self, "_on_agent_response",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response),
-                )
-            except Exception as e:
-                QMetaObject.invokeMethod(
-                    self, "_on_agent_error",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, str(e)),
-                )
-            finally:
-                loop.close()
-
-        threading.Thread(target=run_agent, daemon=True).start()
+        self.agent.start(text)
 
     @pyqtSlot(dict)
     def _on_agent_event(self, event: dict) -> None:
-        """Handle streaming events from the agent."""
         event_type = event.get("type", "")
-        if event_type == "thinking":
+
+        if event_type == "user":
+            pass
+
+        elif event_type == "tool_use_summary":
+            summary = event.get("summary", "")
+            if summary and self._transcript.active_tool_block:
+                self._transcript.active_tool_block.update_status("done", details=summary)
+                self._transcript.active_tool_block = None
+
+        elif event_type == "system":
+            subtype = event.get("subtype", "")
+            if subtype == "api_retry":
+                attempt = event.get("attempt", 1)
+                max_retries = event.get("max_retries", 3)
+                self._activity.label.setText(f"Retrying ({attempt}/{max_retries})...")
+            elif subtype == "post_turn_summary":
+                status = event.get("status_category", "")
+                if self._streamlined_mode:
+                    title = event.get("title", "")
+                    if title and status == "completed":
+                        self._activity.label.setText(title)
+                elif status == "requires_action":
+                    self._set_session_state(SessionState.REQUIRES_ACTION)
+
+        elif event_type == "thinking":
+            self._set_session_state(SessionState.RUNNING)
             self._set_activity("thinking...", active=True)
-        elif event_type == "text_chunk":
-            text = event.get("text", "")
-            if text:
-                self._stream_label.setVisible(True)
-                current = self._stream_label.toPlainText()
-                self._stream_label.setPlainText(current + text)
-                QTimer.singleShot(10, self._scroll_to_bottom)
-        elif event_type == "tool_start":
-            tool = event.get("tool", "")
-            label = self._activity_for_tool(tool)
-            self._set_activity(label, active=True, detail=tool)
-        elif event_type == "tool_done":
-            pass  # Tool completed, keep activity indicator
+
         elif event_type == "tool_error":
             tool = event.get("tool", "")
             error = event.get("error", "")
-            self._add_bubble("ERROR", f"{tool}: {error}", "error")
+            self._transcript.add_bubble("ERROR", f"{tool}: {error}", "error")
+
+        elif event_type == "tool_start":
+            tool = event.get("tool", "")
+            if tool:
+                label = self._activity.activity_for_tool(tool) or tool.replace("_", " ")
+                self._set_activity(label, active=True)
+
+        elif event_type == "rate_limit_event":
+            rate_info = event.get("rate_limit_info", {})
+            utilization = rate_info.get("utilization", 0)
+            if utilization > 0.8:
+                status = rate_info.get("status", "allowed")
+                if status == "allowed_warning":
+                    self._transcript.add_bubble("SYSTEM", f"Rate limit warning: {int(utilization * 100)}% utilized", "system")
+
+        elif event_type == "stream_event":
+            inner_event = event.get("event", {})
+            inner_type = inner_event.get("type", "")
+
+            if inner_type == "status":
+                status = inner_event.get("status", "")
+                if status == "thinking":
+                    self._set_activity("thinking...", active=True)
+
+            elif inner_type == "text":
+                text = inner_event.get("text", "")
+                if text:
+                    if self._transcript.streaming_bubble is None:
+                        self._transcript._streaming_text = ""
+                        bubble = MessageBubble("AERY", "", "assistant")
+                        self._transcript.feed_layout.insertWidget(self._transcript.feed_layout.count() - 1, bubble)
+                        self._transcript._streaming_bubble = bubble
+                    self._transcript._streaming_text += text
+                    self._transcript.streaming_bubble.update_text(self._transcript._streaming_text)
+                    QTimer.singleShot(10, self._transcript.scroll_to_bottom)
+
+            elif inner_type == "tool_error":
+                tool = inner_event.get("tool", "")
+                error = inner_event.get("error", "")
+                if self._transcript.active_tool_block:
+                    self._transcript.active_tool_block.update_status("error", details=error)
+                    self._transcript.active_tool_block = None
+                else:
+                    self._transcript.add_bubble("ERROR", f"{tool}: {error}", "error")
+                self._transcript.pending_tool_code = ""
+
+            elif inner_type == "tool_done":
+                tool = inner_event.get("tool", "")
+                result = inner_event.get("result", "")
+                if self._streamlined_mode:
+                    summary = self._agent.tools._summarize_tool_result(tool, result) if hasattr(self._agent.tools, "_summarize_tool_result") else f"{tool} completed"
+                    if self._transcript.active_tool_block:
+                        self._transcript.active_tool_block.update_status("done", details=summary)
+                        self._transcript.active_tool_block = None
+                else:
+                    if self._transcript.active_tool_block:
+                        self._transcript.active_tool_block.update_status("done", details=result[:500])
+                        self._transcript.active_tool_block = None
+                self._transcript.pending_tool_code = ""
+
+        elif event_type == "tool_progress":
+            tool = event.get("tool_name", "")
+            self._set_activity(self._activity.activity_for_tool(tool), active=True, detail=tool)
+            self._finalize_streaming_bubble()
+            block = self._transcript.add_tool_block(tool, "running", code=self._transcript.pending_tool_code)
+            self._transcript.active_tool_block = block
+
+        elif event_type == "assistant":
+            self._got_assistant_event = True
+            message = event.get("message", {})
+            content = message.get("content", "")
+            thinking_text = ""
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "thinking":
+                            thinking_text = block.get("thinking", "")
+                content = "\n".join(text_parts)
+            display_text = thinking_text + "\n\n" + content if thinking_text else content
+            if display_text:
+                if self._transcript.streaming_bubble is not None:
+                    self._transcript.streaming_bubble.update_text(display_text)
+                    self._finalize_streaming_bubble()
+                else:
+                    self._transcript.add_bubble("AERY", display_text, "assistant")
+
+        elif event_type == "permission_request":
+            self._handle_permission_request(event)
+
+        elif event_type == "streamlined_text":
+            text = event.get("text", "")
+            if text and self._streamlined_mode:
+                self._transcript.add_bubble("AERY", text, "assistant")
+
+        elif event_type == "streamlined_tool_use_summary":
+            summary = event.get("summary", "")
+            if summary and self._streamlined_mode:
+                self._transcript.add_bubble("SYSTEM", summary, "system")
+
+        elif event_type == "result":
+            subtype = event.get("subtype", "")
+            if subtype == "success":
+                self._set_activity("ready", active=False)
+                self._allow_next_assistant_stream = False
+            elif subtype.startswith("error"):
+                errors = event.get("errors", [])
+                if errors:
+                    self._transcript.add_bubble("ERROR", errors[0], "error")
+                self._set_activity("ready", active=False)
+                self._allow_next_assistant_stream = False
 
     @pyqtSlot(str)
     def _on_agent_response(self, response: str) -> None:
-        """Handle final response from the agent."""
-        if response:
-            self._add_bubble("AERY", response, "assistant")
+        if self._transcript.streaming_bubble is not None:
+            self._finalize_streaming_bubble()
+        elif response and not self._got_assistant_event:
+            self._transcript.add_bubble("AERY", response, "assistant")
         self._set_activity("ready", active=False)
+        self._set_session_state(SessionState.IDLE)
         self._allow_next_assistant_stream = False
+        self._got_assistant_event = False
 
     @pyqtSlot(str)
     def _on_agent_error(self, error: str) -> None:
-        """Handle errors from the agent."""
-        self._add_bubble("ERROR", error, "error")
+        if "429" in error and "RESOURCE_EXHAUSTED" in error:
+            msg = ("Rate limit exceeded. The free tier has a daily quota. "
+                   "Wait a few minutes and try again, or switch to a different provider.")
+        elif "401" in error and "UNAUTHENTICATED" in error:
+            msg = "Authentication expired. Please re-login via Settings."
+        elif "VALIDATION_REQUIRED" in error:
+            msg = ("Google requires account verification to use Cloud Code Assist.\n"
+                   "Open this link in your browser to verify:\n"
+                   "https://developers.google.com/gemini-code-assist/auth/auth_success_gemini\n\n"
+                   "After verification, try your message again.")
+        elif "403" in error and "PERMISSION_DENIED" in error:
+            msg = "Permission denied. Check your account has access to this service."
+        elif "404" in error and "NOT_FOUND" in error:
+            msg = "Model not found. Try switching to a different model via /model."
+        else:
+            msg = error
+        self._transcript.add_bubble("ERROR", msg, "error")
         self._set_activity("ready", active=False)
+        self._set_session_state(SessionState.IDLE)
         self._allow_next_assistant_stream = False
+        self._got_assistant_event = False
+
+    def _finalize_streaming_bubble(self) -> None:
+        self._transcript.finalize_streaming()
 
     def _build_graph_context(self, prompt: str = "") -> str:
-        """Return compact graph context string filtered by prompt keywords."""
         try:
             from qgis.core import QgsProject
             path = QgsProject.instance().fileName()
@@ -1395,8 +981,10 @@ class ChatPanel(QDockWidget):
         self._active_stream_role = ""
         self._local_prompt_queue.clear()
         self._retry_count = 0
+        self._got_assistant_event = False
         self._cancel_streaming()
-        self._add_bubble("SYSTEM", "Operation aborted.", "system")
+        self._set_session_state(SessionState.IDLE)
+        self._transcript.add_bubble("SYSTEM", "Operation aborted.", "system")
 
     def _cancel_streaming(self) -> None:
         self._stream_label.clear()
@@ -1408,7 +996,7 @@ class ChatPanel(QDockWidget):
         self._stream_label.clear()
         self._stream_label.setVisible(False)
         if final_text.strip():
-            self._add_bubble("AERY", final_text, "assistant")
+            self._transcript.add_bubble("AERY", final_text, "assistant")
         if self._local_prompt_queue and not self._discard_stale_events:
             next_text = self._local_prompt_queue.pop(0)
             qlen = len(self._local_prompt_queue)
@@ -1418,7 +1006,7 @@ class ChatPanel(QDockWidget):
             self._set_activity("ready", active=False)
 
     def _sync_dock_button(self) -> None:
-        self._dock_btn.setText("⇲" if self.isFloating() else "⇱")
+        self._dock_btn.setText("\u21f2" if self.isFloating() else "\u21f1")
 
     def _toggle_floating(self) -> None:
         self.setFloating(not self.isFloating())
@@ -1486,12 +1074,11 @@ class ChatPanel(QDockWidget):
     def _on_cfg_clicked(self) -> None:
         if self.on_config:
             self.on_config()
-        # Reinitialize agent after config changes
         try:
             self.agent.reinitialize()
             self._refresh_provider_label()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: agent reinitialize error: {e}")
 
     def _show_model_switcher(self) -> None:
         try:
@@ -1501,13 +1088,12 @@ class ChatPanel(QDockWidget):
             dlg.exec()
             self._dialogs.remove(dlg)
             self._refresh_provider_label()
-            # Reinitialize agent with new provider/model
             try:
                 self.agent.reinitialize()
-            except Exception:
+            except Exception as _e:
                 pass
         except Exception as e:
-            self._add_bubble("ERROR", f"Model switcher: {e}", "error")
+            self._transcript.add_bubble("ERROR", f"Model switcher: {e}", "error")
 
     def _show_scopes_dialog(self) -> None:
         try:
@@ -1517,68 +1103,36 @@ class ChatPanel(QDockWidget):
             dlg.exec()
             self._dialogs.remove(dlg)
             self._refresh_provider_label()
-            # Reinitialize agent with new provider/model
             try:
                 self.agent.reinitialize()
-            except Exception:
+            except Exception as _e:
                 pass
         except Exception as e:
-            self._add_bubble("ERROR", f"Scopes dialog: {e}", "error")
+            self._transcript.add_bubble("ERROR", f"Scopes dialog: {e}", "error")
 
     def _autosize_input(self) -> None:
-        doc_height = int(self._input.document().size().height()) + 16
+        doc_height = int(self._input_area.input.document().size().height()) + 16
         input_height = max(46, min(140, doc_height))
-        self._input.setFixedHeight(input_height)
-        if hasattr(self, "_input_bar"):
-            self._input_bar.setFixedHeight(max(66, input_height + 20))
+        self._input_area.input.setFixedHeight(input_height)
+        self._input_area.setFixedHeight(max(66, input_height + 20))
 
     def _on_clear_clicked(self) -> None:
-        self._clear_feed()
+        self._transcript.clear()
+        try:
+            self.agent.reset()
+        except Exception as e:
+            print(f"Aery: agent reset error: {e}")
         self._set_activity("ready", active=False)
 
     def _clear_feed(self) -> None:
-        while self._feed_layout.count() > 1:
-            item = self._feed_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
+        """Remove all transcripts from feed layout (backward-compat alias for TranscriptView.clear)."""
+        self._transcript.clear()
 
     def _add_bubble(self, sender: str, text: str, msg_type: str = "assistant") -> None:
-        bubble = MessageBubble(sender, text, msg_type)
-        self._feed_layout.insertWidget(self._feed_layout.count() - 1, bubble)
-        QTimer.singleShot(50, self._scroll_to_bottom)
-        # Persist to session
-        self._session_messages.append({"role": msg_type, "text": text, "time": _now_stamp()})
-        if len(self._session_messages) > 200:
-            self._session_messages = self._session_messages[-200:]
-        # Debounce: schedule save 2s after last bubble, cancel any pending save
-        if hasattr(self, "_save_timer") and self._save_timer:
-            self._save_timer.stop()
-        self._save_timer = QTimer(self)
-        self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(self._save_session)
-        self._save_timer.start(2000)
+        self._transcript.add_bubble(sender, text, msg_type)
 
     def _add_canvas_image(self, b64_data: str) -> None:
-        """Render a base64 PNG inline in the chat feed."""
-        frame = QFrame()
-        frame.setStyleSheet(f"background:{BG_CARD}; border:1px solid {BORDER}; border-radius:6px;")
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(8, 8, 8, 8)
-        hdr = QLabel("CANVAS CAPTURE")
-        hdr.setStyleSheet(f"color:{ACCENT};font-family:{FONT_MONO};font-size:9px;font-weight:800;background:transparent;")
-        lay.addWidget(hdr)
-        img_lbl = QLabel()
-        try:
-            raw = base64.b64decode(b64_data)
-            qimg = QImage.fromData(raw)
-            pix = QPixmap.fromImage(qimg).scaledToWidth(460, Qt.TransformationMode.SmoothTransformation)
-            img_lbl.setPixmap(pix)
-        except Exception:
-            img_lbl.setText("[image render failed]")
-        img_lbl.setStyleSheet("background:transparent;")
-        lay.addWidget(img_lbl)
-        self._feed_layout.insertWidget(self._feed_layout.count() - 1, frame)
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        self._transcript.add_canvas_image(b64_data)
 
     def _record_tool_output(self, tool_name: str, output_path: str) -> None:
         try:
@@ -1588,7 +1142,6 @@ class ChatPanel(QDockWidget):
                 _pd = os.path.dirname(path)
                 from aery_plugin.graph_engine import record_code_execution
                 record_code_execution(_pd, tool_name, "", "", [], [output_path], True)
-                # ── Field registry: if output is a vector, record its fields ──
                 try:
                     from qgis.core import QgsVectorLayer
                     from aery_plugin.graph_engine import record_field
@@ -1597,16 +1150,15 @@ class ChatPanel(QDockWidget):
                         for _f in _vl.fields():
                             record_field(_pd, _vl.name(), _f.name(),
                                          _f.typeName(), tool_name)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    print(f"Aery: tool effect tracking: {e}")
+        except Exception as e2:
+            print(f"Aery: tool effects save: {e2}")
 
     def _handle_code_error(self, error_msg: str) -> None:
-        """Auto-retry run_qgis_code on failure, up to 2 times."""
         if self._retry_count >= 2:
             self._retry_count = 0
-            self._add_bubble("SYSTEM", "Auto-retry limit reached (2). Please review the error.", "system")
+            self._transcript.add_bubble("SYSTEM", "Auto-retry limit reached (2). Please review the error.", "system")
             return
         self._retry_count += 1
         self._cancel_streaming()
@@ -1614,24 +1166,61 @@ class ChatPanel(QDockWidget):
             f"The previous code execution failed with this error:\n{error_msg}\n\n"
             f"Fix the error and retry. Attempt {self._retry_count}/2."
         )
-        self._add_bubble("SYSTEM", f"Auto-retrying ({self._retry_count}/2)…", "system")
+        self._transcript.add_bubble("SYSTEM", f"Auto-retrying ({self._retry_count}/2)\u2026", "system")
 
     def _add_tool_block(self, name: str, status: str, details: str = "") -> None:
         if status == "running":
-            self._set_activity(self._activity_for_tool(name), active=True)
+            self._set_activity(self._activity.activity_for_tool(name), active=True)
         elif status == "error":
             self._set_activity("tool failed", active=True, detail=str(name))
         else:
             self._set_activity("thinking...", active=True)
 
-    def _scroll_to_bottom(self) -> None:
-        scrollbar = self._scroll.verticalScrollBar()
-        if scrollbar:
-            scrollbar.setValue(scrollbar.maximum())
+    def _handle_permission_request(self, event: dict) -> None:
+        tool_name = event.get("tool_name", "")
+        description = event.get("description", "")
+        risk_level = event.get("risk_level", "medium")
+        request_id = event.get("request_id", "")
+        tool_use_id = event.get("tool_use_id", "")
+        risk_color = {
+            "high": ERROR_COLOR,
+            "medium": WARNING_COLOR,
+            "low": SUCCESS_COLOR,
+        }.get(risk_level, TEXT_MUTED)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Permission Request")
+        dialog.setText(f"Tool: {tool_name}")
+        dialog.setInformativeText(f"{description}\n\nRisk level: {risk_level.upper()}")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        allow_btn = dialog.addButton("Allow Once", QMessageBox.ButtonRole.AcceptRole)
+        always_btn = dialog.addButton("Always Allow", QMessageBox.ButtonRole.ActionRole)
+        deny_btn = dialog.addButton("Deny", QMessageBox.ButtonRole.RejectRole)
+        dialog.setStyleSheet(f"""
+            QMessageBox {{ background:{BG_SURFACE}; color:{TEXT_MAIN}; }}
+            QLabel {{ color:{TEXT_DIM}; font-family:{FONT_SANS}; font-size:12px; }}
+            QPushButton {{ background:{BG_HIGH}; color:{TEXT_DIM}; border:1px solid {BORDER};
+                border-radius:4px; padding:6px 14px; font-size:11px; }}
+            QPushButton:hover {{ color:{ACCENT}; border-color:{ACCENT}; }}
+        """)
+        result = dialog.exec()
+        if result == QMessageBox.ButtonRole.AcceptRole or dialog.clickedButton() == allow_btn:
+            self._permission_granted(request_id, tool_use_id, False)
+        elif dialog.clickedButton() == always_btn:
+            self.agent.tools.set_permission_mode("bypassPermissions")
+            self._permission_granted(request_id, tool_use_id, True)
+        else:
+            self._permission_denied(request_id, tool_use_id)
+
+    def _permission_granted(self, request_id: str, tool_use_id: str, always: bool) -> None:
+        self._transcript.add_bubble("SYSTEM", f"Permission granted for tool execution", "system")
+        self.agent.resolve_permission(approved=True, always=always)
+
+    def _permission_denied(self, request_id: str, tool_use_id: str) -> None:
+        self._transcript.add_bubble("SYSTEM", f"Permission denied \u2014 tool execution skipped", "system")
+        self.agent.resolve_permission(approved=False)
 
     def show_error(self, message: str) -> None:
-        """Show an error message in the chat feed."""
-        self._add_bubble("ERROR", message, "error")
+        self._transcript.add_bubble("ERROR", message, "error")
 
     def _on_event(self, event: dict) -> None:
         etype = event.get("type", "")
@@ -1650,7 +1239,7 @@ class ChatPanel(QDockWidget):
                 self._stream_label.setVisible(True)
                 initial = self._extract_text(event)
                 if initial and not self._is_background_noise(initial):
-                    self._stream_label.setHtml(_format_text_html(initial))
+                    self._stream_label.setHtml(format_text_html(initial))
                 self._set_activity("thinking...", active=True)
         elif etype == "message_update":
             if self._discard_stale_events:
@@ -1660,7 +1249,7 @@ class ChatPanel(QDockWidget):
             text = self._extract_text(event)
             if text and not self._is_background_noise(text):
                 self._stream_label.setVisible(True)
-                self._stream_label.setHtml(_format_text_html(text))
+                self._stream_label.setHtml(format_text_html(text))
         elif etype == "message_end":
             if self._discard_stale_events:
                 self._active_stream_role = ""
@@ -1675,7 +1264,7 @@ class ChatPanel(QDockWidget):
             if not self._stream_label.toPlainText().strip():
                 final_text = self._extract_text(event)
                 if final_text and not self._is_background_noise(final_text):
-                    self._stream_label.setHtml(_format_text_html(final_text))
+                    self._stream_label.setHtml(format_text_html(final_text))
             self._active_stream_role = ""
             self._end_streaming()
         elif etype == "tool_execution_start":
@@ -1693,17 +1282,14 @@ class ChatPanel(QDockWidget):
                 self._last_context = result
             if err:
                 self._add_tool_block(str(name), "error", str(err))
-                # Error self-correction: retry run_qgis_code up to 2x
                 if "run_qgis" in str(name).lower() or "qgis_code" in str(name).lower():
                     self._handle_code_error(str(err))
             else:
                 detail = result if isinstance(result, str) else json.dumps(result, indent=2) if result else ""
-                # Inline image for canvas captures
                 if isinstance(result, str) and result.startswith("iVBORw0KGgo") and len(result) > 100:
                     self._add_canvas_image(result)
                 else:
                     self._add_tool_block(str(name), "done", detail[:500] if detail else "")
-                # Extract OUTPUT path and record in graph
                 if isinstance(result, dict) and "OUTPUT" in result:
                     self._record_tool_output(str(name), result["OUTPUT"])
         elif etype == "agent_end":
@@ -1714,26 +1300,42 @@ class ChatPanel(QDockWidget):
         elif etype == "question":
             self._handle_question(event)
 
+    def _extract_text(self, event: dict) -> str:
+        message = event.get("message", {})
+        content = message.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "\n".join(parts)
+        return str(content) if content else ""
+
+    def _event_role(self, event: dict) -> str:
+        message = event.get("message", {})
+        return message.get("role", "")
+
+    def _is_background_noise(self, text: str) -> bool:
+        return len(text.strip()) < 2
+
     def _handle_question(self, event: dict) -> None:
-        """Render inline question card in the feed and wait for user answer."""
         quest_id = event.get("questId", "")
         if not quest_id:
             return
-        card = _QuestionWidget(event, self._feed_container, self)
-        card._resolve_callback = self._resolve_question  # wire answer callback
-        self._feed_layout.insertWidget(self._feed_layout.count() - 1, card)
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        card = _QuestionWidget(event, self._transcript.feed_container, self)
+        card._resolve_callback = self._resolve_question
+        self._transcript.feed_layout.insertWidget(self._transcript.feed_layout.count() - 1, card)
+        QTimer.singleShot(50, self._transcript.scroll_to_bottom)
 
     def _resolve_question(self, quest_id: str, answer: dict) -> None:
-        """Deliver user's answer back to qgis_executor._pending_questions."""
         try:
             from aery_plugin.qgis_executor import _pending_questions, _resolve_question
             _resolve_question(quest_id, answer)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: resolve question error: {e}")
 
     def append_message(self, sender: str, text: str, msg_type: str = "assistant") -> None:
-        self._add_bubble(sender, text, msg_type)
+        self._transcript.add_bubble(sender, text, msg_type)
 
     def set_ready(self) -> None:
         if not self._ready:
@@ -1743,7 +1345,6 @@ class ChatPanel(QDockWidget):
             self._load_session()
 
     def on_project_changed(self) -> None:
-        """Called when user opens/saves a different project."""
         self._session_context_injected = False
         self._refresh_provider_label()
         _refresh_layer_cache()
@@ -1751,21 +1352,19 @@ class ChatPanel(QDockWidget):
             from qgis.core import QgsProject
             path = QgsProject.instance().fileName()
             if path:
-                self._add_bubble("SYSTEM", f"Project changed: {path}", "system")
+                self._transcript.add_bubble("SYSTEM", f"Project changed: {path}", "system")
                 self._save_session()
-                self._session_messages.clear()
+                self._transcript.set_session_messages([])
                 self._load_session()
-        except Exception:
-            pass
+        except (RuntimeError, AttributeError) as e:
+            print(f"Aery: on_project_changed warning: {e}")
 
     def notify_layer_added(self, name: str, layer_type: str) -> None:
         _refresh_layer_cache()
-        self._add_bubble("SYSTEM", f"Layer added: {name} [{layer_type}]", "system")
-        # ── Record the new layer and re-detect spatial relationships ────
+        self._transcript.add_bubble("SYSTEM", f"Layer added: {name} [{layer_type}]", "system")
         try:
             from qgis.core import QgsProject
             from aery_plugin.graph_engine import record_layer, auto_detect_spatial_relationships
-            import os
             path = QgsProject.instance().fileName() or ""
             lyr = next((l for l in QgsProject.instance().mapLayers().values()
                         if l.name() == name), None)
@@ -1773,12 +1372,12 @@ class ChatPanel(QDockWidget):
                 record_layer(os.path.dirname(path) if path else ".", name, layer_type,
                              lyr.crs().authid() if lyr.crs() else "", lyr.source())
                 auto_detect_spatial_relationships(os.path.dirname(path) if path else ".")
-        except Exception:
-            pass
+        except (RuntimeError, AttributeError) as e:
+            print(f"Aery: notify_layer_added warning for '{name}': {e}")
 
     def notify_layers_removed(self, count: int) -> None:
         _refresh_layer_cache()
-        self._add_bubble("SYSTEM", f"{count} layer(s) removed from project.", "system")
+        self._transcript.add_bubble("SYSTEM", f"{count} layer(s) removed from project.", "system")
 
     def _show_dialog(self, title: str, body: str) -> None:
         dialog = InfoDialog(title, body, self)
@@ -1794,8 +1393,8 @@ class ChatPanel(QDockWidget):
                 d = os.path.join(os.path.dirname(path), ".aery")
                 os.makedirs(d, exist_ok=True)
                 return os.path.join(d, "session.json")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Aery: session path error: {e}")
         return ""
 
     def _save_session(self) -> None:
@@ -1805,11 +1404,11 @@ class ChatPanel(QDockWidget):
         try:
             import json
             with open(path, "w") as f:
-                json.dump(self._session_messages[-200:], f, indent=2)
-        except Exception:
-            pass
+                json.dump(self._transcript.get_session_messages()[-200:], f, indent=2)
+        except Exception as e:
+            print(f"Aery: session save error: {e}")
 
-    def _load_session(self) -> None:
+    def _load_session(self, show_resume_msg: bool = False) -> None:
         path = self._session_path()
         if not path or not os.path.exists(path):
             return
@@ -1818,25 +1417,25 @@ class ChatPanel(QDockWidget):
             with open(path) as f:
                 msgs = json.load(f)
             if msgs:
-                self._session_messages = msgs
-                self._add_bubble("SYSTEM", f"Resumed session ({len(msgs)} messages)", "system")
-        except Exception:
-            pass
+                self._transcript.set_session_messages(msgs)
+                if show_resume_msg:
+                    self._transcript.add_bubble("SYSTEM", f"Resumed session ({len(msgs)} messages)", "system")
+        except Exception as e:
+            print(f"Aery: session load error: {e}")
 
     def _export_html_report(self) -> None:
-        """Export the current session as an HTML report to project_dir/.aery/report.html."""
         try:
             from qgis.core import QgsProject
             import os, json
             path = QgsProject.instance().fileName()
             if not path:
-                self._add_bubble("SYSTEM", "Save your project first before exporting a report.", "system")
+                self._transcript.add_bubble("SYSTEM", "Save your project first before exporting a report.", "system")
                 return
             report_dir = os.path.join(os.path.dirname(path), ".aery")
             os.makedirs(report_dir, exist_ok=True)
             report_path = os.path.join(report_dir, "report.html")
             rows = ""
-            for msg in self._session_messages:
+            for msg in self._transcript.get_session_messages():
                 role = msg.get("role", "system")
                 text = msg.get("text", "")
                 color = {"user": "#57F1DB", "assistant": "#8EE7A8", "error": "#FFB4AB"}.get(role, "#859490")
@@ -1857,12 +1456,11 @@ class ChatPanel(QDockWidget):
             )
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(html)
-            self._add_bubble("SYSTEM", f"Report exported: {report_path}", "system")
+            self._transcript.add_bubble("SYSTEM", f"Report exported: {report_path}", "system")
         except Exception as e:
-            self._add_bubble("ERROR", f"Export failed: {e}", "error")
+            self._transcript.add_bubble("ERROR", f"Export failed: {e}", "error")
 
     def _show_session_summary(self) -> None:
-        """Summarize what the agent did this session using the graph."""
         try:
             from qgis.core import QgsProject
             path = QgsProject.instance().fileName()
@@ -1877,21 +1475,20 @@ class ChatPanel(QDockWidget):
             tools_used = {n["label"] for n in g.nodes_by_type(NODE_TOOL)
                          if any(e["dst"] == n["id"] for e in g._edges)}
 
-            lines = [f"SESSION SUMMARY — {len(prompts)} prompts", ""]
+            lines = [f"SESSION SUMMARY \u2014 {len(prompts)} prompts", ""]
             if prompts:
                 lines.append("WHAT YOU ASKED:")
                 for p in prompts[-10:]:
-                    lines.append(f"  • {p['label']}")
+                    lines.append(f"  \u2022 {p['label']}")
             if tools_used:
                 lines += ["", "TOOLS USED:"]
                 for t in sorted(tools_used):
-                    lines.append(f"  • {t}")
+                    lines.append(f"  \u2022 {t}")
             if outputs:
                 lines += ["", "FILES PRODUCED:"]
                 for o in outputs[:15]:
-                    lines.append(f"  • {o['label']}  {o.get('path','')}")
+                    lines.append(f"  \u2022 {o['label']}  {o.get('path','')}")
 
-            # Spatial relationships discovered
             from aery_plugin.graph_engine import EDGE_OVERLAPS, EDGE_CONTAINS
             spatial = [e for e in g._edges if e["rel"] in (EDGE_OVERLAPS, EDGE_CONTAINS)]
             if spatial:
@@ -1899,14 +1496,13 @@ class ChatPanel(QDockWidget):
                 for e in spatial[:8]:
                     src = g._nodes.get(e["src"], {}).get("label", e["src"])
                     dst = g._nodes.get(e["dst"], {}).get("label", e["dst"])
-                    lines.append(f"  • {src} {e['rel']} {dst} (confidence {e.get('weight', 0):.0%})")
+                    lines.append(f"  \u2022 {src} {e['rel']} {dst} (confidence {e.get('weight', 0):.0%})")
 
             self._show_dialog("What Did You Do?", "\n".join(lines))
         except Exception as e:
             self._show_dialog("Session Summary", f"Error: {e}")
 
     def _show_graph_window(self) -> None:
-        """Show knowledge graph stats and provenance query."""
         try:
             from qgis.core import QgsProject
             path = QgsProject.instance().fileName()
@@ -1955,7 +1551,62 @@ class ChatPanel(QDockWidget):
                 body = "".join(f.readlines()[-30:])
         except OSError:
             body = f"No audit trail found at:\n{audit_path}"
-        self._show_dialog("Audit Trail", body)
+        self._show_audit_dialog("Audit Trail", body, audit_path)
+
+    def _show_audit_dialog(self, title: str, body: str, audit_path: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumSize(520, 380)
+        dialog.setStyleSheet(f"""
+            QDialog {{ background:{BG_SURFACE}; color:{TEXT_MAIN}; }}
+            QLabel {{ color:{TEXT_DIM}; font-family:{FONT_SANS}; }}
+            QTextEdit {{
+                background:{BG_BASE}; color:{TEXT_MAIN}; border:1px solid {BORDER};
+                border-radius:6px; font-family:{FONT_MONO}; font-size:11px;
+            }}
+        """)
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(title.upper())
+        heading.setStyleSheet(
+            f"color:{ACCENT};font-family:{FONT_MONO};font-size:12px;"
+            "font-weight:900;letter-spacing:0.12em;"
+        )
+        layout.addWidget(heading)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(body)
+        layout.addWidget(text)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        clear_btn = QPushButton("CLEAR")
+        _style_button(clear_btn)
+        clear_btn.clicked.connect(lambda: self._clear_audit(dialog, text, audit_path))
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        close_btn = QPushButton("CLOSE")
+        _style_button(close_btn, active=True)
+        close_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+        self._dialogs.append(dialog)
+        dialog.show()
+
+    def _clear_audit(self, dialog, text_widget, audit_path: str) -> None:
+        try:
+            if os.path.exists(audit_path):
+                confirm = QMessageBox.question(
+                    dialog,
+                    "Clear Audit Trail",
+                    f"Delete all audit logs?\n\n{audit_path}\n\nThis cannot be undone.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if confirm != QMessageBox.StandardButton.Yes:
+                    return
+                os.remove(audit_path)
+            text_widget.setPlainText("Audit trail cleared.")
+        except Exception as e:
+            text_widget.setPlainText(f"Failed to clear: {e}")
 
     def _show_layers_window(self) -> None:
         layers = self._last_context.get("layers", [])

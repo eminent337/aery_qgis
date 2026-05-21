@@ -99,7 +99,7 @@ def publish_geoserver(layer: str, geoserver_url: str, username: str, password: s
 
     Args:
         layer: QGIS layer name to publish.
-        geoserver_url: GeoServer base URL (e.g. 'http://localhost:8080/geoserver').
+        geoserver_url: GeoServer base URL (e.g. 'https://geoserver.example.com/geoserver').
         username: GeoServer admin username.
         password: GeoServer admin password.
         workspace: GeoServer workspace name (default: 'default').
@@ -110,6 +110,15 @@ def publish_geoserver(layer: str, geoserver_url: str, username: str, password: s
         Dict with published status, URLs, and layer info.
     """
     from qgis.core import QgsProject
+
+    # Validate HTTPS — warn if credentials would travel in plaintext
+    if geoserver_url.startswith("http://"):
+        import warnings
+        warnings.warn(
+            f"GeoServer URL uses HTTP — credentials will be sent in plaintext. "
+            f"Use HTTPS for production: https://{geoserver_url[7:]}",
+            UserWarning,
+        )
 
     layer_name = layer_name or layer
     gs_url = geoserver_url.rstrip("/")
@@ -328,44 +337,52 @@ def multi_map_layout(layout_name: str, output_path: str,
     cell_h = (usable_h - gap * (rows - 1)) / rows
     all_layers = {l.name(): l for l in proj.mapLayers().values() if l.isValid()}
 
-    for idx, pdef in enumerate(panels):
-        row, col = idx // cols, idx % cols
-        x = margin_mm + col * (cell_w + gap)
-        y = margin_mm + row * (cell_h + gap)
+    # Save original visibility state so we can restore it even on failure
+    original_visibility = {name: lyr.isVisible() for name, lyr in all_layers.items()}
+    try:
+        for idx, pdef in enumerate(panels):
+            row, col = idx // cols, idx % cols
+            x = margin_mm + col * (cell_w + gap)
+            y = margin_mm + row * (cell_h + gap)
 
-        lset = pdef.get("layer_set", [])
-        for lyr in all_layers.values():
-            lyr.setVisible(False)
-        for nm in lset:
-            if nm in all_layers:
-                all_layers[nm].setVisible(True)
+            lset = pdef.get("layer_set", [])
+            for lyr in all_layers.values():
+                lyr.setVisible(False)
+            for nm in lset:
+                if nm in all_layers:
+                    all_layers[nm].setVisible(True)
 
-        map_itm = QgsLayoutItemMap(layout)
-        map_itm.setRect(QRectF())
-        map_itm.attemptMove(QgsLayoutPoint(x, y))
-        map_itm.attemptResize(QgsLayoutSize(cell_w, cell_h))
-        ext_str = pdef.get("extent")
-        if ext_str:
-            xy = [float(v) for v in ext_str.split(",")]
-            map_itm.setExtent(QgsRectangle(xy[0], xy[2], xy[1], xy[3]))
-        elif iface:
-            map_itm.setExtent(iface.mapCanvas().extent())
-        layout.addLayoutItem(map_itm)
+            map_itm = QgsLayoutItemMap(layout)
+            map_itm.setRect(QRectF())
+            map_itm.attemptMove(QgsLayoutPoint(x, y))
+            map_itm.attemptResize(QgsLayoutSize(cell_w, cell_h))
+            ext_str = pdef.get("extent")
+            if ext_str:
+                xy = [float(v) for v in ext_str.split(",")]
+                map_itm.setExtent(QgsRectangle(xy[0], xy[2], xy[1], xy[3]))
+            elif iface:
+                map_itm.setExtent(iface.mapCanvas().extent())
+            layout.addLayoutItem(map_itm)
 
-        tt = pdef.get("title", "")
-        if tt:
-            lbl = QgsLayoutItemLabel(layout)
-            lbl.setText(tt)
-            lbl.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-            lbl.attemptMove(QgsLayoutPoint(x, y - 12))
-            lbl.adjustSizeToText()
-            layout.addLayoutItem(lbl)
+            tt = pdef.get("title", "")
+            if tt:
+                lbl = QgsLayoutItemLabel(layout)
+                lbl.setText(tt)
+                lbl.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                lbl.attemptMove(QgsLayoutPoint(x, y - 12))
+                lbl.adjustSizeToText()
+                layout.addLayoutItem(lbl)
 
-    exporter = QgsLayoutExporter(layout)
-    exported = exporter.exportToPdf(output_path, QgsLayoutExporter.PdfExportSettings())
-    ok = exported == QgsLayoutExporter.ExportResult.Success
-    print(f"Multi-map PDF: {ok} -> {output_path}")
-    return {"success": ok, "output_path": output_path}
+        exporter = QgsLayoutExporter(layout)
+        exported = exporter.exportToPdf(output_path, QgsLayoutExporter.PdfExportSettings())
+        ok = exported == QgsLayoutExporter.ExportResult.Success
+        print(f"Multi-map PDF: {ok} -> {output_path}")
+        return {"success": ok, "output_path": output_path}
+    finally:
+        # Restore original layer visibility regardless of success/failure
+        for name, visible in original_visibility.items():
+            if name in all_layers:
+                all_layers[name].setVisible(visible)
 
 
 def save_map_theme(theme_name: str) -> dict:

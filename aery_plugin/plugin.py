@@ -72,8 +72,16 @@ class AeryPlugin:
             for layer in layers:
                 try:
                     self.panel.notify_layer_added(layer.name(), layer.type().name)
-                except Exception:
-                    pass
+                except (AttributeError, RuntimeError) as e:
+                    # Log unexpected failures instead of silently swallowing them
+                    try:
+                        from qgis.core import QgsMessageLog
+                        QgsMessageLog.logMessage(
+                            f"Aery: layer-added notification failed: {e}",
+                            "Aery", Qgis.MessageLevel.Warning
+                        )
+                    except Exception:
+                        print(f"Aery: layer-added notification failed: {e}")
 
     def _on_layers_removed(self, layer_ids) -> None:
         if self.panel:

@@ -54,12 +54,19 @@ EDGE_CHAINS_TO    = "chains_to"
 
 
 class AeryGraph:
-    """Lightweight in-memory graph with JSON persistence."""
+    """Lightweight in-memory graph with JSON persistence.
+
+    Thread-safe: all mutations (add_node, add_edge, remove_node, save) are
+    guarded by a reentrant lock so concurrent writes from the main thread
+    and background threads (e.g. auto_detect_spatial_relationships) cannot
+    corrupt the in-memory state or the on-disk JSON file.
+    """
 
     def __init__(self, path: str):
         self._path = path
         self._nodes: dict[str, dict] = {}   # id -> {id, type, label, **attrs}
         self._edges: list[dict] = []         # [{src, dst, rel, weight, ts, **attrs}]
+        self._lock = threading.RLock()
         self._load()
 
     # ── Persistence ───────────────────────────────────────────────────────────
@@ -75,42 +82,46 @@ class AeryGraph:
                 pass
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
-        tmp = self._path + ".tmp"
-        try:
-            with open(tmp, "w") as f:
-                json.dump({"nodes": list(self._nodes.values()), "edges": self._edges}, f, indent=2)
-            os.replace(tmp, self._path)
-        except Exception:
+        with self._lock:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            tmp = self._path + ".tmp"
             try:
-                os.unlink(tmp)
+                with open(tmp, "w") as f:
+                    json.dump({"nodes": list(self._nodes.values()), "edges": self._edges}, f, indent=2)
+                os.replace(tmp, self._path)
             except Exception:
-                pass
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     # ── Mutation ──────────────────────────────────────────────────────────────
 
     def add_node(self, node_id: str, node_type: str, label: str, **attrs) -> dict:
-        if node_id not in self._nodes:
-            self._nodes[node_id] = {"id": node_id, "type": node_type, "label": label, **attrs}
-        else:
-            self._nodes[node_id].update(attrs)
-        return self._nodes[node_id]
+        with self._lock:
+            if node_id not in self._nodes:
+                self._nodes[node_id] = {"id": node_id, "type": node_type, "label": label, **attrs}
+            else:
+                self._nodes[node_id].update(attrs)
+            return self._nodes[node_id]
 
     def add_edge(self, src: str, dst: str, rel: str, weight: float = 1.0, **attrs) -> dict:
-        # Deduplicate: update weight if same src/dst/rel exists
-        for e in self._edges:
-            if e["src"] == src and e["dst"] == dst and e["rel"] == rel:
-                e["weight"] = weight
-                e.update(attrs)
-                return e
-        edge = {"src": src, "dst": dst, "rel": rel, "weight": weight,
-                "ts": int(time.time()), **attrs}
-        self._edges.append(edge)
-        return edge
+        with self._lock:
+            # Deduplicate: update weight if same src/dst/rel exists
+            for e in self._edges:
+                if e["src"] == src and e["dst"] == dst and e["rel"] == rel:
+                    e["weight"] = weight
+                    e.update(attrs)
+                    return e
+            edge = {"src": src, "dst": dst, "rel": rel, "weight": weight,
+                    "ts": int(time.time()), **attrs}
+            self._edges.append(edge)
+            return edge
 
     def remove_node(self, node_id: str) -> None:
-        self._nodes.pop(node_id, None)
-        self._edges = [e for e in self._edges if e["src"] != node_id and e["dst"] != node_id]
+        with self._lock:
+            self._nodes.pop(node_id, None)
+            self._edges = [e for e in self._edges if e["src"] != node_id and e["dst"] != node_id]
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
@@ -570,32 +581,82 @@ def _suggest_tool_chains(g: AeryGraph, relevant_ids: set[str]) -> list[str]:
     return suggestions[:4]
 
 
-def auto_detect_spatial_relationships(project_dir: str) -> None:
-    """Detect spatial relationships between loaded layers using extent-only checks.
-    Thread-safe: only calls layer.extent() and layer.crs() which are safe from any thread.
+def collect_layer_data_for_spatial() -> list[dict]:
+    """Collect layer CRS and extent data on the main thread.
+
+    QGIS API (mapLayers, crs, extent) is NOT thread-safe. This function
+    must be called from the main thread before spawning a background
+    worker for spatial relationship detection.
     """
     try:
         from qgis.core import QgsProject
         layers = list(QgsProject.instance().mapLayers().values())
         vector_layers = [l for l in layers if hasattr(l, "getFeatures")]
 
-        for i, la in enumerate(vector_layers):
-            for lb in vector_layers[i + 1:]:
-                try:
-                    if la.crs().authid() != lb.crs().authid():
-                        continue
-                    ext_a, ext_b = la.extent(), lb.extent()
-                    if ext_a.isEmpty() or ext_b.isEmpty() or not ext_a.intersects(ext_b):
-                        continue
-                    overlap = ext_a.intersect(ext_b)
-                    area_a = ext_a.width() * ext_a.height()
-                    confidence = min(1.0, (overlap.width() * overlap.height()) / area_a) if area_a > 0 else 0.5
-                    rel = EDGE_CONTAINS if ext_a.contains(ext_b) else EDGE_OVERLAPS
-                    record_spatial_relationship(project_dir, la.name(), lb.name(), rel, confidence)
-                except Exception:
-                    pass
+        data = []
+        for lyr in vector_layers:
+            try:
+                ext = lyr.extent()
+                data.append({
+                    "name": lyr.name(),
+                    "crs": lyr.crs().authid() if lyr.crs() else "",
+                    "extent": {
+                        "xmin": ext.xMinimum(),
+                        "ymin": ext.yMinimum(),
+                        "xmax": ext.xMaximum(),
+                        "ymax": ext.yMaximum(),
+                        "empty": ext.isEmpty(),
+                    },
+                })
+            except Exception:
+                pass
+        return data
     except Exception:
-        pass
+        return []
+
+
+def auto_detect_spatial_relationships(project_dir: str, layer_data: list[dict] = None) -> None:
+    """Detect spatial relationships between loaded layers using extent-only checks.
+
+    Thread-safe: does NOT call any QGIS API. All layer data (CRS, extent) must
+    be pre-collected on the main thread via collect_layer_data_for_spatial().
+
+    If layer_data is not provided (legacy callers on main thread), collects it
+    inline — but this is NOT safe from background threads.
+    """
+    if layer_data is None:
+        # Legacy path — only safe when called from main thread
+        layer_data = collect_layer_data_for_spatial()
+
+    for i, la in enumerate(layer_data):
+        for lb in layer_data[i + 1:]:
+            try:
+                if la["crs"] != lb["crs"] or not la["crs"]:
+                    continue
+                ea, eb = la["extent"], lb["extent"]
+                if ea["empty"] or eb["empty"]:
+                    continue
+
+                # Compute bounding box intersection
+                oxmin = max(ea["xmin"], eb["xmin"])
+                oymin = max(ea["ymin"], eb["ymin"])
+                oxmax = min(ea["xmax"], eb["xmax"])
+                oymax = min(ea["ymax"], eb["ymax"])
+
+                if oxmin >= oxmax or oymin >= oymax:
+                    continue  # No intersection
+
+                overlap_area = (oxmax - oxmin) * (oymax - oymin)
+                area_a = (ea["xmax"] - ea["xmin"]) * (ea["ymax"] - ea["ymin"])
+                confidence = min(1.0, overlap_area / area_a) if area_a > 0 else 0.5
+
+                # Determine relationship type
+                a_contains_b = (ea["xmin"] <= eb["xmin"] and ea["xmax"] >= eb["xmax"] and
+                                ea["ymin"] <= eb["ymin"] and ea["ymax"] >= eb["ymax"])
+                rel = EDGE_CONTAINS if a_contains_b else EDGE_OVERLAPS
+                record_spatial_relationship(project_dir, la["name"], lb["name"], rel, confidence)
+            except Exception:
+                pass
 
 
 def prune_graph(project_dir: str, max_age_days: int = 7, max_nodes: int = 500) -> int:

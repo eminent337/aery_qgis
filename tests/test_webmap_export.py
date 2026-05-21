@@ -30,7 +30,7 @@ def test_export_webmap_has_required_parameters():
 
 def test_export_webmap_builds_leaflet_html(tmp_path):
     """_build_leaflet_html produces non-empty HTML with Leaflet tags."""
-    from aery_plugin.qgis_executor import _build_leaflet_html
+    from aery_plugin.geospatial_tools import _build_leaflet_html
 
     layer_files = [
         {"name": "roads", "file": "data/roads.geojson", "count": 42},
@@ -46,7 +46,7 @@ def test_export_webmap_builds_leaflet_html(tmp_path):
 
 def test_export_webmap_has_search_box_option():
     """include_search=True adds nominatim geocoding UI."""
-    from aery_plugin.qgis_executor import _build_leaflet_html
+    from aery_plugin.geospatial_tools import _build_leaflet_html
 
     html_off = _build_leaflet_html([], include_search=False)
     html_on = _build_leaflet_html([], include_search=True)
@@ -57,7 +57,7 @@ def test_export_webmap_has_search_box_option():
 
 def test_export_webmap_basemap_all_options():
     """All basemap options produce a tile layer URL."""
-    from aery_plugin.qgis_executor import _build_leaflet_html
+    from aery_plugin.geospatial_tools import _build_leaflet_html
 
     for bm in ("osm", "satellite", "topo", "stamen_toner", "none"):
         html = _build_leaflet_html([], basemap=bm)

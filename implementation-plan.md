@@ -1,49 +1,69 @@
-# aery_qgis: Native Geospatial Integration Plan
+# aery_qgis: Pure-Python QGIS Agent — Architecture Notes
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Status:** The plugin is fully implemented and working. This document describes
+> the current architecture and records design decisions.
 
-**Goal:** Transform Aery into a specialized, built-in QGIS agent (`aery_qgis`) that is geomatics-aware and stripped of non-GIS developer noise.
+**Goal:** Embed the Aery AI agent inside QGIS as a native Python plugin.
+The agent runs pure Python — no Node.js, no external daemon — making it the
+simplest possible integration.
 
 **Architecture:**
-- **Forked Core**: Use a specialized copy of the Aery engine (`aery-core`) with the Geospatial Suite baked in.
-- **Built-in Tools**: GIS tools and `web_search` are native core tools, not extensions.
-- **Auto-Context**: Native context injector automatically pulls QGIS state (layers, CRS) before every turn.
-- **Simplified UI**: Clean Qt Chat Panel in QGIS that spawns the specialized binary.
+- **Pure-Python agent** (`agent.py`): conversation loop, tool calling, context
+  injection, self-correction, streaming to the UI via Qt signals.
+- **Direct LLM API calls** (`llm_client.py`): OpenAI, Anthropic, Gemini with
+  retry/backoff. No external proxy required.
+- **Main-thread QGIS execution** (`qgis_executor.py`): TCP socket + QTimer queue
+  marshals all Python onto the QGIS main thread. Thread-safe by construction.
+- **13 built-in tools** (`tools.py` + `geospatial_tools.py`): core, geospatial,
+  graph-query, and self-extension tools.
+- **Five knowledge graphs** (`graph_engine.py`): provenance, session, spatial,
+  tool capability, algorithm. Auto-built and injected as context.
 
 **Tech Stack:**
-- **Engine**: TypeScript (Aery Core fork), Bun (compiler).
-- **Plugin**: Python (PyQt6), QGIS 4 API.
+- **Engine**: Pure Python (no TypeScript fork required)
+- **Plugin**: Python, PyQt6, QGIS 4.0+ API
 
 ---
 
-### Phase 1: Engine Specialization (Core Fork)
+## Completed Design Decisions
 
-**Files:**
-- Create: `aery-core/packages/coding-agent/src/core/tools/geospatial-suite.ts`
-- Create: `aery-core/packages/coding-agent/src/core/qgis-context.ts`
-- Modify: `aery-core/packages/coding-agent/src/core/tools/index.ts`
-- Modify: `aery-core/packages/coding-agent/src/core/sdk.ts`
-- Modify: `aery-core/packages/coding-agent/src/core/system-prompt.ts`
+### Why pure Python
+Forking to TypeScript/Node (`aery-core`) adds a build layer, a binary bridge,
+and a cross-language IPC boundary for no benefit inside a Python-native host.
+Direct LLM API access (`httpx`) is simpler and easier to debug.
 
-- [ ] **Task 1.1: Re-implement Geospatial Suite**
-  Restore the 16 GIS tools and `web_search` directly into the core.
-- [ ] **Task 1.2: Hard-Strip Developer Tools**
-  Remove `edit`, `grep`, and `find` from default activation.
-- [ ] **Task 1.3: Enable Auto-Context Injection**
-  Add logic to `sdk.ts` to automatically fetch QGIS project state before every LLM turn.
-- [ ] **Task 1.4: Specialized GIS Prompt**
-  Hardcode the "Geospatial Rulebook" into the engine's system prompt.
+### Thread safety
+All QGIS API calls serially execute via QTimer on the main thread.
+Python `asyncio.to_thread` is the only asyncio boundary and never crosses
+into Qt objects.
 
-### Phase 2: Perfect Build & Binary
+### Permission model
+Destructive patterns (`removeMapLayer`, `deleteFeatures`, `os.remove`,
+`shutil.rmtree`) trigger a `threading.Event`-based suspend/resume. The UI
+shows a modal dialog; when the user approves or denies, the agent's event loop
+unblocks and either retries or skips — no stale message-history pollution.
 
-- [ ] **Task 2.1: Clean Monorepo Build**
-  `cd aery-core && bun install && npm run build`
-- [ ] **Task 2.2: Specialized Binary Compilation**
-  Compile the `aery-qgis-runner` and sync all assets.
+### Session persistence
+JSONL format in `<project_dir>/.aery/sessions/`. Head+tail reads for large
+files, 1 MB cap, message truncation at 4 k chars. Compatible with the
+previous OpenClaude-inspired format.
 
-### Phase 3: Plugin Synchronization
+### Self-correction
+Max 3 retries before surfacing the error to the user. Snapshot-based undo
+stack (layer state before destructive `run_qgis_code` calls) is available
+as `agent.undo_last_tool()`.
 
-- [ ] **Task 3.1: Clean Python Bridge**
-  Simplify `rpc_bridge.py` to use the native features of our new binary.
-- [ ] **Task 3.2: UI Polish**
-  Update chat panel header and task suggestions.
+### Graph refresh
+Graph context (spatial relationships, tool chains) is injected on the first
+user turn and auto-detected again on every subsequent turn in
+`agent.run()` — so layers added by earlier tool calls are visible to the LLM
+on the next cycle.
+
+---
+
+## Historical Note
+
+An earlier `implementation-plan.md` (pre-2025 refactor) described a TypeScript
+`aery-core` fork with a Bun-compiled binary runner. That plan has been
+superseded by the pure-Python architecture described above. The TypeScript
+approach is no longer necessary for this project.

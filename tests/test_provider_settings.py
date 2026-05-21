@@ -67,7 +67,11 @@ def test_oauth_helper_get_active_provider_none(empty_auth):
 
 def test_oauth_helper_set_and_get_active_provider(empty_auth):
     from aery_plugin import oauth_helper
-    with patch.object(oauth_helper, "AGENT_DIR", empty_auth):
+    auth_path = os.path.join(empty_auth, "auth.json")
+    with open(auth_path, "w") as f:
+        json.dump({"google-antigravity": {"type": "oauth", "access": "tok123"}}, f)
+    with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
+         patch.object(oauth_helper, "AUTH_PATH", auth_path):
         oauth_helper.set_active_provider("google-antigravity", "gemini-3-flash")
         active = oauth_helper.get_active_provider()
         assert active["id"] == "google-antigravity"

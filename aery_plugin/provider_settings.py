@@ -305,6 +305,7 @@ class ProviderApiKeyList(QWidget):
     """All API-key-capable providers. Clicking one opens an ApiKeyDialog."""
 
     provider_clicked = pyqtSignal(str)  # provider pid
+    delete_requested = pyqtSignal(str)  # custom provider pid
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -352,9 +353,23 @@ class ProviderApiKeyList(QWidget):
         custom_providers = oauth_helper.get_custom_providers()
         for cp in custom_providers:
             sub = f"{'✓ configured' if cp['connected'] else 'API key required'} · {len(cp.get('models', []))} models"
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+
             btn = _ListButton(cp["name"], sub, pid=cp["id"])
             btn.clicked.connect(lambda _, p=cp["id"]: self.provider_clicked.emit(p))
-            self._blay.addWidget(btn)
+            row.addWidget(btn, 1)
+
+            del_btn = _btn("×", RED)
+            del_btn.setFixedWidth(24)
+            del_btn.setToolTip(f"Remove {cp['name']}")
+            del_btn.clicked.connect(lambda _, p=cp["id"]: self._confirm_delete(p))
+            row.addWidget(del_btn)
+
+            wrap = QWidget()
+            wrap.setLayout(row)
+            self._blay.addWidget(wrap)
 
         # Custom OpenAI-compatible add button
         add_btn = _ListButton("＋ Custom OpenAI-compatible", "Add a new provider", pid="__add_custom__")
@@ -379,6 +394,25 @@ class ProviderApiKeyList(QWidget):
             self._blay.addWidget(btn)
 
         self._blay.addStretch()
+
+    def _confirm_delete(self, pid: str) -> None:
+        """Show confirmation dialog before deleting a custom provider."""
+        custom = oauth_helper.get_custom_providers()
+        name = pid
+        for cp in custom:
+            if cp["id"] == pid:
+                name = cp["name"]
+                break
+
+        reply = QMessageBox.question(
+            self, "Remove Provider",
+            f"Remove '{name}'? This will delete its API key and configuration.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            oauth_helper.delete_custom_provider(pid)
+            self._refresh()
+            self.provider_clicked.emit("__refresh__")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -711,15 +745,24 @@ class ModelSwitcherDialog(QDialog):
 
         auth = oauth_helper._load_auth()
 
+        def _is_connected(pid: str) -> bool:
+            """Check if provider has credentials in auth.json or env."""
+            creds = auth.get(pid, {})
+            if creds.get("access") or creds.get("accessToken") or creds.get("refresh") or creds.get("refreshToken"):
+                return True
+            if creds.get("key"):
+                return True
+            env_key = oauth_helper.get_env_key(pid)
+            if env_key and os.environ.get(env_key):
+                return True
+            return False
+
         # OAuth providers with models
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
             models = _oauth_models(pid)
             if not models:
                 continue
-            creds    = auth.get(pid, {})
-            connected = bool(creds.get("access") or creds.get("accessToken")
-                             or creds.get("refresh") or creds.get("refreshToken"))
-            if not connected:
+            if not _is_connected(pid):
                 continue
             blay.addWidget(self._provider_section(cfg["name"], pid, models,
                                                   pid == active_pid, active_model))
@@ -731,9 +774,7 @@ class ModelSwitcherDialog(QDialog):
             models = cfg.get("models", [])
             if not models:
                 continue
-            creds     = auth.get(pid, {})
-            connected = bool(creds.get("key"))
-            if not connected:
+            if not _is_connected(pid):
                 continue
             blay.addWidget(self._provider_section(cfg["name"], pid, models,
                                                   pid == active_pid, active_model))
@@ -858,6 +899,18 @@ class ScopesDialog(QDialog):
             pass
         enabled: set = set(settings.get("enabledModels", []))
 
+        def _is_connected(pid: str) -> bool:
+            """Check if provider has credentials in auth.json or env."""
+            creds = auth.get(pid, {})
+            if creds.get("access") or creds.get("accessToken") or creds.get("refresh") or creds.get("refreshToken"):
+                return True
+            if creds.get("key"):
+                return True
+            env_key = oauth_helper.get_env_key(pid)
+            if env_key and os.environ.get(env_key):
+                return True
+            return False
+
         def _add_group(title: str, entries: list[tuple[str, str]], prefix: str = "") -> None:
             if not entries:
                 return
@@ -882,8 +935,7 @@ class ScopesDialog(QDialog):
         # OAuth providers
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
             models = _oauth_models(pid)
-            creds  = auth.get(pid, {})
-            if creds.get("access") or creds.get("accessToken") or creds.get("refresh"):
+            if _is_connected(pid):
                 _add_group(cfg["name"], models, pid + "/")
 
         # API key providers
@@ -891,8 +943,7 @@ class ScopesDialog(QDialog):
             if pid == "aery-gateway":
                 continue
             models = cfg.get("models", [])
-            creds  = auth.get(pid, {})
-            if creds.get("key"):
+            if _is_connected(pid):
                 _add_group(cfg["name"], models, pid + "/")
 
         # Gateway
@@ -1155,16 +1206,22 @@ class AuthMethodWizard(QDialog):
         if cfg.get("device_flow"):
             dlg = _DeviceFlowDialog(pid, self)
             dlg.exec()
+            self._oauth_list._refresh()
         else:
             self._set_busy(f"Opening browser for {pid}…")
             def done(err):
                 self._set_busy("")
-                self._oauth_list._refresh()
                 if err:
                     QMessageBox.warning(self, "Login Failed", err)
                 else:
-                    QMessageBox.information(self, "Login Success",
-                                            f"{oauth_helper.OAUTH_CONFIGS[pid]['name']} connected.")
+                    msg = f"{oauth_helper.OAUTH_CONFIGS[pid]['name']} connected."
+                    if pid in ("google-antigravity", "google-gemini-cli"):
+                        msg += ("\n\nGoogle may require account verification before "
+                                "you can use Cloud Code Assist. If you get a 403 error, "
+                                "visit: https://developers.google.com/gemini-code-assist/auth/auth_success_gemini")
+                    QMessageBox.information(self, "Login Success", msg)
+                # Refresh AFTER dialog is dismissed so widgets are fully processed
+                self._oauth_list._refresh()
             threading.Thread(target=_run_login, args=(pid, done), daemon=True).start()
 
     def _on_oauth_logout(self, pid: str) -> None:
@@ -1189,6 +1246,9 @@ class AuthMethodWizard(QDialog):
                 if self._api_list:
                     self._api_list._refresh()
                 self._show_auth_method()
+        elif pid == "__refresh__":
+            if self._api_list:
+                self._api_list._refresh()
         else:
             self._show_apikey_dialog(pid)
 
@@ -1276,7 +1336,7 @@ class GatewayPage(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel = _btn("CANCEL", DIM)
-        cancel.clicked.connect(lambda: None)
+        cancel.clicked.connect(lambda: self.saved.emit())
         btn_row.addWidget(cancel)
         save = _btn("SAVE", ACCENT, ACCENT)
         save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))

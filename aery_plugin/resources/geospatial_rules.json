@@ -14,7 +14,8 @@
     "7. MAP OUTPUT: export_webmap for Leaflet interactive map, or multi_map_layout for print PDFs",
     "8. PUBLISH: publish_geoserver pushes layers to a GeoServer REST endpoint for WFS/WMS sharing",
     "9. GRAPH: Use query_provenance to trace layer lineage, query_tool_chain for pipeline suggestions, query_graph for spatial relationships",
-    "10. CONFIRM: Show results, offer follow-up operations"
+    "10. EXTEND: Use register_tool to create reusable tools for workflows you'll repeat — you can build and extend your own capabilities",
+    "11. CONFIRM: Show results, offer follow-up operations"
   ],
   "processing_search_filter": "# Search algorithms by keyword instead of listing all:\nimport processing\nalgs = [a.id() for a in processing.algorithmProvider('native').algorithms() if 'buffer' in a.id()]\n# Or search across all providers:\nfrom qgis.core import QgsApplication\nalgs = [a.id() for a in QgsApplication.processingRegistry().algorithms() if 'interpolat' in a.id().lower()]\nresult = algs[:20]  # return top 20 matches",
   "globals_available": [
@@ -102,5 +103,20 @@
       "wms": "geoserver_url/workspace/wms"
     },
     "requirements": ["GeoServer running", "ogr2ogr installed", "admin credentials"]
+  },
+  "self_extension": {
+    "note": "You can register your own tools using register_tool. Custom tools persist in .aery/custom_tools.json and are available across sessions.",
+    "when_to_register": [
+      "When you write code for a workflow that will be reused",
+      "When a complex multi-step operation can be encapsulated",
+      "When you want to create project-specific specialized tools"
+    ],
+    "naming_convention": "snake_case, descriptive (e.g. calculate_ndvi, batch_clip_to_boundary)",
+    "best_practices": [
+      "Use parameters_schema to define clear inputs",
+      "Store result in `result` variable to return output",
+      "Handle errors gracefully with informative messages",
+      "Use list_custom_tools to review what you've built"
+    ]
   }
 }

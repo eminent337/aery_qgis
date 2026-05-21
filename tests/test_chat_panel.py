@@ -241,13 +241,14 @@ def test_show_audit_window_shows_raw_cumulative_log(panel, tmp_path):
         json.dumps({"timestamp":"2026-05-13T22:10:01Z","tool_name":"capture_canvas","run_id":"run-new","success":True,"result_summary":"iVBORw0KGgo" + ("A" * 5000),"code":"result = 'png'","risks":[]}),
     ]
     (audit_dir / "operations.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    panel._show_dialog = MagicMock()
+    panel._show_audit_dialog = MagicMock()
 
     panel._show_audit_window()
 
-    title, body = panel._show_dialog.call_args[0]
+    title, body, path = panel._show_audit_dialog.call_args[0]
     assert title == "Audit Trail"
     assert body == "".join([line + "\n" for line in lines])
+    assert "operations.jsonl" in path
 
 
 def test_history_navigation(panel):

@@ -386,92 +386,6 @@ def _process_question(req_id: str, result_queue: queue.Queue, params: dict) -> d
     return response
 
 
-def _build_leaflet_html(layer_files, basemap="osm", include_search=False, title=None, bbox=None):
-    """Build a self-contained Leaflet.js HTML string from layer file references.
-
-    Args:
-        layer_files: list of {name, file, count} dicts (relative paths to data files)
-        basemap: 'osm', 'satellite', 'topo', 'stamen_toner', or 'none'
-        include_search: add a geocoding search box at top-left
-        title: page <title> (default: "QGIS Web Map")
-        bbox: QgsRectangle or None (falls back to [0, 0] center)
-
-    Returns:
-        Complete HTML string with embedded Leaflet map.
-    """
-    # Duck-type bbox check — avoids requiring QGIS imports outside exec()
-    _is_rect = hasattr(bbox, "center") and hasattr(bbox, "yMinimum") and hasattr(bbox, "xMinimum")
-    if _is_rect:
-        center = [bbox.center().y(), bbox.center().x()]
-        bounds = [[bbox.yMinimum(), bbox.xMinimum()], [bbox.yMaximum(), bbox.xMaximum()]]
-    else:
-        center, bounds = [0, 0], None
-
-    basemap_urls = {
-        "osm": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "satellite": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "topo": "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        "stamen_toner": "https://stamen-tiles-{s}.a.ssl.fastly.net/toner/{z}/{x}/{y}.png",
-        "none": None,
-    }
-    bm_url = basemap_urls.get(basemap)
-    bm_attr = (
-        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        if basemap == "osm"
-        else '© Esri'
-        if basemap == "satellite"
-        else ""
-    )
-
-    layer_js = []
-    for lf in layer_files:
-        f = lf.get("file", "")
-        if f.endswith(".geojson"):
-            layer_js.append(f'fetch("{f}").then(r=>r.json()).then(data=>L.geoJSON(data,{{}}).addTo(map))')
-        elif f.endswith(".tif") or f.endswith(".tiff"):
-            layer_js.append(f'L.imageOverlay("{f}", bounds).addTo(map)')
-
-    search_block = ""
-    if include_search:
-        search_block = (
-            '<div id="search" style="position:absolute;top:10px;left:60px;z-index:1000;">'
-            '<input id="q" placeholder="Search location…" style="padding:4px 8px;width:200px;">'
-            '<button onclick="doSearch()">Go</button></div>\n'
-            '<script>\nfunction doSearch(){'
-            'var q=document.getElementById("q").value;'
-            'fetch("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q))'
-            '.then(r=>r.json()).then(d=>{if(d[0]){'
-            'map.setView([d[0].lat,d[0].lon],12);'
-            'L.marker([d[0].lat,d[0].lon]).addTo(map);}})}\n</script>'
-        )
-
-    bounds_js = f"var bounds={json.dumps(bounds)};" if bounds else ""
-    center_js = f"var center={json.dumps(center)};"
-
-    tile_js = f'L.tileLayer("{bm_url}", {{attribution: "{bm_attr}"}}).addTo(map);' if bm_url else ""
-    layer_js_str = "\n    ".join(layer_js)
-
-    return (
-        f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{title or "QGIS Web Map"}</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>#map{{height:600px;}}</style>
-</head><body>
-<h1>{title or "QGIS Web Map"}</h1>
-{search_block}
-<div id="map"></div>
-<script>
-{center_js}
-{bounds_js}
-var map = L.map('map');
-{"map.fitBounds(bounds);" if bounds else "map.setView(center, 8);"}
-{tile_js}
-{layer_js_str}
-</script></body></html>"""
-    )
-
-
 class QGISCodeExecutor(QObject):
     """Executes Python code in QGIS's main thread safely.
 
@@ -1029,6 +943,7 @@ class QGISCodeExecutor(QObject):
             from aery_plugin.graph_engine import (
                 record_code_execution,
                 auto_detect_spatial_relationships,
+                collect_layer_data_for_spatial,
                 prune_graph,
             )
             import re
@@ -1046,9 +961,11 @@ class QGISCodeExecutor(QObject):
                 success=bool(response.get("success")),
             )
             if response.get("success") and output_files:
+                # Collect layer data on main thread (QGIS API is not thread-safe)
+                layer_data = collect_layer_data_for_spatial()
                 threading.Thread(
                     target=auto_detect_spatial_relationships,
-                    args=(project_dir,),
+                    args=(project_dir, layer_data),
                     daemon=True,
                 ).start()
             prune_graph(project_dir)
