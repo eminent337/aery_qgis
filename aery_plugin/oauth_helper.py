@@ -97,6 +97,9 @@ OAUTH_CONFIGS: dict[str, dict] = {
     },
 }
 
+# ── Import from Aery provider registry ───────────────────────────────────────
+from aery_plugin.providers import PROVIDERS as _AERY_PROVIDERS, get_model as _get_model, get_provider_api as _get_provider_api
+
 # ── API key providers with models (exact from Aery models.generated.ts) ───────
 API_PROVIDERS: dict[str, dict] = {
     "anthropic": {

@@ -982,12 +982,14 @@ def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, 
     Routes through four tiers in order:
       1. Aery Gateway
       2. Custom providers from models.json
-      3. OAuth provider configs (not in API_PROVIDERS)
-      4. API-key provider dispatch table
+      3. Provider registry (Aery models.generated.ts)
+      4. OAuth provider configs (not in API_PROVIDERS)
+      5. API-key provider dispatch table
 
     Returns (client, model_name) tuple.
     """
     from aery_plugin import oauth_helper
+    from aery_plugin.providers import get_model, get_provider_api
 
     key = _resolve_api_key(provider_id, auth_entry)
 
@@ -1012,7 +1014,42 @@ def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, 
             return AnthropicClient(api_key=key, base_url=base_url), model
         return OpenAIClient(base_url=base_url, api_key=key), model
 
-    # ── Tier 3: OAuth provider configs ─────────────────────────────────────────
+    # ── Tier 3: Provider registry (Aery models.generated.ts) ──────────────────
+    registry_model = get_model(provider_id, model)
+    if registry_model:
+        api_type = registry_model.api
+        base_url = registry_model.base_url
+
+        # Anthropic messages API
+        if api_type == "anthropic-messages":
+            return AnthropicClient(api_key=key, base_url=base_url), model
+
+        # Google Generative AI
+        if api_type == "google-generative-ai":
+            return GeminiClient(api_key=key, base_url=base_url), model
+
+        # Google Vertex
+        if api_type == "google-vertex":
+            return GeminiClient(api_key=key, base_url=base_url), model
+
+        # Mistral conversations
+        if api_type == "mistral-conversations":
+            return OpenAIClient(base_url=base_url, api_key=key, endpoint="/chat/completions"), model
+
+        # OpenAI completions (most providers)
+        if api_type == "openai-completions":
+            return OpenAIClient(base_url=base_url, api_key=key, endpoint="/chat/completions"), model
+
+        # OpenAI responses
+        if api_type in ("openai-responses", "azure-openai-responses", "openai-codex-responses"):
+            return OpenAIClient(base_url=base_url, api_key=key, endpoint="/responses"), model
+
+        # Bedrock (requires special handling)
+        if api_type == "bedrock-converse-stream":
+            # Fall through to bedrock-specific handling
+            pass
+
+    # ── Tier 4: OAuth provider configs ─────────────────────────────────────────
     oauth_cfg = _OAUTH_API_CONFIGS.get(provider_id)
     if oauth_cfg:
         if oauth_cfg["api_type"] == "anthropic":
