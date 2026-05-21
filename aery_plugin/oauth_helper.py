@@ -27,26 +27,25 @@ SETTINGS_PATH = os.path.join(AGENT_DIR, "settings.json")
 
 AERY_GATEWAY_URL = "https://aery-gateway.eminent337.workers.dev/v1"
 
+# Helper to decode base64-encoded credentials (same as Aery source)
+def _decode(s: str) -> str:
+    import base64
+    return base64.b64decode(s).decode()
+
 # ── OAuth provider configs (exact from Aery) ──────────────────────────────────
-# NOTE: client_id / client_secret are read from environment variables to
-# avoid committing secrets to source control.
-#
-# Required env vars:
-#   GOOGLE_ANTIGRAVITY_CLIENT_ID       GOOGLE_ANTIGRAVITY_CLIENT_SECRET
-#   GOOGLE_GEMINI_CLI_CLIENT_ID        GOOGLE_GEMINI_CLI_CLIENT_SECRET
-#
 OAUTH_CONFIGS: dict[str, dict] = {
     "google-antigravity": {
         "name": "Google Antigravity",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "client_id": os.environ.get("GOOGLE_ANTIGRAVITY_CLIENT_ID", ""),
-        "client_secret": os.environ.get("GOOGLE_ANTIGRAVITY_CLIENT_SECRET", ""),
+        "client_id": _decode("***REMOVED***"),
+        "client_secret": _decode("***REMOVED***"),
         "redirect_port": 51121,
         "redirect_path": "/oauth-callback",
         "scopes": [
             "https://www.googleapis.com/auth/cloud-platform",
             "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
             "https://www.googleapis.com/auth/cclog",
             "https://www.googleapis.com/auth/experimentsandconfigs",
         ],
@@ -55,14 +54,14 @@ OAUTH_CONFIGS: dict[str, dict] = {
         "name": "Gemini CLI (Cloud Code)",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
         "token_url": "https://oauth2.googleapis.com/token",
-        "client_id": os.environ.get("GOOGLE_GEMINI_CLI_CLIENT_ID", ""),
-        "client_secret": os.environ.get("GOOGLE_GEMINI_CLI_CLIENT_SECRET", ""),
-        "redirect_port": 50321,
-        "redirect_path": "/auth",
+        "client_id": _decode("***REMOVED***"),
+        "client_secret": _decode("***REMOVED***"),
+        "redirect_port": 8085,
+        "redirect_path": "/oauth2callback",
         "scopes": [
             "https://www.googleapis.com/auth/cloud-platform",
-            "https://www.googleapis.com/auth/generative-language.retriever",
             "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
         ],
     },
     "openai-codex": {
@@ -76,12 +75,12 @@ OAUTH_CONFIGS: dict[str, dict] = {
         "scopes": ["read:user", "repo", "workflow", "codespace:secrets", "copilot"],
     },
     "anthropic": {
-        "name": "Anthropic (Claude.ai)",
+        "name": "Anthropic (Claude Pro/Max)",
         "auth_url": "https://claude.ai/oauth/authorize",
-        "token_url": "https://claude.ai/oauth/token",
+        "token_url": "https://platform.claude.com/v1/oauth/token",
         "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
         "client_secret": "",
-        "redirect_port": 54321,
+        "redirect_port": 53692,
         "redirect_path": "/oauth/callback",
         "scopes": ["org:create_api_key", "user:profile", "user:inference"],
     },
@@ -148,6 +147,9 @@ API_PROVIDERS: dict[str, dict] = {
             ("gemini-2.5-flash", "Gemini 2.5 Flash"),
             ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
             ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+            ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
             ("gemini-1.5-flash", "Gemini 1.5 Flash"),
             ("gemini-1.5-pro", "Gemini 1.5 Pro"),
         ],
@@ -229,6 +231,25 @@ API_PROVIDERS: dict[str, dict] = {
         "models": [
             ("deepseek-chat", "DeepSeek V3"),
             ("deepseek-reasoner", "DeepSeek R1"),
+        ],
+    },
+    "ollama": {
+        "name": "Ollama (Local)",
+        "base_url": "http://localhost:11434/v1",
+        "env_key": None,
+        "test_path": "/chat/completions",
+        "test_model": "llama3.2",
+        "models": [
+            ("llama3.2", "Llama 3.2"),
+            ("llama3.1", "Llama 3.1"),
+            ("llama3", "Llama 3"),
+            ("mistral", "Mistral"),
+            ("mixtral", "Mixtral"),
+            ("codellama", "Code Llama"),
+            ("phi3", "Phi 3"),
+            ("gemma2", "Gemma 2"),
+            ("qwen2.5", "Qwen 2.5"),
+            ("deepseek-r1", "DeepSeek R1"),
         ],
     },
     "xai": {
@@ -397,6 +418,7 @@ API_PROVIDERS: dict[str, dict] = {
             ("gemini-2.5-pro", "Gemini 2.5 Pro"),
             ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
             ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
             ("gemini-1.5-flash", "Gemini 1.5 Flash"),
             ("gemini-1.5-pro", "Gemini 1.5 Pro"),
         ],
@@ -587,13 +609,20 @@ def get_all_providers() -> list[dict]:
 def _oauth_models(pid: str) -> list[tuple]:
     models = {
         "google-antigravity": [
-            ("claude-opus-4-5-thinking", "Claude Opus 4.5 Thinking"),
+            ("gemini-3.1-pro-preview-low", "Gemini 3.1 Pro Preview (Low)"),
+            ("gemini-3.1-pro-preview-high", "Gemini 3.1 Pro Preview (High)"),
+            ("gemini-3-flash", "Gemini 3 Flash"),
+            ("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 Thinking"),
             ("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking"),
-            ("gemini-2.5-pro", "Gemini 2.5 Pro"),
-            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gpt-oss-120b", "GPT OSS 120B"),
         ],
         "google-gemini-cli": [
             ("gemini-2.0-flash", "Gemini 2.0 Flash"),
+            ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+            ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+            ("gemini-3.1-flash-preview", "Gemini 3.1 Flash Preview"),
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
             ("gemini-2.5-flash", "Gemini 2.5 Flash"),
             ("gemini-2.5-pro", "Gemini 2.5 Pro"),
         ],
@@ -655,9 +684,27 @@ def get_active_provider() -> Optional[dict]:
             s = json.load(f)
         pid = s.get("defaultProvider", "")
         model = s.get("defaultModel", "")
-        if pid:
-            name = (OAUTH_CONFIGS.get(pid) or API_PROVIDERS.get(pid) or {}).get("name", pid.replace("-", " ").title())
-            return {"id": pid, "name": name, "model": model}
+        if not pid:
+            return None
+
+        # Check if provider actually has credentials
+        auth = _load_auth()
+        entry = auth.get(pid, {})
+        has_creds = bool(
+            entry.get("key") or entry.get("access") or entry.get("accessToken")
+            or entry.get("refresh") or entry.get("refreshToken")
+        )
+        # Also check env fallback
+        if not has_creds:
+            env_key = ENV_KEY_MAP.get(pid, "")
+            if env_key and os.environ.get(env_key):
+                has_creds = True
+
+        if not has_creds:
+            return None
+
+        name = (OAUTH_CONFIGS.get(pid) or API_PROVIDERS.get(pid) or {}).get("name", pid.replace("-", " ").title())
+        return {"id": pid, "name": name, "model": model}
     except Exception:
         pass
     return None
@@ -723,6 +770,46 @@ def save_custom_provider(base_url: str, model_id: str, api_key: str) -> dict:
     return {"provider_id": provider_id, "model_id": model_id}
 
 
+def delete_custom_provider(provider_id: str) -> bool:
+    """Delete a custom OpenAI-compatible provider from models.json and auth.json."""
+    _ensure_agent_dir()
+    models_path = os.path.join(AGENT_DIR, "models.json")
+
+    # Remove from models.json
+    if os.path.exists(models_path):
+        try:
+            with open(models_path) as f:
+                data = json.load(f)
+            if provider_id in data.get("providers", {}):
+                del data["providers"][provider_id]
+                with open(models_path, "w") as f:
+                    json.dump(data, f, indent=2)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # Remove from auth.json
+    auth = _load_auth()
+    if provider_id in auth:
+        del auth[provider_id]
+        _save_auth(auth)
+
+    # Clear active provider if it was the deleted one
+    active = get_active_provider()
+    if active and active["id"] == provider_id:
+        settings_path = os.path.join(AGENT_DIR, "settings.json")
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            settings.pop("defaultProvider", None)
+            settings.pop("defaultModel", None)
+            with open(settings_path, "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception:
+            pass
+
+    return True
+
+
 def logout_provider(provider_id: str) -> bool:
     auth = _load_auth()
     if provider_id in auth:
@@ -779,10 +866,17 @@ def test_provider_connection(provider_id: str) -> Optional[str]:
         if not access:
             return "Not logged in"
         if provider_id in ("google-antigravity", "google-gemini-cli"):
+            # Extract raw token from JSON wrapper if needed
+            token = access
+            try:
+                wrapped = json.loads(access)
+                token = wrapped.get("token", access)
+            except (json.JSONDecodeError, AttributeError):
+                pass
             return _post_json(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-                {"contents": [{"parts": [{"text": "hi"}]}]},
-                {"Authorization": f"Bearer {access}"},
+                "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+                {"metadata": {"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}},
+                {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             )
         if provider_id == "anthropic":
             return _post_json(
@@ -953,6 +1047,7 @@ def _pkce_login(provider_id: str, cfg: dict) -> bool:
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server.socket.setsockopt(__import__('socket').SOL_SOCKET, __import__('socket').SO_REUSEADDR, 1)
     server.timeout = 120
 
     def run():
@@ -966,6 +1061,242 @@ def _pkce_login(provider_id: str, cfg: dict) -> bool:
 
     if not result["code"]:
         return False
+
+    exchange = {
+        "client_id": cfg["client_id"],
+        "client_secret": cfg.get("client_secret", ""),
+        "code": result["code"],
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+        "code_verifier": code_verifier,
+    }
+    req = urllib.request.Request(
+        cfg["token_url"],
+        data=urllib.parse.urlencode(exchange).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            token_data = json.loads(resp.read().decode())
+    except Exception as e:
+        raise RuntimeError(f"Token exchange failed: {e}")
+
+    access = token_data.get("access_token")
+    if not access:
+        raise RuntimeError(f"No access_token in response: {token_data}")
+
+    # Save token first (so it's not lost if project discovery fails)
+    auth = _load_auth()
+    auth[provider_id] = {
+        "type": "oauth",
+        "access": access,
+        "refresh": token_data.get("refresh_token", ""),
+        "expires": int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000,
+        "tokenType": token_data.get("token_type", "Bearer"),
+    }
+    _save_auth(auth)
+
+    # For Google providers, discover/create a Cloud Code Assist project
+    if provider_id in ("google-antigravity", "google-gemini-cli"):
+        try:
+            project_id = _discover_cloudcode_project(access, provider_id)
+            # Update with JSON-wrapped token including projectId
+            auth = _load_auth()
+            auth[provider_id] = {
+                "type": "oauth",
+                "access": json.dumps({"token": access, "projectId": project_id}),
+                "refresh": token_data.get("refresh_token", ""),
+                "expires": int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000,
+                "tokenType": token_data.get("token_type", "Bearer"),
+                "projectId": project_id,
+            }
+            _save_auth(auth)
+        except Exception as e:
+            print(f"Warning: Project discovery failed ({e}). Token saved without projectId.")
+    # Always set the newly authenticated provider as active
+    models = _oauth_models(provider_id)
+    set_active_provider(provider_id, models[0][0] if models else "")
+    return True
+
+
+def _discover_cloudcode_project(access_token: str, provider_id: str) -> str:
+    """Discover or create a Cloud Code Assist project for Google providers."""
+    is_antigravity = provider_id == "google-antigravity"
+
+    # Unwrap JSON-wrapped token if needed
+    token = access_token
+    try:
+        wrapped = json.loads(access_token)
+        token = wrapped.get("token", access_token)
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Try endpoints in order: prod first, then sandbox
+    endpoints = ["https://cloudcode-pa.googleapis.com", "https://daily-cloudcode-pa.sandbox.googleapis.com"]
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "google-api-nodejs-client/9.15.1",
+        "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+        "Client-Metadata": json.dumps({
+            "ideType": "IDE_UNSPECIFIED",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        }),
+    }
+
+    for endpoint in endpoints:
+        try:
+            body = json.dumps({
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI",
+                },
+            }).encode()
+
+            req = urllib.request.Request(
+                f"{endpoint}/v1internal:loadCodeAssist",
+                data=body,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+
+            # Check if user already has a project (Aery uses cloudaicompanionProject)
+            project = data.get("cloudaicompanionProject")
+            if project:
+                if isinstance(project, str) and project:
+                    return project
+                if isinstance(project, dict) and project.get("id"):
+                    return project["id"]
+
+            # Check currentTier as fallback
+            if data.get("currentTier") and data["currentTier"].get("projectId"):
+                return data["currentTier"]["projectId"]
+
+            # Need to provision a project
+            setup_body = json.dumps({
+                "tierId": "free-tier",
+                "metadata": {
+                    "ideType": "IDE_UNSPECIFIED",
+                    "platform": "PLATFORM_UNSPECIFIED",
+                    "pluginType": "GEMINI",
+                },
+            }).encode()
+            req = urllib.request.Request(
+                f"{endpoint}/v1internal:onboardUser",
+                data=setup_body,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                setup_data = json.loads(resp.read().decode())
+
+            # Poll for completion
+            if setup_data.get("name"):
+                project_id = _poll_project_setup(setup_data["name"], headers, endpoint)
+                if project_id:
+                    return project_id
+
+        except Exception:
+            continue
+
+    raise RuntimeError("Failed to discover or create Cloud Code Assist project. Check your Google account permissions.")
+
+
+def _poll_project_setup(operation_name: str, headers: dict, endpoint: str, max_wait: int = 60) -> str:
+    """Poll for project setup completion."""
+    import time as _time
+    deadline = _time.time() + max_wait
+    while _time.time() < deadline:
+        try:
+            req = urllib.request.Request(
+                f"{endpoint}/v1internal/{operation_name}",
+                headers=headers,
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get("done"):
+                response = data.get("response", {})
+                # Aery's response format: response.cloudaicompanionProject.id
+                project = response.get("cloudaicompanionProject")
+                if project:
+                    if isinstance(project, str):
+                        return project
+                    if isinstance(project, dict) and project.get("id"):
+                        return project["id"]
+                # Fallback: currentTier
+                if response.get("currentTier", {}).get("projectId"):
+                    return response["currentTier"]["projectId"]
+                break
+        except Exception:
+            pass
+        _time.sleep(2)
+    return ""
+
+
+def refresh_google_token(provider_id: str) -> dict:
+    """Refresh an expired Google OAuth token using the stored refresh token.
+
+    Returns the updated auth entry, or raises RuntimeError on failure.
+    """
+    auth = _load_auth()
+    entry = auth.get(provider_id)
+    if not entry or entry.get("type") != "oauth":
+        raise RuntimeError(f"No OAuth credentials for {provider_id}")
+
+    refresh_token = entry.get("refresh", "")
+    if not refresh_token:
+        raise RuntimeError(f"No refresh token for {provider_id}. Re-authenticate via /login.")
+
+    cfg = OAUTH_CONFIGS.get(provider_id, {})
+    token_url = cfg.get("token_url", "https://oauth2.googleapis.com/token")
+    client_id = cfg.get("client_id", "")
+    client_secret = cfg.get("client_secret", "")
+
+    data = urllib.parse.urlencode({
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }).encode()
+
+    req = urllib.request.Request(
+        token_url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            token_data = json.loads(resp.read().decode())
+    except Exception as e:
+        raise RuntimeError(f"Token refresh failed: {e}")
+
+    access = token_data.get("access_token")
+    if not access:
+        raise RuntimeError(f"No access_token in refresh response: {token_data}")
+
+    # Preserve existing projectId if present
+    project_id = entry.get("projectId", "")
+    if project_id:
+        access = json.dumps({"token": access, "projectId": project_id})
+
+    auth[provider_id] = {
+        "type": "oauth",
+        "access": access,
+        "refresh": token_data.get("refresh_token", refresh_token),
+        "expires": int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000,
+        "tokenType": token_data.get("token_type", "Bearer"),
+        "projectId": project_id,
+    }
+    _save_auth(auth)
+    return auth[provider_id]
 
 
 # ── Env-key auto-detection ─────────────────────────────────────────────────────
@@ -1023,44 +1354,6 @@ def get_model_changelog() -> str:
             "Updates are fetched from the model registry on startup.\n"
             "See https://github.com/eminent337/aery for the latest models."
         )
-
-    exchange = {
-        "client_id": cfg["client_id"],
-        "client_secret": cfg.get("client_secret", ""),
-        "code": result["code"],
-        "redirect_uri": redirect_uri,
-        "grant_type": "authorization_code",
-        "code_verifier": code_verifier,
-    }
-    req = urllib.request.Request(
-        cfg["token_url"],
-        data=urllib.parse.urlencode(exchange).encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            token_data = json.loads(resp.read().decode())
-    except Exception as e:
-        raise RuntimeError(f"Token exchange failed: {e}")
-
-    access = token_data.get("access_token")
-    if not access:
-        raise RuntimeError(f"No access_token in response: {token_data}")
-
-    auth = _load_auth()
-    auth[provider_id] = {
-        "type": "oauth",
-        "access": access,
-        "refresh": token_data.get("refresh_token", ""),
-        "expires": int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000,
-        "tokenType": token_data.get("token_type", "Bearer"),
-    }
-    _save_auth(auth)
-    if not get_active_provider():
-        models = _oauth_models(provider_id)
-        set_active_provider(provider_id, models[0][0] if models else "")
-    return True
 
 
 def _device_flow_login(provider_id: str, cfg: dict) -> bool:
