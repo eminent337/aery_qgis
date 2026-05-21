@@ -947,8 +947,8 @@ _OPENAI_COMPATIBLE_DISPATCH: dict[str, tuple[str, str]] = {
     # (base_url, endpoint) for providers exposed as OpenAI-compatible
     "anthropic":         ("https://api.anthropic.com",                 "/v1/messages"),
     "minimax":           ("https://api.minimax.io/anthropic",           "/v1/messages"),
-    "minimax-cn":        ("https://api.minimax.io/anthropic",           "/v1/messages"),
-    "kimi-coding":       ("https://api.kimi.com/coding",                 "/v1/chat/completions"),
+    "minimax-cn":        ("https://api.minimaxi.com/anthropic",         "/v1/messages"),
+    "kimi-coding":       ("https://api.kimi.com/coding",                 "/v1/messages"),
     "openai":            ("https://api.openai.com/v1",                  "/chat/completions"),
     "openrouter":        ("https://openrouter.ai/api/v1",                "/chat/completions"),
     "deepseek":          ("https://api.deepseek.com",                    "/chat/completions"),
@@ -959,8 +959,14 @@ _OPENAI_COMPATIBLE_DISPATCH: dict[str, tuple[str, str]] = {
     "ollama":            ("http://localhost:11434/v1",                   "/chat/completions"),
     "huggingface":       ("https://router.huggingface.co/v1",            "/chat/completions"),
     "cerebras":          ("https://api.cerebras.ai/v1",                  "/chat/completions"),
-    "opencode":          ("https://opencode.ai/zen",                     "/v1/chat/completions"),
+    "opencode":          ("https://opencode.ai/zen/v1",                  "/chat/completions"),
+    "opencode-go":       ("https://opencode.ai/zen/go/v1",              "/chat/completions"),
     "zai":               ("https://api.z.ai/api/coding/paas/v4",         "/chat/completions"),
+    "together":          ("https://api.together.ai/v1",                  "/chat/completions"),
+    "moonshotai":        ("https://api.moonshot.ai/v1",                  "/chat/completions"),
+    "moonshotai-cn":     ("https://api.moonshot.cn/v1",                  "/chat/completions"),
+    "xiaomi":            ("https://api.xiaomimimo.com/v1",               "/chat/completions"),
+    "cloudflare-ai-gateway": ("https://gateway.ai.cloudflare.com/v1",    "/v1/messages"),
     "az-edge":           ("https://aoai.azureedge.net",                  "/v1/chat/completions"),
 }
 
