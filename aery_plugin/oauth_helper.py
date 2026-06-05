@@ -1458,10 +1458,41 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
         except Exception as e:
             raise RuntimeError(f"Device code request failed: {e}")
 
-        user_code = data.get("userCode", "")
-        verification_uri = data.get("verificationUri", "https://api.kilo.ai/auth")
+        user_code = data.get("code", "")
+        verification_uri = data.get("verificationUrl", "https://api.kilo.ai/auth")
         
+        # Show code in a QMessageBox so the user can actually see it before the browser opens
+        # but also log it
+        from PyQt6.QtWidgets import QMessageBox
+        # We don't have direct access to 'self' from here, so we just print it
+        # The frontend wizard handles this through an event or we can just pop a standard QMessageBox
         print(f"Kilo Gateway: go to {verification_uri} and enter code: {user_code}")
+        
+        try:
+            from PyQt6.QtWidgets import QApplication
+            from PyQt6.QtCore import Qt
+            from PyQt6.QtGui import QGuiApplication
+            app = QApplication.instance()
+            if app:
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Icon.Information)
+                msg.setText(f"Please go to the opened browser tab and enter the code below to log in to Kilo.")
+                msg.setInformativeText(user_code)
+                msg.setWindowTitle("Kilo Authentication")
+                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+                
+                # Copy to clipboard
+                cb = QGuiApplication.clipboard()
+                if cb:
+                    cb.setText(user_code)
+                    msg.setText(msg.text() + "
+(The code has been copied to your clipboard)")
+                
+                msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+                msg.show()
+        except:
+            pass
+            
         webbrowser.open(verification_uri)
 
         deadline = time.time() + 120
@@ -1474,16 +1505,23 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
             )
             try:
                 with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                    if resp.status == 202:
+                        continue
                     token_data = json.loads(resp.read().decode())
-                    if token_data.get("status") == "approved" and token_data.get("apiKey"):
+                    if token_data.get("status") == "approved" and token_data.get("token"):
                         auth = _load_auth()
                         auth[provider_id] = {
-                            "access": token_data["apiKey"],
+                            "access": token_data["token"],
                             "expires_at": time.time() + 31536000
                         }
                         _save_auth(auth)
                         return True
-            except Exception:
+            except urllib.error.HTTPError as e:
+                if e.code == 202:
+                    pass
+                else:
+                    print(f"Poll error: {e}")
+            except Exception as e:
                 pass
         return False
         
