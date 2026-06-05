@@ -19,22 +19,22 @@ class KiloProvider(ProviderBase):
             "stream": True
         }
         
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_lines():
-                    if chunk.startswith("data: "):
-                        data = chunk[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            parsed = json.loads(data)
-                            if parsed.get("choices") and "delta" in parsed["choices"][0]:
-                                content = parsed["choices"][0]["delta"].get("content", "")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
+        client = httpx.AsyncClient()
+        async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_lines():
+                if chunk.startswith("data: "):
+                    data = chunk[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                        if parsed.get("choices") and "delta" in parsed["choices"][0]:
+                            content = parsed["choices"][0]["delta"].get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
 
 class OpenCodeZenProvider(ProviderBase):
     def __init__(self, api_key: str = ""):
@@ -52,22 +52,22 @@ class OpenCodeZenProvider(ProviderBase):
             "stream": True
         }
         
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_lines():
-                    if chunk.startswith("data: "):
-                        data = chunk[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            parsed = json.loads(data)
-                            if parsed.get("choices") and "delta" in parsed["choices"][0]:
-                                content = parsed["choices"][0]["delta"].get("content", "")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
+        client = httpx.AsyncClient()
+        async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_lines():
+                if chunk.startswith("data: "):
+                    data = chunk[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                        if parsed.get("choices") and "delta" in parsed["choices"][0]:
+                            content = parsed["choices"][0]["delta"].get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
 
 class AntigravityProvider(ProviderBase):
     def __init__(self, api_key: str = ""):
@@ -85,22 +85,22 @@ class AntigravityProvider(ProviderBase):
             "stream": True
         }
         
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_lines():
-                    if chunk.startswith("data: "):
-                        data = chunk[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            parsed = json.loads(data)
-                            if parsed.get("choices") and "delta" in parsed["choices"][0]:
-                                content = parsed["choices"][0]["delta"].get("content", "")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
+        client = httpx.AsyncClient()
+        async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_lines():
+                if chunk.startswith("data: "):
+                    data = chunk[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                        if parsed.get("choices") and "delta" in parsed["choices"][0]:
+                            content = parsed["choices"][0]["delta"].get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
 
 class CustomOpenAIProvider(ProviderBase):
     def __init__(self, base_url: str, api_key: str = ""):
@@ -118,19 +118,19 @@ class CustomOpenAIProvider(ProviderBase):
             "stream": True
         }
         
-        async with httpx.AsyncClient() as client:
-            async with client.stream("POST", f"{self.base_url}/chat/completions", headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_lines():
-                    if chunk.startswith("data: "):
-                        data = chunk[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            parsed = json.loads(data)
-                            if parsed.get("choices") and "delta" in parsed["choices"][0]:
-                                content = parsed["choices"][0]["delta"].get("content", "")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
+        client = httpx.AsyncClient()
+        async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_lines():
+                if chunk.startswith("data: "):
+                    data = chunk[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                        if parsed.get("choices") and "delta" in parsed["choices"][0]:
+                            content = parsed["choices"][0]["delta"].get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
