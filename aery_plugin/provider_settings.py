@@ -746,6 +746,17 @@ class ModelSwitcherDialog(QDialog):
         active_model = active.get("model", "") if active else ""
 
         auth = oauth_helper._load_auth()
+        
+        # Load enabledModels to filter the list
+        settings = {}
+        settings_path = os.path.join(oauth_helper.AGENT_DIR, "settings.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+            except:
+                pass
+        enabled_set = set(settings.get("enabledModels", []))
 
         def _is_connected(pid: str) -> bool:
             """Check if provider has credentials in auth.json or env."""
@@ -762,28 +773,28 @@ class ModelSwitcherDialog(QDialog):
         # OAuth providers with models
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
             if pid not in ('google-antigravity', 'kilo'): continue
-            models = _oauth_models(pid)
-            if not models:
-                continue
             if not _is_connected(pid):
                 continue
-            blay.addWidget(self._provider_section(cfg["name"], pid, models,
+            models = _oauth_models(pid)
+            filtered = [m for m in models if not enabled_set or f"{pid}:{m[0]}" in enabled_set]
+            if not filtered:
+                continue
+            blay.addWidget(self._provider_section(cfg["name"], pid, filtered,
                                                   pid == active_pid, active_model))
 
-        # API key providers with models and hydra
+        # API key providers with models
         for pid, cfg in oauth_helper.API_PROVIDERS.items():
             if pid not in ('opencode', 'kilo', 'custom-openai'): continue
             if pid == "aery-gateway":
                 continue
-            models = cfg.get("models", [])
-            if not models:
-                continue
             if not _is_connected(pid):
                 continue
-            blay.addWidget(self._provider_section(cfg["name"], pid, models,
+            models = cfg.get("models", [])
+            filtered = [m for m in models if not enabled_set or f"{pid}:{m[0]}" in enabled_set]
+            if not filtered:
+                continue
+            blay.addWidget(self._provider_section(cfg["name"], pid, filtered,
                                                   pid == active_pid, active_model))
-
-
 
         blay.addStretch()
         scroll.setWidget(body)
