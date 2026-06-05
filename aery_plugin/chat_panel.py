@@ -1,4 +1,5 @@
 """Simplified Aery QGIS chat panel with settings menu."""
+from aery_plugin.logger import logger
 import base64
 import json
 import os
@@ -40,36 +41,13 @@ from aery_plugin.ui_constants import (
     FONT_SANS, FONT_MONO,
 )
 from aery_plugin.ui_helpers import SessionState, refresh_layer_cache
-from aery_plugin.ui_utils import format_text_html
+from aery_plugin.ui_utils import format_text_html, style_button
 from aery_plugin.ui_dialogs import InfoDialog, _QuestionWidget
 
+# backward-compat alias (function body lives in ui_utils)
+_style_button = style_button
 # backward-compat alias (function body lives in ui_helpers)
 _refresh_layer_cache = refresh_layer_cache
-
-
-
-def _style_button(btn: QPushButton, active: bool = False, danger: bool = False) -> None:
-    fg = ERROR_COLOR if danger else (BG_BASE if active else TEXT_DIM)
-    bg = ACCENT if active else "transparent"
-    border_acc = ACCENT if active else BORDER
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {bg};
-            border: 1px solid {border_acc};
-            border-radius: 4px;
-            color: {fg};
-            font-family: {FONT_MONO};
-            font-size: 9px;
-            font-weight: 700;
-            padding: 5px 6px;
-        }}
-        QPushButton:hover {{
-            background: {BG_HIGH};
-            color: {ERROR_COLOR if danger else ACCENT};
-            border-color: {ERROR_COLOR if danger else ACCENT};
-        }}
-    """)
 
 
 def _svg_pixmap(path: str, size: int) -> QPixmap:
@@ -126,208 +104,10 @@ def _svg_pixmap(path: str, size: int) -> QPixmap:
         layout.addWidget(close, alignment=Qt.AlignmentFlag.AlignRight)
 
 
-class _QuestionWidget(QFrame):
-    """Inline question card embedded in the chat feed."""
-
-    BG        = "#0D0E15"
-    SURFACE   = "#12131A"
-    ACCENT    = "#57F1DB"
-    BORDER    = "#3C4A46"
-    TEXT_MAIN = "#E3E1EC"
-    TEXT_DIM  = "#BACAC5"
-    TEXT_MUTED = "#859490"
-    WARN      = "#FFD1AA"
-
-    def __init__(
-        self,
-        event: dict,
-        parent: Optional[QWidget] = None,
-        feed_container: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self._event     = event
-        self._quest_id  = event.get("questId", "")
-        self._options   = event.get("options", [])
-        self._header    = event.get("header", "Question")
-        self._body      = event.get("description", "")
-        self._feed      = feed_container
-        self._field_states: list[dict] = [{} for _ in self._options]
-        self._option_frames: list[Optional[QFrame]] = [None for _ in self._options]
-        self._selected: int = -1
-        self._resolve_callback = None
-
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            f"QFrame {{ background:{self.SURFACE}; border:1px solid {self.BORDER}; border-radius:6px; padding:0; }}"
-        )
-        root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(6)
-
-        hdr = QLabel(self._header)
-        hdr.setStyleSheet(f"color:{self.ACCENT};font-weight:700;font-size:13px;background:transparent;")
-        root.addWidget(hdr)
-
-        if self._body:
-            body_lbl = QLabel(self._body)
-            body_lbl.setWordWrap(True)
-            body_lbl.setStyleSheet(f"color:{self.TEXT_DIM};font-size:12px;background:transparent;")
-            root.addWidget(body_lbl)
-
-        for idx, option in enumerate(self._options):
-            opt_frame = QFrame()
-            opt_frame.setObjectName(f"qopt_{idx}")
-            opt_frame.setStyleSheet(
-                f"QFrame {{ background:{self.BG}; border:1px solid {self.BORDER}; border-radius:4px; }}"
-            )
-            opt_lay = QVBoxLayout(opt_frame)
-            opt_lay.setContentsMargins(10, 8, 10, 8)
-            opt_lay.setSpacing(4)
-
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            dot = QLabel("\u25cb")
-            dot.setFixedWidth(16)
-            dot.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:12px;background:transparent;")
-            row.addWidget(dot)
-
-            opt_label = QLabel(option.get("label", f"Option {idx + 1}"))
-            opt_label.setWordWrap(True)
-            opt_label.setStyleSheet(
-                f"color:{self.TEXT_MAIN};font-weight:600;font-size:12px;background:transparent;"
-            )
-            row.addWidget(opt_label, 1)
-
-            opt_desc = option.get("description", "")
-            if opt_desc:
-                d_lbl = QLabel(opt_desc)
-                d_lbl.setWordWrap(True)
-                d_lbl.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:11px;background:transparent;")
-                row.addWidget(d_lbl, 1)
-            opt_lay.addLayout(row)
-            opt_frame.setLayout(opt_lay)
-            self._option_frames[idx] = opt_frame
-            root.addWidget(opt_frame)
-
-            rfields = option.get("required_fields", [])
-            for f_def in rfields:
-                fname  = f_def.get("name", "")
-                flabel = f_def.get("label", fname)
-                f_wrap = QWidget()
-                fl = QHBoxLayout(f_wrap)
-                fl.setContentsMargins(0, 2, 0, 2)
-                fl.setSpacing(8)
-
-                lbl = QLabel(f"  {flabel}:")
-                lbl.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:10px;background:transparent;")
-                lbl.setFixedWidth(120)
-                fl.addWidget(lbl)
-
-                inp = QLineEdit()
-                inp.setPlaceholderText(f_def.get("placeholder", ""))
-                inp.setStyleSheet(
-                    f"QLineEdit {{ background:{self.BG}; color:{self.TEXT_MAIN}; "
-                    f"border:1px solid {self.BORDER}; border-radius:3px; padding:4px 6px; font-size:11px; }}"
-                    f"QLineEdit:focus {{ border-color:{self.ACCENT}; }}"
-                )
-                fl.addWidget(inp, 1)
-
-                def _on_change(_t, _fi=idx, _fn=fname, _in=inp):
-                    self._field_states[_fi][_fn] = _in.text().strip()
-                    self._update_submit()
-
-                inp.textChanged.connect(_on_change)
-                opt_lay.addWidget(f_wrap)
-
-            arrow = QLabel("\u25b6")
-            arrow.setObjectName(f"arrow_{idx}")
-            arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
-            arrow.setFixedWidth(14)
-            arrow.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
-            opt_frame.layout().addWidget(arrow)
-            opt_frame.layout().addSpacing(2)
-
-        for idx, frame in enumerate(self._option_frames):
-            if frame is None:
-                continue
-            prev_ref = [None]
-
-            def _select(event=None, _idx=idx, _f=frame, _pr=prev_ref):
-                if _pr[0]:
-                    _pr[0].setStyleSheet(
-                        f"QFrame {{ background:{self.BG}; border:1px solid {self.BORDER}; border-radius:4px; }}"
-                    )
-                    a = _pr[0].findChild(QLabel, f"arrow_{_pr[0].objectName().replace('qopt_', '')}")
-                    if a:
-                        a.setText("\u25b6")
-                        a.setStyleSheet(f"color:{self.TEXT_MUTED};font-size:9px;background:transparent;")
-                self._selected = _idx
-                prev_ref[0] = _f
-                _f.setStyleSheet(
-                    f"QFrame {{ background:{'#1E2936'}; border:1px solid {self.ACCENT}; border-radius:4px; }}"
-                )
-                a = _f.findChild(QLabel, f"arrow_{_idx}")
-                if a:
-                    a.setText("\u25bc")
-                    a.setStyleSheet(f"color:{self.ACCENT};font-size:9px;background:transparent;")
-                self._update_submit()
-
-            frame.mousePressEvent = _select
-
-        self._submit_btn = QPushButton("Submit")
-        self._submit_btn.setEnabled(False)
-        self._submit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._submit_btn.setStyleSheet(
-            f"QPushButton {{ background:{self.ACCENT}; color:{self.BG}; border:none; "
-            f"border-radius:4px; font-weight:700; font-size:12px; padding:6px 16px; }}"
-            f"QPushButton:disabled {{ background:{'#3C4A46'}; color:{'#859490'}; }}"
-            f"QPushButton:hover {{ background:{'#45D8C8'}; }}"
-        )
-        self._submit_btn.clicked.connect(self._on_submit)
-        root.addWidget(self._submit_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
-    def _on_submit(self) -> None:
-        idx = self._selected
-        if idx < 0:
-            return
-        option   = self._options[idx]
-        fields   = dict(self._field_states[idx])
-        missing = [
-            f.get("name")
-            for f in option.get("required_fields", [])
-            if not fields.get(f.get("name", ""), "").strip()
-        ]
-        if missing:
-            self._submit_btn.setText(f"Fill required: {', '.join(missing)}")
-            QTimer.singleShot(2000, lambda: self._submit_btn.setText("Submit"))
-            return
-        answer = {"option_label": option.get("label", ""), "fields": fields}
-        if self._resolve_callback:
-            self._resolve_callback(self._quest_id, answer)
-        try:
-            self.setParent(None)
-            self.deleteLater()
-        except Exception as e:
-            print(f"Aery: widget cleanup error: {e}")
-
-    def _update_submit(self) -> None:
-        self._submit_btn.setEnabled(self._selected >= 0)
-
-    def _resolve_answer(self, quest_id: str, answer: dict) -> None:
-        try:
-            from aery_plugin.qgis_executor import _resolve_question
-            _resolve_question(quest_id, answer)
-        except Exception as e:
-            print(f"Aery: question resolve error: {e}")
-        try:
-            self.setParent(None)
-            self.deleteLater()
-        except Exception as e:
-            print(f"Aery: widget cleanup error: {e}")
-
-
 class ChatPanel(QDockWidget):
     """Simplified QGIS AI agent panel with settings menu."""
+
+    _THINKING_TIMEOUT_MS = 180_000  # 3 minutes — warn user if no events arrive
 
     def __init__(
         self,
@@ -339,9 +119,18 @@ class ChatPanel(QDockWidget):
         super().__init__("Aery", parent)
         self.setTitleBarWidget(QWidget())
 
+        from .engine_adapter import AeryEngineAdapter
+        self.engine = AeryEngineAdapter()
+
         self.iface = iface
         self.agent = agent
         self.on_config = on_config
+        # Connect to Agent's signals once (not per-turn)
+        if agent.finished is not None:
+            agent.finished.connect(self._on_agent_response)
+        if agent.error is not None:
+            agent.error.connect(self._on_agent_error)
+        self._chunk_connected = False
         self._session_state = SessionState.IDLE
         self._history: list[str] = []
         self._history_idx = -1
@@ -387,12 +176,15 @@ class ChatPanel(QDockWidget):
         self._apply_global_styles()
         self._sync_dock_button()
         self.setAcceptDrops(True)
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setSingleShot(True)
+        self._thinking_timer.timeout.connect(self._on_thinking_timeout)
         try:
             from qgis.core import QgsProject
             QgsProject.instance().layersAdded.connect(_refresh_layer_cache)
             QgsProject.instance().layersRemoved.connect(_refresh_layer_cache)
         except Exception as _e:
-            print(f"Aery: could not connect layer-change signals: {_e}")
+            logger.info(f"Aery: could not connect layer-change signals: {_e}")
 
     @property
     def session_state(self) -> SessionState:
@@ -462,6 +254,7 @@ class ChatPanel(QDockWidget):
         elif state == SessionState.IDLE:
             self._activity.set_idle()
             self._update_send_btn(streaming=False)
+            self._thinking_timer.stop()
             self._status_dot.setStyleSheet(
                 f"color:{SUCCESS_COLOR};font-size:9px;background:transparent;"
             )
@@ -623,10 +416,12 @@ class ChatPanel(QDockWidget):
             if self._session_state != SessionState.RUNNING:
                 self._set_session_state(SessionState.RUNNING)
             self._activity.set_active(text, detail)
+            self._thinking_timer.start(self._THINKING_TIMEOUT_MS)
         else:
             if self._session_state != SessionState.IDLE:
                 self._set_session_state(SessionState.IDLE)
             self._activity.set_idle()
+            self._thinking_timer.stop()
 
     def _update_send_btn(self, streaming: bool) -> None:
         has_text = bool(self._input_area.get_text())
@@ -645,6 +440,7 @@ class ChatPanel(QDockWidget):
         text = self._input_area.get_text()
         if not text:
             return
+        logger.info(f"[Aery] _on_send: text={text[:50]!r} state={self._session_state}")
         self._history.append(text)
         self._history_idx = -1
         self._transcript.add_bubble("YOU", text, "user")
@@ -675,87 +471,12 @@ class ChatPanel(QDockWidget):
         QTimer.singleShot(50, self._transcript.scroll_to_bottom)
         return True
 
-    def _build_qgis_env_context(self) -> str:
-        try:
-            from qgis.core import QgsProject, QgsApplication
-            import os, sys
-            proj = QgsProject.instance()
-            project_path = proj.fileName()
-            project_dir = os.path.dirname(project_path) if project_path else os.path.expanduser("~")
-            layers = []
-            for lyr in proj.mapLayers().values():
-                info = f"  - {lyr.name()} [{lyr.type().name}, {lyr.crs().authid() if lyr.crs() else 'no CRS'}]"
-                if hasattr(lyr, "featureCount"):
-                    info += f" {lyr.featureCount()} features"
-                if hasattr(lyr, "bandCount"):
-                    info += f" {lyr.bandCount()} bands"
-                layers.append(info)
 
-            providers = []
-            try:
-                for p in QgsApplication.processingRegistry().providers():
-                    providers.append(p.id())
-            except Exception as _e:
-                pass
-
-            canvas_info = ""
-            try:
-                canvas = self.iface.mapCanvas() if hasattr(self, "iface") and self.iface else None
-                if canvas:
-                    crs = canvas.mapSettings().destinationCrs().authid()
-                    scale = int(canvas.scale())
-                    canvas_info = f"Canvas CRS: {crs}, Scale: 1:{scale:,}"
-            except Exception as _e:
-                pass
-
-            lines = [
-                "=== QGIS ENVIRONMENT ===",
-                f"Project: {project_path or '(unsaved)'}",
-                f"Project dir: {project_dir}",
-                f"QGIS Python: {sys.executable}",
-                f"Layers ({len(layers)}):",
-            ] + (layers if layers else ["  (none)"])
-
-            try:
-                from aery_plugin.graph_engine import record_layer
-                for _lyr in proj.mapLayers().values():
-                    record_layer(project_dir, _lyr.name(), _lyr.type().name,
-                                 _lyr.crs().authid() if _lyr.crs() else "",
-                                 _lyr.source())
-            except Exception as _e:
-                pass
-
-            try:
-                from aery_plugin.graph_engine import auto_detect_spatial_relationships
-                auto_detect_spatial_relationships(project_dir)
-            except Exception as _e:
-                pass
-
-            _crs_groups: dict[str, list[str]] = {}
-            for _lyr in proj.mapLayers().values():
-                _auth = _lyr.crs().authid() if _lyr.crs() else "unknown"
-                _crs_groups.setdefault(_auth, []).append(_lyr.name())
-            if len(_crs_groups) > 1:
-                _warn = ["\u26a0\ufe0f  CRS MISMATCH: project has " + str(len(_crs_groups)) + " different CRS systems:"]
-                for _crs, _names in sorted(_crs_groups.items()):
-                    _preview = ", ".join(_names[:3]) + ("..." if len(_names) > 3 else "")
-                    _warn.append(f"  {_crs} \u2014 {len(_names)} layers ({_preview})")
-                _warn.append('Run "Reproject all layers to a common CRS" before spatial operations.')
-                lines += _warn
-
-            lines += [
-                f"Processing providers: {', '.join(providers) if providers else 'unknown'}",
-            ]
-            if canvas_info:
-                lines.append(canvas_info)
-            lines.append("=== END ENVIRONMENT ===")
-            return "\n".join(lines)
-        except Exception:
-            return ""
 
     def _dispatch_prompt(self, text: str) -> None:
         if not text:
             return
+        logger.info(f"[Aery ChatPanel] _dispatch_prompt: text={text[:50]!r}")
         self._set_activity("thinking...", active=True)
         self._allow_next_assistant_stream = True
         self._got_assistant_event = False
@@ -768,16 +489,22 @@ class ChatPanel(QDockWidget):
                 from aery_plugin.graph_engine import record_prompt
                 record_prompt(os.path.dirname(path), text, [], [])
         except Exception as e:
-            print(f"Aery: record prompt error: {e}")
+            logger.error(f"Aery: record prompt error: {e}")
 
-        # Wire per-turn callbacks so ChatPanel receives QThread worker signals
-        self.agent._on_worker_finished = self._on_agent_response
-        self.agent._on_worker_error   = self._on_agent_error
+        # Connect chunk signal once (skip on subsequent dispatches)
+        if not self._chunk_connected:
+            logger.info(f"[Aery ChatPanel] connecting chunk signal")
+            self.agent._worker.chunk.connect(self._on_agent_event)
+            self._chunk_connected = True
 
+        logger.info(f"[Aery ChatPanel] calling agent.start()")
         self.agent.start(text)
 
     @pyqtSlot(dict)
     def _on_agent_event(self, event: dict) -> None:
+        # Reset thinking timeout — the agent is alive and sending events
+        if self._session_state == SessionState.RUNNING:
+            self._thinking_timer.start(self._THINKING_TIMEOUT_MS)
         event_type = event.get("type", "")
 
         if event_type == "user":
@@ -807,6 +534,28 @@ class ChatPanel(QDockWidget):
         elif event_type == "thinking":
             self._set_session_state(SessionState.RUNNING)
             self._set_activity("thinking...", active=True)
+
+        elif event_type == "text_chunk":
+            text = event.get("text", "")
+            if text:
+                if self._transcript.streaming_bubble is None:
+                    self._transcript._streaming_text = ""
+                    self._transcript._stream_chunk_count = 0
+                    self._transcript._stream_render_pending = False
+                    bubble = MessageBubble("AERY", "", "assistant")
+                    self._transcript.feed_layout.insertWidget(self._transcript.feed_layout.count() - 1, bubble)
+                    self._transcript._streaming_bubble = bubble
+                self._transcript._streaming_text += text
+                self._transcript._stream_chunk_count = getattr(self._transcript, "_stream_chunk_count", 0) + 1
+                # Throttle: re-render every 8 chunks OR schedule a deferred
+                # render at 80ms if one isn’t already pending. This prevents
+                # running 5 expensive Qt layout ops on every single token.
+                if self._transcript._stream_chunk_count % 8 == 0:
+                    self._transcript.streaming_bubble.update_text(self._transcript._streaming_text)
+                    self._transcript._stream_render_pending = False
+                elif not getattr(self._transcript, "_stream_render_pending", False):
+                    self._transcript._stream_render_pending = True
+                    QTimer.singleShot(80, self._flush_streaming_render)
 
         elif event_type == "tool_error":
             tool = event.get("tool", "")
@@ -841,12 +590,19 @@ class ChatPanel(QDockWidget):
                 if text:
                     if self._transcript.streaming_bubble is None:
                         self._transcript._streaming_text = ""
+                        self._transcript._stream_chunk_count = 0
+                        self._transcript._stream_render_pending = False
                         bubble = MessageBubble("AERY", "", "assistant")
                         self._transcript.feed_layout.insertWidget(self._transcript.feed_layout.count() - 1, bubble)
                         self._transcript._streaming_bubble = bubble
                     self._transcript._streaming_text += text
-                    self._transcript.streaming_bubble.update_text(self._transcript._streaming_text)
-                    QTimer.singleShot(10, self._transcript.scroll_to_bottom)
+                    self._transcript._stream_chunk_count = getattr(self._transcript, "_stream_chunk_count", 0) + 1
+                    if self._transcript._stream_chunk_count % 8 == 0:
+                        self._transcript.streaming_bubble.update_text(self._transcript._streaming_text)
+                        self._transcript._stream_render_pending = False
+                    elif not getattr(self._transcript, "_stream_render_pending", False):
+                        self._transcript._stream_render_pending = True
+                        QTimer.singleShot(80, self._flush_streaming_render)
 
             elif inner_type == "tool_error":
                 tool = inner_event.get("tool", "")
@@ -861,6 +617,12 @@ class ChatPanel(QDockWidget):
             elif inner_type == "tool_done":
                 tool = inner_event.get("tool", "")
                 result = inner_event.get("result", "")
+                if isinstance(result, str):
+                    if result.startswith("iVBORw0KGgo") and len(result) > 100:
+                        self._transcript.add_canvas_image(result)
+                    elif result.startswith("data:image/png;base64,"):
+                        self._transcript.add_canvas_image(result.split(",")[1])
+                
                 if self._streamlined_mode:
                     summary = self._agent.tools._summarize_tool_result(tool, result) if hasattr(self._agent.tools, "_summarize_tool_result") else f"{tool} completed"
                     if self._transcript.active_tool_block:
@@ -878,6 +640,17 @@ class ChatPanel(QDockWidget):
             self._finalize_streaming_bubble()
             block = self._transcript.add_tool_block(tool, "running", code=self._transcript.pending_tool_code)
             self._transcript.active_tool_block = block
+
+        elif event_type == "tool_progress_update":
+            if self._transcript.active_tool_block:
+                progress = event.get("progress")
+                if progress is not None:
+                    self._transcript.active_tool_block.update_status("running", details=f"Processing: {progress:.1f}%")
+
+        elif event_type == "canvas_capture":
+            b64_data = event.get("b64_data")
+            if b64_data:
+                self._transcript.add_canvas_image(b64_data)
 
         elif event_type == "assistant":
             self._got_assistant_event = True
@@ -904,6 +677,9 @@ class ChatPanel(QDockWidget):
         elif event_type == "permission_request":
             self._handle_permission_request(event)
 
+        elif event_type == "question":
+            self._handle_question(event)
+
         elif event_type == "streamlined_text":
             text = event.get("text", "")
             if text and self._streamlined_mode:
@@ -913,6 +689,15 @@ class ChatPanel(QDockWidget):
             summary = event.get("summary", "")
             if summary and self._streamlined_mode:
                 self._transcript.add_bubble("SYSTEM", summary, "system")
+
+        elif event_type == "tool_execution_end":
+            tool = event.get("tool", "")
+            result = event.get("result", {})
+            if tool == "get_project_context" and isinstance(result, dict):
+                self._last_context.update(result)
+            if self._transcript.active_tool_block:
+                self._transcript.active_tool_block.update_status("done")
+                self._transcript.active_tool_block = None
 
         elif event_type == "result":
             subtype = event.get("subtype", "")
@@ -932,10 +717,16 @@ class ChatPanel(QDockWidget):
             self._finalize_streaming_bubble()
         elif response and not self._got_assistant_event:
             self._transcript.add_bubble("AERY", response, "assistant")
-        self._set_activity("ready", active=False)
-        self._set_session_state(SessionState.IDLE)
         self._allow_next_assistant_stream = False
         self._got_assistant_event = False
+        if self._local_prompt_queue and not self._discard_stale_events:
+            next_text = self._local_prompt_queue.pop(0)
+            qlen = len(self._local_prompt_queue)
+            self._set_activity(str(qlen) + " queued" if qlen else "thinking...", active=True)
+            self._dispatch_prompt(next_text)
+        else:
+            self._set_activity("ready", active=False)
+            self._set_session_state(SessionState.IDLE)
 
     @pyqtSlot(str)
     def _on_agent_error(self, error: str) -> None:
@@ -961,7 +752,18 @@ class ChatPanel(QDockWidget):
         self._allow_next_assistant_stream = False
         self._got_assistant_event = False
 
+    def _flush_streaming_render(self) -> None:
+        if getattr(self._transcript, "_stream_render_pending", False) and self._transcript.streaming_bubble is not None:
+            self._transcript.streaming_bubble.update_text(self._transcript._streaming_text)
+            self._transcript._stream_render_pending = False
+            self._transcript.scroll_to_bottom()
+
+    def _on_event(self, event: dict) -> None:
+        """Alias for _on_agent_event. Used by tests and external callers."""
+        self._on_agent_event(event)
+
     def _finalize_streaming_bubble(self) -> None:
+        self._flush_streaming_render()
         self._transcript.finalize_streaming()
 
     def _build_graph_context(self, prompt: str = "") -> str:
@@ -984,6 +786,8 @@ class ChatPanel(QDockWidget):
         self._got_assistant_event = False
         self._cancel_streaming()
         self._set_session_state(SessionState.IDLE)
+        if self.agent and hasattr(self.agent, "cancel"):
+            self.agent.cancel()
         self._transcript.add_bubble("SYSTEM", "Operation aborted.", "system")
 
     def _cancel_streaming(self) -> None:
@@ -1004,6 +808,18 @@ class ChatPanel(QDockWidget):
             self._dispatch_prompt(next_text)
         else:
             self._set_activity("ready", active=False)
+
+    def _on_thinking_timeout(self) -> None:
+        """Warn the user when the agent has been silent for too long."""
+        if self._session_state != SessionState.RUNNING:
+            return
+        self._transcript.add_bubble(
+            "SYSTEM",
+            "The agent has been thinking for 3+ minutes with no output.\n"
+            "Press Ctrl+C or click \u25a0 to abort, or wait for it to finish.",
+            "system",
+        )
+        self._thinking_timer.start(self._THINKING_TIMEOUT_MS)
 
     def _sync_dock_button(self) -> None:
         self._dock_btn.setText("\u21f2" if self.isFloating() else "\u21f1")
@@ -1078,7 +894,7 @@ class ChatPanel(QDockWidget):
             self.agent.reinitialize()
             self._refresh_provider_label()
         except Exception as e:
-            print(f"Aery: agent reinitialize error: {e}")
+            logger.error(f"Aery: agent reinitialize error: {e}")
 
     def _show_model_switcher(self) -> None:
         try:
@@ -1091,7 +907,7 @@ class ChatPanel(QDockWidget):
             try:
                 self.agent.reinitialize()
             except Exception as _e:
-                pass
+                logger.debug("chat_panel: agent reinitialize after model switch failed: %s", _e)
         except Exception as e:
             self._transcript.add_bubble("ERROR", f"Model switcher: {e}", "error")
 
@@ -1106,7 +922,7 @@ class ChatPanel(QDockWidget):
             try:
                 self.agent.reinitialize()
             except Exception as _e:
-                pass
+                logger.debug("chat_panel: agent reinitialize after scopes dialog failed: %s", _e)
         except Exception as e:
             self._transcript.add_bubble("ERROR", f"Scopes dialog: {e}", "error")
 
@@ -1121,7 +937,7 @@ class ChatPanel(QDockWidget):
         try:
             self.agent.reset()
         except Exception as e:
-            print(f"Aery: agent reset error: {e}")
+            logger.error(f"Aery: agent reset error: {e}")
         self._set_activity("ready", active=False)
 
     def _clear_feed(self) -> None:
@@ -1151,9 +967,9 @@ class ChatPanel(QDockWidget):
                             record_field(_pd, _vl.name(), _f.name(),
                                          _f.typeName(), tool_name)
                 except Exception as e:
-                    print(f"Aery: tool effect tracking: {e}")
+                    logger.info(f"Aery: tool effect tracking: {e}")
         except Exception as e2:
-            print(f"Aery: tool effects save: {e2}")
+            logger.info(f"Aery: tool effects save: {e2}")
 
     def _handle_code_error(self, error_msg: str) -> None:
         if self._retry_count >= 2:
@@ -1213,110 +1029,16 @@ class ChatPanel(QDockWidget):
 
     def _permission_granted(self, request_id: str, tool_use_id: str, always: bool) -> None:
         self._transcript.add_bubble("SYSTEM", f"Permission granted for tool execution", "system")
-        self.agent.resolve_permission(approved=True, always=always)
+        self.agent.resolve_permission(request_id=request_id, approved=True, always=always)
 
     def _permission_denied(self, request_id: str, tool_use_id: str) -> None:
         self._transcript.add_bubble("SYSTEM", f"Permission denied \u2014 tool execution skipped", "system")
-        self.agent.resolve_permission(approved=False)
+        self.agent.resolve_permission(request_id=request_id, approved=False)
 
     def show_error(self, message: str) -> None:
         self._transcript.add_bubble("ERROR", message, "error")
 
-    def _on_event(self, event: dict) -> None:
-        etype = event.get("type", "")
-        if etype == "message_start":
-            role = event.get("message", {}).get("role", "")
-            role = role if isinstance(role, str) else ""
-            if self._discard_stale_events:
-                if role == "assistant" and self._allow_next_assistant_stream:
-                    self._discard_stale_events = False
-                    self._allow_next_assistant_stream = False
-                else:
-                    return
-            self._active_stream_role = role
-            if self._active_stream_role == "assistant":
-                self._stream_label.clear()
-                self._stream_label.setVisible(True)
-                initial = self._extract_text(event)
-                if initial and not self._is_background_noise(initial):
-                    self._stream_label.setHtml(format_text_html(initial))
-                self._set_activity("thinking...", active=True)
-        elif etype == "message_update":
-            if self._discard_stale_events:
-                return
-            if self._active_stream_role != "assistant" and self._event_role(event) != "assistant":
-                return
-            text = self._extract_text(event)
-            if text and not self._is_background_noise(text):
-                self._stream_label.setVisible(True)
-                self._stream_label.setHtml(format_text_html(text))
-        elif etype == "message_end":
-            if self._discard_stale_events:
-                self._active_stream_role = ""
-                return
-            event_role = self._event_role(event)
-            if event_role == "user":
-                self._active_stream_role = ""
-                return
-            if self._active_stream_role not in {"", "assistant"} and event_role != "assistant":
-                self._active_stream_role = ""
-                return
-            if not self._stream_label.toPlainText().strip():
-                final_text = self._extract_text(event)
-                if final_text and not self._is_background_noise(final_text):
-                    self._stream_label.setHtml(format_text_html(final_text))
-            self._active_stream_role = ""
-            self._end_streaming()
-        elif etype == "tool_execution_start":
-            if self._discard_stale_events:
-                return
-            name = event.get("toolName", event.get("tool", event.get("name", "tool")))
-            self._add_tool_block(str(name), "running")
-        elif etype == "tool_execution_end":
-            if self._discard_stale_events:
-                return
-            name = event.get("toolName", event.get("tool", event.get("name", "tool")))
-            result = event.get("result", "")
-            err = event.get("error")
-            if str(name).lower() == "get_project_context" and isinstance(result, dict):
-                self._last_context = result
-            if err:
-                self._add_tool_block(str(name), "error", str(err))
-                if "run_qgis" in str(name).lower() or "qgis_code" in str(name).lower():
-                    self._handle_code_error(str(err))
-            else:
-                detail = result if isinstance(result, str) else json.dumps(result, indent=2) if result else ""
-                if isinstance(result, str) and result.startswith("iVBORw0KGgo") and len(result) > 100:
-                    self._add_canvas_image(result)
-                else:
-                    self._add_tool_block(str(name), "done", detail[:500] if detail else "")
-                if isinstance(result, dict) and "OUTPUT" in result:
-                    self._record_tool_output(str(name), result["OUTPUT"])
-        elif etype == "agent_end":
-            if self._discard_stale_events:
-                return
-            self._active_stream_role = ""
-            self._end_streaming()
-        elif etype == "question":
-            self._handle_question(event)
 
-    def _extract_text(self, event: dict) -> str:
-        message = event.get("message", {})
-        content = message.get("content", "")
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            return "\n".join(parts)
-        return str(content) if content else ""
-
-    def _event_role(self, event: dict) -> str:
-        message = event.get("message", {})
-        return message.get("role", "")
-
-    def _is_background_noise(self, text: str) -> bool:
-        return len(text.strip()) < 2
 
     def _handle_question(self, event: dict) -> None:
         quest_id = event.get("questId", "")
@@ -1332,7 +1054,7 @@ class ChatPanel(QDockWidget):
             from aery_plugin.qgis_executor import _pending_questions, _resolve_question
             _resolve_question(quest_id, answer)
         except Exception as e:
-            print(f"Aery: resolve question error: {e}")
+            logger.error(f"Aery: resolve question error: {e}")
 
     def append_message(self, sender: str, text: str, msg_type: str = "assistant") -> None:
         self._transcript.add_bubble(sender, text, msg_type)
@@ -1357,7 +1079,7 @@ class ChatPanel(QDockWidget):
                 self._transcript.set_session_messages([])
                 self._load_session()
         except (RuntimeError, AttributeError) as e:
-            print(f"Aery: on_project_changed warning: {e}")
+            logger.info(f"Aery: on_project_changed warning: {e}")
 
     def notify_layer_added(self, name: str, layer_type: str) -> None:
         _refresh_layer_cache()
@@ -1366,14 +1088,21 @@ class ChatPanel(QDockWidget):
             from qgis.core import QgsProject
             from aery_plugin.graph_engine import record_layer, auto_detect_spatial_relationships
             path = QgsProject.instance().fileName() or ""
+            project_dir = os.path.dirname(path) if path else "."
             lyr = next((l for l in QgsProject.instance().mapLayers().values()
                         if l.name() == name), None)
             if lyr:
-                record_layer(os.path.dirname(path) if path else ".", name, layer_type,
+                record_layer(project_dir, name, layer_type,
                              lyr.crs().authid() if lyr.crs() else "", lyr.source())
-                auto_detect_spatial_relationships(os.path.dirname(path) if path else ".")
+                # Run spatial detection in background to avoid blocking the main thread
+                import threading as _threading
+                _threading.Thread(
+                    target=auto_detect_spatial_relationships,
+                    args=(project_dir,),
+                    daemon=True,
+                ).start()
         except (RuntimeError, AttributeError) as e:
-            print(f"Aery: notify_layer_added warning for '{name}': {e}")
+            logger.info(f"Aery: notify_layer_added warning for '{name}': {e}")
 
     def notify_layers_removed(self, count: int) -> None:
         _refresh_layer_cache()
@@ -1394,7 +1123,7 @@ class ChatPanel(QDockWidget):
                 os.makedirs(d, exist_ok=True)
                 return os.path.join(d, "session.json")
         except Exception as e:
-            print(f"Aery: session path error: {e}")
+            logger.error(f"Aery: session path error: {e}")
         return ""
 
     def _save_session(self) -> None:
@@ -1406,7 +1135,7 @@ class ChatPanel(QDockWidget):
             with open(path, "w") as f:
                 json.dump(self._transcript.get_session_messages()[-200:], f, indent=2)
         except Exception as e:
-            print(f"Aery: session save error: {e}")
+            logger.error(f"Aery: session save error: {e}")
 
     def _load_session(self, show_resume_msg: bool = False) -> None:
         path = self._session_path()
@@ -1421,7 +1150,7 @@ class ChatPanel(QDockWidget):
                 if show_resume_msg:
                     self._transcript.add_bubble("SYSTEM", f"Resumed session ({len(msgs)} messages)", "system")
         except Exception as e:
-            print(f"Aery: session load error: {e}")
+            logger.error(f"Aery: session load error: {e}")
 
     def _export_html_report(self) -> None:
         try:
