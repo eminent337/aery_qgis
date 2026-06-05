@@ -1048,7 +1048,7 @@ class _DeviceFlowDialog(QDialog):
             from PyQt6.QtCore import QTimer
             from PyQt6.QtGui import QGuiApplication
             def update_ui():
-                self._code_lbl.setText(f"Code: {c}\\n\\nURL: {u}\\n\\n(Copied to clipboard)")
+                self._code_lbl.setText(f"Code: {c}\n\nURL: {u}\n\n(Copied to clipboard)")
                 cb = QGuiApplication.clipboard()
                 if cb: cb.setText(c)
             QTimer.singleShot(0, update_ui)
