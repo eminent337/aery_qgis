@@ -1452,7 +1452,7 @@ def get_model_changelog() -> str:
         )
 
 
-def _device_flow_login(provider_id: str, cfg: dict) -> bool:
+def _device_flow_login(provider_id: str, cfg: dict, code_callback=None) -> bool:
     if provider_id == "kilo":
         req = urllib.request.Request(
             cfg["auth_url"],
@@ -1468,36 +1468,12 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
         user_code = data.get("code", "")
         verification_uri = data.get("verificationUrl", "https://api.kilo.ai/auth")
         
-        def show_msg():
-            try:
-                from PyQt6.QtWidgets import QMessageBox
-                from PyQt6.QtGui import QGuiApplication
-                from PyQt6.QtCore import Qt
-                
-                text = f"Please go to the opened browser tab and enter the code below to log in to Kilo.\\n\\nCode: {user_code}"
-                cb = QGuiApplication.clipboard()
-                if cb:
-                    cb.setText(user_code)
-                    text += "\\n\\n(The code has been copied to your clipboard)"
-                
-                msg = QMessageBox()
-                msg.setIcon(QMessageBox.Icon.Information)
-                msg.setWindowTitle("Kilo Authentication")
-                msg.setText(text)
-                msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-                msg.exec()
-            except Exception as e:
-                print("Error showing Kilo msg:", e)
-
-        
-        try:
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, show_msg)
-        except Exception as e:
-            print("Could not dispatch QMessageBox:", e)
-            
-        import webbrowser
-        webbrowser.open(verification_uri)
+        if code_callback:
+            code_callback(user_code, verification_uri)
+        else:
+            print(f"Kilo Gateway: go to {verification_uri} and enter code: {user_code}")
+            import webbrowser
+            webbrowser.open(verification_uri)
 
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -1551,9 +1527,11 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
     device_code = data.get("device_code", "")
     interval = data.get("interval", 5)
 
-    # Show user code in a simple way — caller should display this
-    print(f"GitHub Copilot: go to {verification_uri} and enter code: {user_code}")
-    webbrowser.open(verification_uri)
+    if code_callback:
+        code_callback(user_code, verification_uri)
+    else:
+        print(f"GitHub Copilot: go to {verification_uri} and enter code: {user_code}")
+        webbrowser.open(verification_uri)
 
     # Poll for token
     deadline = time.time() + 120

@@ -1044,11 +1044,20 @@ class _DeviceFlowDialog(QDialog):
         threading.Thread(target=self._poll, daemon=True).start()
 
     def _poll(self) -> None:
-        QTimer.singleShot(0, lambda: self._code_lbl.setText(
-            "Opening browser — enter code at github.com/login/device…"))
+        def on_code(c, u):
+            from PyQt6.QtCore import QTimer
+            from PyQt6.QtGui import QGuiApplication
+            def update_ui():
+                self._code_lbl.setText(f"Code: {c}\\n\\nURL: {u}\\n\\n(Copied to clipboard)")
+                cb = QGuiApplication.clipboard()
+                if cb: cb.setText(c)
+            QTimer.singleShot(0, update_ui)
+            import webbrowser
+            webbrowser.open(u)
+            
         try:
             cfg = oauth_helper.OAUTH_CONFIGS.get(self._pid, {})
-            ok = oauth_helper._device_flow_login(self._pid, cfg)
+            ok = oauth_helper._device_flow_login(self._pid, cfg, code_callback=on_code)
         except Exception as e:
             err_msg = str(e)
             QTimer.singleShot(0, lambda: self._fail(err_msg))
