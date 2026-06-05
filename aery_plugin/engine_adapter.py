@@ -17,9 +17,15 @@ class AeryEngineAdapter:
         self.engine.add_rule(StreamRule(r"os\.system", "Use QgsProcess instead"))
         
     async def stream_query(self, query: str):
-        # We will default to opencode-zen for standard free usage
-        provider = self.llm_registry.get_provider("opencode-zen")
+        from PyQt6.QtCore import QSettings
+        settings = QSettings()
+        provider_id = settings.value("aery/settings/provider", "opencode-zen")
+        
+        # Re-create registry so it catches any newly saved settings
+        self.llm_registry = create_registry()
+        provider = self.llm_registry.get_provider(provider_id)
+        
         messages = [{"role": "user", "content": query}]
         
-        async for chunk in provider.stream_chat(messages, "opencode-zen"):
+        async for chunk in provider.stream_chat(messages, provider_id):
             yield chunk
