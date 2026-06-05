@@ -253,7 +253,7 @@ class ProviderOAuthList(QWidget):
         auth = oauth_helper._load_auth()
 
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo', 'github-copilot'): continue
+            if pid not in ('google-antigravity', 'kilo'): continue
             creds = auth.get(pid, {})
             connected = bool(creds.get("access") or creds.get("accessToken")
                              or creds.get("refresh") or creds.get("refreshToken"))
@@ -761,7 +761,7 @@ class ModelSwitcherDialog(QDialog):
 
         # OAuth providers with models
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo', 'github-copilot'): continue
+            if pid not in ('google-antigravity', 'kilo'): continue
             models = _oauth_models(pid)
             if not models:
                 continue
@@ -783,14 +783,7 @@ class ModelSwitcherDialog(QDialog):
             blay.addWidget(self._provider_section(cfg["name"], pid, models,
                                                   pid == active_pid, active_model))
 
-        # Aery gateway
-        gw = oauth_helper.API_PROVIDERS.get("aery-gateway", {})
-        gw_models = gw.get("models", [])
-        gw_creds  = bool(auth.get("aery-gateway", {}).get("key"))
-        if gw_creds and gw_models:
-            blay.addWidget(self._provider_section(
-                "Aery Gateway", "aery-gateway", gw_models,
-                active_pid == "aery-gateway", active_model))
+
 
         blay.addStretch()
         scroll.setWidget(body)
@@ -938,7 +931,7 @@ class ScopesDialog(QDialog):
 
         # OAuth providers
         for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo', 'github-copilot'): continue
+            if pid not in ('google-antigravity', 'kilo'): continue
             models = _oauth_models(pid)
             if _is_connected(pid):
                 _add_group(cfg["name"], models, pid + "/")

@@ -684,6 +684,13 @@ def get_all_providers() -> list[dict]:
 
 def _oauth_models(pid: str) -> list[tuple]:
     models = {
+        "kilo": [
+            ("gpt-4o", "GPT-4o"),
+            ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+            ("o3-mini", "o3-mini"),
+            ("deepseek-r1", "DeepSeek R1"),
+        ],
         "google-antigravity": [
             ("gemini-3.1-pro-preview-low", "Gemini 3.1 Pro Preview (Low)"),
             ("gemini-3.1-pro-preview-high", "Gemini 3.1 Pro Preview (High)"),
