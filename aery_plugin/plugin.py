@@ -1,5 +1,6 @@
 """Main plugin class for Aery QGIS Plugin."""
 
+from aery_plugin.logger import logger
 import os
 from typing import Optional
 
@@ -10,8 +11,7 @@ from qgis.core import QgsProject
 from aery_plugin.chat_panel import ChatPanel
 from aery_plugin.provider_settings import AeryConfigDialog
 from aery_plugin.qgis_executor import QGISCodeExecutor
-from aery_plugin.agent import Agent
-
+from aery_plugin.engine_adapter import AeryEngineAdapter
 
 class AeryPlugin:
     """Main plugin class.
@@ -22,7 +22,7 @@ class AeryPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.executor: Optional[QGISCodeExecutor] = None
-        self.agent: Optional[Agent] = None
+        self.agent: Optional[AeryEngineAdapter] = None
         self.panel: Optional[ChatPanel] = None
         self.action: Optional[QAction] = None
 
@@ -33,8 +33,7 @@ class AeryPlugin:
         self.executor.start_socket_server()
 
         # Create agent
-        self.agent = Agent(executor=self.executor, iface=self.iface)
-
+        self.agent = AeryEngineAdapter()
         # Create chat panel
         self.panel = ChatPanel(
             self.iface.mainWindow(),
@@ -81,7 +80,7 @@ class AeryPlugin:
                             "Aery", Qgis.MessageLevel.Warning
                         )
                     except Exception:
-                        print(f"Aery: layer-added notification failed: {e}")
+                        logger.info(f"Aery: layer-added notification failed: {e}")
 
     def _on_layers_removed(self, layer_ids) -> None:
         if self.panel:
@@ -94,8 +93,8 @@ class AeryPlugin:
             QgsProject.instance().projectSaved.disconnect(self._on_project_changed)
             QgsProject.instance().layersAdded.disconnect(self._on_layers_added)
             QgsProject.instance().layersRemoved.disconnect(self._on_layers_removed)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("plugin: disconnect signals failed: %s", e)
 
         if self.panel:
             self.iface.removeDockWidget(self.panel)
