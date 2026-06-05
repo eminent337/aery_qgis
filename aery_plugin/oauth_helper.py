@@ -1461,37 +1461,35 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
         user_code = data.get("code", "")
         verification_uri = data.get("verificationUrl", "https://api.kilo.ai/auth")
         
-        # Show code in a QMessageBox so the user can actually see it before the browser opens
-        # but also log it
-        from PyQt6.QtWidgets import QMessageBox
-        # We don't have direct access to 'self' from here, so we just print it
-        # The frontend wizard handles this through an event or we can just pop a standard QMessageBox
-        print(f"Kilo Gateway: go to {verification_uri} and enter code: {user_code}")
-        
-        try:
-            from PyQt6.QtWidgets import QApplication
-            from PyQt6.QtCore import Qt
-            from PyQt6.QtGui import QGuiApplication
-            app = QApplication.instance()
-            if app:
-                msg = QMessageBox()
-                msg.setIcon(QMessageBox.Icon.Information)
-                msg.setText(f"Please go to the opened browser tab and enter the code below to log in to Kilo.")
-                msg.setInformativeText(user_code)
-                msg.setWindowTitle("Kilo Authentication")
-                msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        def show_msg():
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                from PyQt6.QtGui import QGuiApplication
+                from PyQt6.QtCore import Qt
                 
-                # Copy to clipboard
+                text = f"Please go to the opened browser tab and enter the code below to log in to Kilo.\\n\\nCode: {user_code}"
                 cb = QGuiApplication.clipboard()
                 if cb:
                     cb.setText(user_code)
-                    msg.setText(msg.text() + "\\n(The code has been copied to your clipboard)")
+                    text += "\\n\\n(The code has been copied to your clipboard)"
                 
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Icon.Information)
+                msg.setWindowTitle("Kilo Authentication")
+                msg.setText(text)
                 msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-                msg.show()
-        except:
-            pass
+                msg.exec()
+            except Exception as e:
+                print("Error showing Kilo msg:", e)
+
+        
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, show_msg)
+        except Exception as e:
+            print("Could not dispatch QMessageBox:", e)
             
+        import webbrowser
         webbrowser.open(verification_uri)
 
         deadline = time.time() + 120
