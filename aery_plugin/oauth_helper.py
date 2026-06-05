@@ -1485,8 +1485,7 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
                 cb = QGuiApplication.clipboard()
                 if cb:
                     cb.setText(user_code)
-                    msg.setText(msg.text() + "
-(The code has been copied to your clipboard)")
+                    msg.setText(msg.text() + "\\n(The code has been copied to your clipboard)")
                 
                 msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
                 msg.show()
