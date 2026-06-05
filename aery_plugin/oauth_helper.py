@@ -34,6 +34,18 @@ def _decode(s: str) -> str:
 
 # ── OAuth provider configs (exact from Aery) ──────────────────────────────────
 OAUTH_CONFIGS: dict[str, dict] = {
+    "kilo": {
+        "name": "Kilo Gateway",
+        "auth_url": "https://api.kilo.ai/api/device-auth/codes",
+        "token_url": "https://api.kilo.ai/api/device-auth/codes",
+        "client_id": "aery-qgis",
+        "client_secret": "",
+        "redirect_port": 0,
+        "redirect_path": "",
+        "scopes": [],
+        "device_flow": True,
+    },
+
     "google-antigravity": {
         "name": "Google Antigravity",
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -98,7 +110,6 @@ OAUTH_CONFIGS: dict[str, dict] = {
 }
 
 # ── Import from Aery provider registry ───────────────────────────────────────
-from aery_plugin.providers import PROVIDERS as _AERY_PROVIDERS, get_model as _get_model, get_provider_api as _get_provider_api
 
 # ── API key providers with models (exact from Aery models.generated.ts) ───────
 API_PROVIDERS: dict[str, dict] = {
@@ -1435,7 +1446,49 @@ def get_model_changelog() -> str:
 
 
 def _device_flow_login(provider_id: str, cfg: dict) -> bool:
-    """GitHub Copilot device flow."""
+    if provider_id == "kilo":
+        req = urllib.request.Request(
+            cfg["auth_url"],
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            raise RuntimeError(f"Device code request failed: {e}")
+
+        user_code = data.get("userCode", "")
+        verification_uri = data.get("verificationUri", "https://api.kilo.ai/auth")
+        
+        print(f"Kilo Gateway: go to {verification_uri} and enter code: {user_code}")
+        webbrowser.open(verification_uri)
+
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(5)
+            poll_req = urllib.request.Request(
+                f"{cfg['token_url']}/{urllib.parse.quote(user_code)}",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                    token_data = json.loads(resp.read().decode())
+                    if token_data.get("status") == "approved" and token_data.get("apiKey"):
+                        auth = _load_auth()
+                        auth[provider_id] = {
+                            "access": token_data["apiKey"],
+                            "expires_at": time.time() + 31536000
+                        }
+                        _save_auth(auth)
+                        return True
+            except Exception:
+                pass
+        return False
+        
+    # Standard flow for GitHub Copilot
+
     req = urllib.request.Request(
         cfg["auth_url"],
         data=urllib.parse.urlencode({
