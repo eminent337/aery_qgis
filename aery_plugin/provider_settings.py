@@ -862,7 +862,6 @@ class ScopesDialog(QDialog):
             f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
         root.addWidget(sub)
         root.addSpacing(4)
-
         # Bulk controls
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
@@ -944,12 +943,6 @@ class ScopesDialog(QDialog):
             models = cfg.get("models", [])
             if _is_connected(pid):
                 _add_group(cfg["name"], models, pid + "/")
-
-        # Gateway
-        gw = auth.get("aery-gateway", {})
-        if gw.get("key"):
-            _add_group("Aery Gateway",
-                       oauth_helper.API_PROVIDERS.get("aery-gateway", {}).get("models", []))
 
         blay.addStretch()
         scroll.setWidget(body)
