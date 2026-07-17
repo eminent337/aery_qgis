@@ -1,0 +1,134 @@
+[
+  {
+    "name": "setSubsetString",
+    "signature": "setSubsetString(subset: str) -> bool",
+    "description": "Sets the subset string used to filter features. Returns True if successful. The subset string is typically an OGR WHERE clause.",
+    "keywords": ["subset", "filter", "where", "sql", "qgsvectorlayer"]
+  },
+  {
+    "name": "selectedFeatures",
+    "signature": "selectedFeatures() -> list[QgsFeature]",
+    "description": "Returns a list of all selected features. Use selectByIds() or the selection tool to select features.",
+    "keywords": ["selected", "features", "selection", "qgsvectorlayer"]
+  },
+  {
+    "name": "selectByIds",
+    "signature": "selectByIds(ids: list[int], mode: int = AddToSelection)",
+    "description": "Selects features by their feature IDs. Mode can be SetSelection, AddToSelection, RemoveFromSelection, or IntersectingSelection.",
+    "keywords": ["select", "ids", "feature", "selection", "qgsvectorlayer"]
+  },
+  {
+    "name": "removeSelection",
+    "signature": "removeSelection() -> None",
+    "description": "Clears the current selection, removing all selected features from the selection set.",
+    "keywords": ["remove", "clear", "selection", "qgsvectorlayer"]
+  },
+  {
+    "name": "startEditing",
+    "signature": "startEditing() -> bool",
+    "description": "Puts the layer in edit mode, enabling feature creation, modification, and deletion. Returns True if successful.",
+    "keywords": ["edit", "editing", "start", "mode", "qgsvectorlayer"]
+  },
+  {
+    "name": "commitChanges",
+    "signature": "commitChanges(stopEditing: bool = True) -> bool",
+    "description": "Saves changes made to the layer. If stopEditing is True, exits edit mode. Returns True if successful.",
+    "keywords": ["commit", "save", "changes", "persist", "qgsvectorlayer"]
+  },
+  {
+    "name": "rollback",
+    "signature": "rollback() -> bool",
+    "description": "Discards all uncommitted changes and exits edit mode. Returns True if rollback was successful.",
+    "keywords": ["rollback", "discard", "undo", "cancel", "qgsvectorlayer"]
+  },
+  {
+    "name": "addFeature",
+    "signature": "addFeature(feature:QgFeature) -> bool",
+    "description": "Adds a new feature to the layer. The feature must have valid geometry compatible with the layer's geometry type.",
+    "keywords": ["add", "feature", "create", "insert", "new", "qgsvectorlayer"]
+  },
+  {
+    "name": "deleteFeature",
+    "signature": "deleteFeature(fid: int) -> bool",
+    "description": "Deletes a feature from the layer by its feature ID. The layer must be in edit mode.",
+    "keywords": ["delete", "remove", "feature", "fid", "qgsvectorlayer"]
+  },
+  {
+    "name": "updateFeature",
+    "signature": "updateFeature(feature:QgFeature) -> bool",
+    "description": "Updates a feature's geometry and attributes. Must be called after modifying a feature in edit mode.",
+    "keywords": ["update", "modify", "edit", "feature", "qgsvectorlayer"]
+  },
+  {
+    "name": "dataProvider",
+    "signature": "dataProvider() -> QgVectorDataProvider",
+    "description": "Returns the layer's data provider, which handles data access and manipulation at a low level.",
+    "keywords": ["provider", "data", "dataprovider", "access", "qgsvectorlayer"]
+  },
+  {
+    "name": "fields",
+    "signature": "fields() -> QgFields",
+    "description": "Returns the layer's field definitions (QgFields), containing all attribute column names and types.",
+    "keywords": ["fields", "attributes", "columns", "schema", "qgsvectorlayer"]
+  },
+  {
+    "name": "geometryType",
+    "signature": "geometryType() -> QgWkbTypes.GeometryType",
+    "description": "Returns the geometry type of the layer: Point, LineString, Polygon, or UnknownGeometry.",
+    "keywords": ["geometry", "type", "point", "line", "polygon", "qgsvectorlayer"]
+  },
+  {
+    "name": "crs",
+    "signature": "crs() -> QgCoordinateReferenceSystem",
+    "description": "Returns the coordinate reference system (CRS) associated with the layer.",
+    "keywords": ["crs", "coordinate", "srs", "projection", "epsg", "qgsvectorlayer"]
+  },
+  {
+    "name": "extent",
+    "signature": "extent() -> QgRectangle",
+    "description": "Returns the spatial extent (bounding box) of all features in the layer.",
+    "keywords": ["extent", "bounding", "box", "bounds", "spatial", "qgsvectorlayer"]
+  },
+  {
+    "name": "featureCount",
+    "signature": "featureCount() -> int",
+    "description": "Returns the total number of features in the layer (including any subset filter).",
+    "keywords": ["count", "features", "total", "number", "qgsvectorlayer"]
+  },
+  {
+    "name": "setCrs",
+    "signature": "setCrs(crs: QgCoordinateReferenceSystem, emitSignal: bool = True) -> None",
+    "description": "Sets the layer's coordinate reference system. If emitSignal is True, emits crsChanged signal.",
+    "keywords": ["crs", "set", "projection", "coordinate", "srs", "qgsvectorlayer"]
+  },
+  {
+    "name": "getFeature",
+    "signature": "getFeature(fid: int) -> QgFeature",
+    "description": "Returns the feature with the given feature ID, or an invalid feature if not found.",
+    "keywords": ["get", "fetch", "feature", "fid", "id", "qgsvectorlayer"]
+  },
+  {
+    "name": "getFeatures",
+    "signature": "getFeatures(request: QgFeatureRequest = None) -> QgFeatureIterator",
+    "description": "Returns an iterator over features, optionally filtered by a QgFeatureRequest with expressions, spatial filters, or subset strings.",
+    "keywords": ["get", "features", "iterator", "loop", "iterate", "qgsvectorlayer"]
+  },
+  {
+    "name": "clone",
+    "signature": "clone() -> QgVectorLayer",
+    "description": "Creates a deep copy of the layer with the same source, style, and settings.",
+    "keywords": ["clone", "copy", "duplicate", "layer", "qgsvectorlayer"]
+  },
+  {
+    "name": "setName",
+    "signature": "setName(name: str) -> None",
+    "description": "Sets the display name of the layer shown in the Layers panel and other UI elements.",
+    "keywords": ["name", "set", "title", "label", "layer", "qgsvectorlayer"]
+  },
+  {
+    "name": "styleManager",
+    "signature": "styleManager() -> QgMapLayerStyleManager",
+    "description": "Returns the style manager for managing multiple styles (symbology) associated with the layer.",
+    "keywords": ["style", "symbology", "rendering", "manager", "qgsvectorlayer"]
+  }
+]

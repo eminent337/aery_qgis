@@ -27,7 +27,14 @@ class EngineWorker(QThread):
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._run_async())
         except Exception as e:
-            self.error.emit(str(e))
+            msg = str(e)
+            if "402" in msg:
+                msg = (
+                    f"HTTP Error 402 (Payment Required): Your active LLM provider or API key has run out of credits/quota. "
+                    f"Please check your account billing or select/configure a different model/provider in the Aery settings.\n\n"
+                    f"Details from Server:\n{msg}"
+                )
+            self.error.emit(msg)
             
     async def _run_async(self):
         from aery_plugin.oauth_helper import get_active_provider
@@ -44,7 +51,13 @@ class EngineWorker(QThread):
             ]
         
         # Simulated core streaming loop with TTSR interception
-        stream = provider.stream_chat(messages, provider_id)
+        # Resolve the model the user actually selected; Kilo now 402s on any
+        # non-free model, so force a known-working free model if needed.
+        model = active.get("model", "") if active else ""
+        if provider_id == "kilo" and model and ":free" not in model and model != "openrouter/free":
+            model = "stepfun/step-3.7-flash:free"
+
+        stream = provider.stream_chat(messages, model)
         
         buffer = ""
         aborted = False
@@ -127,3 +140,18 @@ class AeryEngineAdapter(QObject):
         if self._worker and self._worker.isRunning():
             self._worker.terminate()
             self._worker.wait()
+    def cancel(self) -> None:
+        """Cancel the current execution."""
+        self.stop_execution()
+    def reset(self) -> None:
+        """Reset agent state."""
+        pass
+    def reinitialize(self) -> None:
+        """Reinitialize the LLM client registry with fresh configuration."""
+        self.llm_registry = create_registry()
+    def resolve_permission(self, request_id: str, approved: bool, always: bool = False) -> None:
+        """Resolve a pending permission request."""
+        pass
+    def invalidate_project_context(self) -> None:
+        """Invalidate the cached project snapshot after QGIS state changes."""
+        pass

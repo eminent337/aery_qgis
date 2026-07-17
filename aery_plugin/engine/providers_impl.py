@@ -2,6 +2,16 @@ import json
 from typing import AsyncGenerator
 import aery_plugin._http as httpx
 from .llm import ProviderBase
+def _check_response_status(response):
+    if response.status_code >= 400:
+        err_body = response.text or ""
+        msg = err_body
+        try:
+            err_json = json.loads(err_body)
+            msg = err_json.get("error", {}).get("message", err_body)
+        except Exception:
+            pass
+        raise Exception(f"HTTP Status {response.status_code}: {msg}")
 
 class KiloProvider(ProviderBase):
     def __init__(self, api_key: str = ""):
@@ -21,7 +31,7 @@ class KiloProvider(ProviderBase):
         
         client = httpx.AsyncClient()
         async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-            response.raise_for_status()
+            _check_response_status(response)
             async for chunk in response.aiter_lines():
                 if chunk.startswith("data: "):
                     data = chunk[6:]
@@ -54,7 +64,7 @@ class OpenCodeZenProvider(ProviderBase):
         
         client = httpx.AsyncClient()
         async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-            response.raise_for_status()
+            _check_response_status(response)
             async for chunk in response.aiter_lines():
                 if chunk.startswith("data: "):
                     data = chunk[6:]
@@ -87,7 +97,7 @@ class AntigravityProvider(ProviderBase):
         
         client = httpx.AsyncClient()
         async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-            response.raise_for_status()
+            _check_response_status(response)
             async for chunk in response.aiter_lines():
                 if chunk.startswith("data: "):
                     data = chunk[6:]
@@ -120,7 +130,7 @@ class CustomOpenAIProvider(ProviderBase):
         
         client = httpx.AsyncClient()
         async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-            response.raise_for_status()
+            _check_response_status(response)
             async for chunk in response.aiter_lines():
                 if chunk.startswith("data: "):
                     data = chunk[6:]

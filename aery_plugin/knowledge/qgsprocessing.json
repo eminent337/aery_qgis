@@ -1,0 +1,98 @@
+[
+  {
+    "name": "run",
+    "signature": "run(alg: str, parameters: dict, context: QgProcessingContext = None, feedback: QgProcessingFeedback = None) -> dict",
+    "description": "Runs a processing algorithm by ID with the given parameters. Returns a dictionary of output values.",
+    "keywords": ["run", "execute", "algorithm", "processing", "QgCore"]
+  },
+  {
+    "name": "runAndLoadResults",
+    "signature": "runAndLoadResults(alg: str, parameters: dict, context: QgProcessingContext = None, feedback: QgProcessingFeedback = None) -> dict",
+    "description": "Runs an algorithm and automatically adds output layers to the current project.",
+    "keywords": ["run", "load", "results", "algorithm", "processing", "QgCore"]
+  },
+  {
+    "name": "createFeatureSink",
+    "signature": "createFeatureSink(output: str, definition: QgProcessingParameterDefinition, fields: QgFields, geometryType: QgWkbTypes.GeometryType, crs: QgCoordinateReferenceSystem) -> tuple[str, QgFeatureSink]",
+    "description": "Creates a new output vector layer (sink) for algorithm results. Returns (sink_id, sink).",
+    "keywords": ["create", "sink", "output", "vector", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsSource",
+    "signature": "parameterAsSource(parameters: dict, name: str, context: QgProcessingContext) -> QgProcessingFeatureSource",
+    "description": "Extracts an input layer parameter as a feature source for iteration.",
+    "keywords": ["parameter", "source", "layer", "features", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsLayer",
+    "signature": "parameterAsLayer(parameters: dict, name: str, context: QgProcessingContext) -> QgMapLayer",
+    "description": "Extracts an input layer parameter as a QgMapLayer object.",
+    "keywords": ["parameter", "layer", "map", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsOutputLayer",
+    "signature": "parameterAsOutputLayer(parameters: dict, name: str, context: QgProcessingContext) -> str",
+    "description": "Extracts an output layer parameter as a file path string.",
+    "keywords": ["parameter", "output", "layer", "path", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsExtent",
+    "signature": "parameterAsExtent(parameters: dict, name: str, context: QgProcessingContext) -> QgRectangle",
+    "description": "Extracts an extent/bounding box parameter as a QgRectangle object.",
+    "keywords": ["parameter", "extent", "bbox", "rectangle", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsCrs",
+    "signature": "parameterAsCrs(parameters: dict, name: str, context: QgProcessingContext) -> QgCoordinateReferenceSystem",
+    "description": "Extracts a CRS parameter as a QgCoordinateReferenceSystem object.",
+    "keywords": ["parameter", "crs", "coordinate", "projection", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsEnums",
+    "signature": "parameterAsEnums(parameters: dict, name: str, context: QgProcessingContext) -> list[int]",
+    "description": "Extracts an enumeration (multiple choice) parameter as a list of integer values.",
+    "keywords": ["parameter", "enum", "enumeration", "multiple", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsString",
+    "signature": "parameterAsString(parameters: dict, name: str, context: QgProcessingContext) -> str",
+    "description": "Extracts a string parameter value.",
+    "keywords": ["parameter", "string", "text", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsDouble",
+    "signature": "parameterAsDouble(parameters: dict, name: str, context: QgProcessingContext) -> float",
+    "description": "Extracts a double/float parameter value.",
+    "keywords": ["parameter", "double", "float", "number", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsInt",
+    "signature": "parameterAsInt(parameters: dict, name: str, context: QgProcessingContext) -> int",
+    "description": "Extracts an integer parameter value.",
+    "keywords": ["parameter", "int", "integer", "number", "processing", "QgCore"]
+  },
+  {
+    "name": "parameterAsBool",
+    "signature": "parameterAsBool(parameters: dict, name: str, context: QgProcessingContext) -> bool",
+    "description": "Extracts a boolean parameter value.",
+    "keywords": ["parameter", "bool", "boolean", "processing", "QgCore"]
+  },
+  {
+    "name": "QgProcessingFeedback",
+    "signature": "class QgProcessingFeedback",
+    "description": "Base class for processing algorithm feedback. Use setProgress() to report progress, pushInfo() for messages.",
+    "keywords": ["feedback", "progress", "processing", "QgCore"]
+  },
+  {
+    "name": "QgProcessingContext",
+    "signature": "class QgProcessingContext",
+    "description": "Execution context for processing algorithms. Holds temporary layers, project reference, and execution flags.",
+    "keywords": ["context", "processing", "QgCore"]
+  },
+  {
+    "name": "QgProcessingUtils.generateTempFilename",
+    "signature": "QgProcessingUtils.generateTempFilename(basename: str) -> str",
+    "description": "Generates a unique temporary file path with the given basename.",
+    "keywords": ["temp", "temporary", "filename", "processing", "QgCore"]
+  }
+]

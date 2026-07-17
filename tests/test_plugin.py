@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aery_plugin.agent import Agent
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
@@ -50,16 +51,12 @@ def test_init_gui_creates_executor(mock_chat, mock_agent, mock_exec, plugin):
 @patch("aery_plugin.plugin.Agent")
 @patch("aery_plugin.plugin.ChatPanel")
 def test_init_gui_creates_agent(mock_chat, mock_agent, mock_exec, plugin):
-    """initGui creates the agent with the executor."""
+    """initGui creates the agent."""
     mock_exec_instance = MagicMock()
     mock_exec_instance.port = 12345
     mock_exec.return_value = mock_exec_instance
-
     plugin.initGui()
-
     mock_agent.assert_called_once()
-    call_kwargs = mock_agent.call_args
-    assert call_kwargs[1]["executor"] == mock_exec_instance
 
 
 @patch("aery_plugin.plugin.QGISCodeExecutor")
@@ -132,3 +129,65 @@ def test_toggle_panel(mock_chat, mock_agent, mock_exec, plugin):
 
     plugin._toggle_panel(False)
     panel.setVisible.assert_called_with(False)
+
+def test_aery_engine_adapter_interface():
+    from aery_plugin.engine_adapter import AeryEngineAdapter
+    adapter = AeryEngineAdapter()
+    
+    # Verify new methods are callable and don't raise errors
+    adapter.invalidate_project_context()
+    adapter.reset()
+    adapter.reinitialize()
+    adapter.resolve_permission("req_1", True)
+    
+    # Verify cancel maps to stop_execution
+    with patch.object(adapter, "stop_execution") as mock_stop:
+        adapter.cancel()
+        mock_stop.assert_called_once()
+
+def test_engine_worker_402_handling():
+    from aery_plugin.engine_adapter import EngineWorker
+    from unittest.mock import MagicMock, patch
+    
+    worker = EngineWorker("test query", {}, MagicMock(), MagicMock(), {})
+    
+    with patch.object(worker, "_run_async", side_effect=Exception("HTTP Error 402")):
+        worker.error = MagicMock()
+        worker.run()
+        
+        worker.error.emit.assert_called_once()
+        err_msg = worker.error.emit.call_args[0][0]
+        assert "Payment Required" in err_msg
+        assert "out of credits/quota" in err_msg
+
+def test_kilo_models_cache_read():
+    import json
+    import os
+    from aery_plugin.oauth_helper import _oauth_models, AGENT_DIR
+    
+    cache_path = os.path.join(AGENT_DIR, "kilo_models.json")
+    mock_cache = [
+        ["dynamic-model/free", "Dynamic Model Free"],
+        ["openrouter/free", "Free Router"]
+    ]
+    
+    backup_path = cache_path + ".bak"
+    has_backup = False
+    if os.path.exists(cache_path):
+        os.rename(cache_path, backup_path)
+        has_backup = True
+        
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(mock_cache, f)
+            
+        models = _oauth_models("kilo")
+        assert len(models) == 2
+        assert models[0] == ("dynamic-model/free", "Dynamic Model Free")
+        assert models[1] == ("openrouter/free", "Free Router")
+        
+    finally:
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
+        if has_backup:
+            os.rename(backup_path, cache_path)

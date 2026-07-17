@@ -1,0 +1,6 @@
+{
+  "defaultProvider": "kilo",
+  "defaultModel": "stepfun/step-3.7-flash:free",
+  "quietStartup": true,
+  "defaultThinkingLevel": "off"
+}

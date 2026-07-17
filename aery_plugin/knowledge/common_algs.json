@@ -1,0 +1,462 @@
+[
+  {
+    "name": "native:buffer",
+    "signature": "native:buffer",
+    "description": "Creates a buffer polygon around features at a specified distance. Params: INPUT, DISTANCE, SEGMENTS, END_CAP_STYLE, JOIN_STYLE, MITER_LIMIT, DISSOLVE",
+    "keywords": [
+      "buffer",
+      "distance",
+      "polygon",
+      "native",
+      "native:buffer"
+    ]
+  },
+  {
+    "name": "native:centroids",
+    "signature": "native:centroids",
+    "description": "Creates centroid points for each feature (polygon or line). Params: INPUT, ALL_PARTS",
+    "keywords": [
+      "centroid",
+      "center",
+      "point",
+      "polygon",
+      "native",
+      "native:centroids"
+    ]
+  },
+  {
+    "name": "native:clip",
+    "signature": "native:clip",
+    "description": "Clips one vector layer by the extent of another. Output contains only features within the overlay layer. Params: INPUT, OVERLAY",
+    "keywords": [
+      "clip",
+      "intersection",
+      "mask",
+      "overlay",
+      "native",
+      "native:clip"
+    ]
+  },
+  {
+    "name": "native:union",
+    "signature": "native:union",
+    "description": "Computes the union of all input layers. Overlapping features are split at their boundaries. Params: INPUT, OVERLAY, OUTPUT",
+    "keywords": [
+      "union",
+      "combine",
+      "merge",
+      "overlay",
+      "native",
+      "native:union"
+    ]
+  },
+  {
+    "name": "native:intersection",
+    "signature": "native:intersection",
+    "description": "Computes the geometric intersection between two layers. Only overlapping areas are kept. Params: INPUT, OVERLAY, INPUT_FIELDS, OVERLAY_FIELDS",
+    "keywords": [
+      "intersection",
+      "overlap",
+      "clip",
+      "native",
+      "native:intersection"
+    ]
+  },
+  {
+    "name": "native:dissolve",
+    "signature": "native:dissolve",
+    "description": "Merges features by attribute value or all features into one. Params: INPUT, FIELD, SEQUENCE, NUMERIC",
+    "keywords": [
+      "dissolve",
+      "merge",
+      "aggregate",
+      "group",
+      "native",
+      "native:dissolve"
+    ]
+  },
+  {
+    "name": "native:reprojectlayer",
+    "signature": "native:reprojectlayer",
+    "description": "Reprojects a vector layer to a different coordinate reference system. Params: INPUT, TARGET_CRS",
+    "keywords": [
+      "reproject",
+      "crs",
+      "transform",
+      "projection",
+      "native",
+      "native:reprojectlayer"
+    ]
+  },
+  {
+    "name": "native:selectbyattribute",
+    "signature": "native:selectbyattribute",
+    "description": "Selects features in a layer based on attribute value. Params: INPUT, FIELD, OPERATOR, VALUE",
+    "keywords": [
+      "select",
+      "attribute",
+      "filter",
+      "query",
+      "native",
+      "native:selectbyattribute"
+    ]
+  },
+  {
+    "name": "native:selectbyexpression",
+    "signature": "native:selectbyexpression",
+    "description": "Selects features using a QGIS expression. Params: INPUT, EXPRESSION, METHOD",
+    "keywords": [
+      "select",
+      "expression",
+      "filter",
+      "query",
+      "native",
+      "native:selectbyexpression"
+    ]
+  },
+  {
+    "name": "native:addfieldtoattributestable",
+    "signature": "native:addfieldtoattributestable",
+    "description": "Adds a new field to the attribute table. Params: INPUT, FIELD_NAME, FIELD_TYPE, FIELD_LENGTH, FIELD_PRECISION",
+    "keywords": [
+      "add",
+      "field",
+      "column",
+      "attribute",
+      "native",
+      "native:addfieldtoattributestable"
+    ]
+  },
+  {
+    "name": "native:deletecolumn",
+    "signature": "native:deletecolumn",
+    "description": "Removes one or more fields from the attribute table. Params: INPUT, COLUMNS",
+    "keywords": [
+      "delete",
+      "remove",
+      "field",
+      "column",
+      "attribute",
+      "native",
+      "native:deletecolumn"
+    ]
+  },
+  {
+    "name": "native:fieldcalculator",
+    "signature": "native:fieldcalculator",
+    "description": "Creates or updates a field with values computed from an expression. Params: INPUT, FIELD_NAME, FIELD_TYPE, FIELD_LENGTH, FORMULA",
+    "keywords": [
+      "field",
+      "calculate",
+      "expression",
+      "compute",
+      "native",
+      "native:fieldcalculator"
+    ]
+  },
+  {
+    "name": "native:joinattributestable",
+    "signature": "native:joinattributestable",
+    "description": "Joins attribute tables based on a common field. Params: INPUT, INPUT_FIELD, JOIN, JOIN_FIELD, FIELDS_TO_COPY, METHOD",
+    "keywords": [
+      "join",
+      "table",
+      "attribute",
+      "merge",
+      "link",
+      "native",
+      "native:joinattributestable"
+    ]
+  },
+  {
+    "name": "native:mergevectorlayers",
+    "signature": "native:mergevectorlayers",
+    "description": "Combines multiple vector layers into a single layer. Params: LAYERS, CRS, TABLE",
+    "keywords": [
+      "merge",
+      "combine",
+      "layers",
+      "concatenate",
+      "native",
+      "native:mergevectorlayers"
+    ]
+  },
+  {
+    "name": "native:multiparttosingleparts",
+    "signature": "native:multiparttosingleparts",
+    "description": "Converts multipart features to separate single-part features. Params: INPUT, OUTPUT",
+    "keywords": [
+      "multipart",
+      "singlepart",
+      "explode",
+      "separate",
+      "native",
+      "native:multiparttosingleparts"
+    ]
+  },
+  {
+    "name": "native:countpointsinpolygon",
+    "signature": "native:countpointsinpolygon",
+    "description": "Counts points in each polygon and optionally calculates statistics. Params: POLYGONS, POINTS, FIELD, WEIGHT, CLASSFIELD",
+    "keywords": [
+      "count",
+      "points",
+      "polygon",
+      "aggregate",
+      "spatial",
+      "native",
+      "native:countpointsinpolygon"
+    ]
+  },
+  {
+    "name": "gdal:rasterize",
+    "signature": "gdal:rasterize",
+    "description": "Converts vector features to raster. Params: INPUT, FIELD, BURN, USE_Z, UNITS, WIDTH, HEIGHT, EXTENT, NODATA, OPTIONS, DATA_TYPE",
+    "keywords": [
+      "rasterize",
+      "vector",
+      "raster",
+      "gdal",
+      "burn",
+      "gdal:rasterize"
+    ]
+  },
+  {
+    "name": "gdal:warpreproject",
+    "signature": "gdal:warpreproject",
+    "description": "Reprojects and warps raster layers to different CRS. Params: INPUT, SOURCE_CRS, TARGET_CRS, RESAMPLING, NO_DATA, TARGET_RESOLUTION, OPTIONS",
+    "keywords": [
+      "warp",
+      "reproject",
+      "crs",
+      "transform",
+      "gdal",
+      "gdal:warpreproject"
+    ]
+  },
+  {
+    "name": "gdalogr:buffervectors",
+    "signature": "gdalogr:buffervectors",
+    "description": "Buffers vector features using GDAL/OGR. Params: INPUT, DISTANCE, OPTIONS, OUTPUT",
+    "keywords": [
+      "buffer",
+      "distance",
+      "vector",
+      "gdal",
+      "ogr",
+      "gdalogr:buffervectors"
+    ]
+  },
+  {
+    "name": "qgis:zonalstatistics",
+    "signature": "qgis:zonalstatistics",
+    "description": "Calculates statistics for raster values within zones (polygons). Params: INPUT_RASTER, RASTER_BAND, INPUT_VECTOR, COLUMN_PREFIX, STATISTICS",
+    "keywords": [
+      "zonal",
+      "statistics",
+      "raster",
+      "polygon",
+      "qgis",
+      "qgis:zonalstatistics"
+    ]
+  },
+  {
+    "name": "QgsMapSettings",
+    "signature": "QgsMapSettings",
+    "description": "Holds configuration for map rendering. To get the center point of the visible map, use mapSettings.extent().center() which returns a QgsPointXY. There is NO .center() attribute directly on QgsMapSettings.",
+    "keywords": [
+      "mapsettings",
+      "center",
+      "extent",
+      "render",
+      "view"
+    ]
+  },
+  {
+    "name": "QgsMapCanvas",
+    "signature": "QgsMapCanvas",
+    "description": "Qt widget for displaying map layers. Import from qgis.gui, NOT qgis.core. Use iface.mapCanvas() to get the canvas instance. Common methods: refresh(), setExtent(extent), center(), zoomScale(), currentLayer().",
+    "keywords": [
+      "canvas",
+      "map",
+      "view",
+      "gui",
+      "qgsmapcanvas",
+      "iface"
+    ]
+  },
+  {
+    "name": "QgsMapToPixel",
+    "signature": "QgsMapToPixel.toMapCoordinates(x: int, y: int) -> QgsPointXY",
+    "description": "Converts pixel coordinates to map coordinates. Arguments must be integers, not floats. Use int(round(x)) or int(round(y)) to convert floats before calling.",
+    "keywords": [
+      "maptopixel",
+      "pixel",
+      "coordinates",
+      "int"
+    ]
+  },
+  {
+    "name": "processing.run OUTPUT",
+    "signature": "processing.run(name: str, parameters: dict, context=None, feedback=None, flags=None) -> dict",
+    "description": "Returns a dict with OUTPUT key containing a FILE PATH (string), NOT a QgsVectorLayer object. NEVER treat result[\"OUTPUT\"] as a layer. To load it: layer = QgsVectorLayer(path, name, \"ogr\"); QgsProject.instance().addMapLayer(layer). If you wrap it without adding to project, the C++ object will be deleted and you will get \"wrapped C/C++ object has been deleted\".",
+    "keywords": [
+      "processing",
+      "run",
+      "output",
+      "path",
+      "delete",
+      "unwrap"
+    ]
+  },
+  {
+    "name": "QgsProject.addMapLayer",
+    "signature": "addMapLayer(layer: QgsMapLayer, addToLegend: bool = True, takeOwnership: bool = False) -> QgsMapLayer",
+    "description": "Adds a layer to the project and the canvas. CRITICAL: if you create a QgsVectorLayer from a file path but do not add it to the project, the C++ object will be garbage-collected and accessing it later raises \"wrapped C/C++ object has been deleted\". ALWAYS addMapLayer() immediately after creating a layer.",
+    "keywords": [
+      "add",
+      "project",
+      "maplayer",
+      "delete",
+      "unwrap",
+      "own"
+    ]
+  },
+  {
+    "name": "QgsVectorLayer constructor",
+    "signature": "QgsVectorLayer(path: str, baseName: str, providerLib: str)",
+    "description": "Creates a layer from a file path (e.g., \".shp\", \".gpkg\", \".geojson\"). The providerLib is usually \"ogr\". The layer IS NOT added to the project automatically. You MUST call QgsProject.instance().addMapLayer(layer) to keep the C++ object alive.",
+    "keywords": [
+      "constructor",
+      "path",
+      "provider",
+      "ogr",
+      "create",
+      "new"
+    ]
+  },
+  {
+    "name": "import processing",
+    "signature": "import processing",
+    "description": "The processing module is a TOP-LEVEL module, NOT inside qgis.core. Correct: import processing. Wrong: from qgis.core import processing. After importing, use processing.run(algorithm_id, parameters) to execute QGIS Processing algorithms.",
+    "keywords": [
+      "processing",
+      "import",
+      "top-level",
+      "qgis.core"
+    ]
+  },
+  {
+    "name": "urllib.request http POST",
+    "signature": "urllib.request.urlopen(Request(url, data=...))",
+    "description": "To make HTTP requests inside run_qgis_code, use urllib.request (available in sandbox) or requests (available if installed). For POST: req = urllib.request.Request(url, data=body.encode(), headers={...}, method=\"POST\"); urllib.request.urlopen(req). Do NOT use subprocess for curl/wget.",
+    "keywords": [
+      "urllib",
+      "request",
+      "http",
+      "post",
+      "urlopen"
+    ]
+  },
+  {
+    "name": "subprocess blocked",
+    "signature": "subprocess blocked",
+    "description": "The subprocess module is PROXIED in the sandbox and ALL its functions raise RuntimeError. NEVER generate code using subprocess.run(), subprocess.call(), os.system(), or shell commands inside run_qgis_code. Use download_file tool for downloads, or run_shell tool (requires approval).",
+    "keywords": [
+      "subprocess",
+      "blocked",
+      "shell",
+      "os.system",
+      "forbidden"
+    ]
+  },
+  {
+    "name": "star imports forbidden except qgis",
+    "signature": "from qgis.core import *",
+    "description": "Star imports (from X import *) are forbidden EXCEPT for qgis.core, qgis.gui, PyQt6.QtCore, and PyQt6.QtGui. For all other modules, import individual names: from qgis.core import QgsVectorLayer, QgsProject.",
+    "keywords": [
+      "star",
+      "import",
+      "forbidden",
+      "qgis.core"
+    ]
+  },
+  {
+    "name": "QColor vs QgsColor",
+    "signature": "QColor",
+    "description": "THERE IS NO QgsColor in qgis.core. Use QColor from PyQt6.QtGui for colors. Example: from PyQt6.QtGui import QColor; c = QColor(255, 0, 0). Qgs classes that return colors (like QgsSymbol.color()) return QColor objects.",
+    "keywords": [
+      "color",
+      "qcolor",
+      "qgscolor",
+      "pyqt6",
+      "qtgui"
+    ]
+  },
+  {
+    "name": "Syntax error self-correction",
+    "signature": "syntax",
+    "description": "If run_qgis_code returns a sandbox syntax error, the Python code is invalid. Common causes: missing colons, unclosed brackets, wrong indentation, or mixing single/double quotes. ALWAYS ensure valid Python syntax. Test with ast.parse(code) before returning. Do NOT use backticks or markdown formatting inside code strings.",
+    "keywords": [
+      "syntax",
+      "error",
+      "parse",
+      "python",
+      "valid"
+    ]
+  },
+  {
+    "name": "XYZ tile layer canvas CRS",
+    "signature": "QgsCoordinateReferenceSystem(\"EPSG:3857\")",
+    "description": "XYZ tile layers (OpenStreetMap, Google Satellite, etc.) use Web Mercator (EPSG:3857). If the canvas is in a different CRS, tiles fetch but do not render visually. ALWAYS set the canvas CRS to EPSG:3857 before or after adding XYZ layers: iface.mapCanvas().setDestinationCrs(QgsCoordinateReferenceSystem(\"EPSG:3857\")).",
+    "keywords": [
+      "xyz",
+      "tile",
+      "crs",
+      "epsg",
+      "3857",
+      "canvas",
+      "render"
+    ]
+  },
+  {
+    "name": "refreshAllLayers for XYZ tiles",
+    "signature": "iface.mapCanvas().refreshAllLayers()",
+    "description": "After adding XYZ/tile/raster layers, ALWAYS call refreshAllLayers() then repaint() to force tile providers to reload. refresh() alone may not trigger tile fetching. Full sequence: canvas.refreshAllLayers(); canvas.repaint(); canvas.refresh().",
+    "keywords": [
+      "refresh",
+      "xyz",
+      "tile",
+      "render",
+      "alllayers",
+      "repaint"
+    ]
+  },
+  {
+    "name": "Common XYZ tile URLs",
+    "signature": "QgsRasterLayer(uri, name, \"wms\")",
+    "description": "Common XYZ URLs for QGIS. Use type=xyz in WMS provider. OpenStreetMap: url=https://tile.openstreetmap.org/{z}/{x}/{y}.png. Google Satellite (no key): url=https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}. Stamen Terrain: url=https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}.png. Always set layer transparency CRS to EPSG:3857.",
+    "keywords": [
+      "xyz",
+      "url",
+      "tile",
+      "osm",
+      "satellite",
+      "google",
+      "wms"
+    ]
+  },
+  {
+    "name": "QgsRasterLayer XYZ constructor",
+    "signature": "QgsRasterLayer(uri, name, \"wms\")",
+    "description": "To add an XYZ tile layer: uri = \"type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png&zmax=19&zmin=0\"; layer = QgsRasterLayer(uri, \"OpenStreetMap\", \"wms\"); QgsProject.instance().addMapLayer(layer). The provider MUST be \"wms\" (not \"xyz\"). Then set canvas CRS to EPSG:3857 and call refreshAllLayers().",
+    "keywords": [
+      "raster",
+      "xyz",
+      "wms",
+      "provider",
+      "layer",
+      "constructor"
+    ]
+  }
+]

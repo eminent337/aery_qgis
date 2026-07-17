@@ -41,175 +41,46 @@ def _build_globals() -> dict[str, Any]:
         "itertools": _it,
     })
 
-    # ── QGIS Core — every useful class ──
+    # ── QGIS Core — dynamically import every class to avoid version conflicts ──
     try:
-        from qgis.core import (
-            Qgis,
-            QgsApplication,
-            QgsCoordinateReferenceSystem,
-            QgsCoordinateTransform,
-            QgsCoordinateTransformContext,
-            QgsDataSourceUri,
-            QgsDistanceArea,
-            QgsExpression,
-            QgsExpressionContext,
-            QgsExpressionContextUtils,
-            QgsFeature,
-            QgsFeatureRequest,
-            QgsField,
-            QgsFields,
-            QgsGeometry,
-            QgsLayerTreeGroup,
-            QgsLayerTreeLayer,
-            QgsMapLayer,
-            QgsMapLayerType,
-            QgsMapSettings,
-            QgsMapThemeCollection,
-            QgsMarkerSymbol,
-            QgsMessageLog,
-            QgsPalLayerSettings,
-            QgsPoint,
-            QgsPointCloudLayer,
-            QgsPointXY,
-            QgsProcessingFeedback,
-            QgsProject,
-            QgsRasterBandStats,
-            QgsRasterLayer,
-            QgsRectangle,
-            QgsRendererRange,
-            QgsSingleSymbolRenderer,
-            QgsSpatialIndex,
-            QgsSymbol,
-            QgsSymbolLayer,
-            QgsTextFormat,
-            QgsVectorDataProvider,
-            QgsVectorFileWriter,
-            QgsVectorLayer,
-            QgsVectorLayerUtils,
-            QgsWkbTypes,
-            # Layout / print classes
-            QgsLayout,
-            QgsLayoutItemLabel,
-            QgsLayoutItemLegend,
-            QgsLayoutItemMap,
-            QgsLayoutItemNorthArrow,
-            QgsLayoutItemPage,
-            QgsLayoutItemPicture,
-            QgsLayoutItemScaleBar,
-            QgsLayoutMeasurement,
-            QgsLayoutObject,
-            QgsLayoutPoint,
-            QgsLayoutSize,
-            QgsLayoutUnit,
-            QgsLayoutItem,
-            QgsLayoutUnits,
-            QgsPageLayout,
-            QgsPrintLayout,
-            QgsLayoutExporter,
-        )
-        # Pseudocolor renderer (needed for NDVI/SAR display)
-        try:
-            from qgis.core import (
-                QgsColorRampShader,
-                QgsRasterShader,
-                QgsSingleBandPseudoColorRenderer,
-                QgsSingleBandGrayRenderer,
-                QgsGraduatedSymbolRenderer,
-                QgsClassificationQuantile,
-                QgsVectorLayerSimpleLabeling,
-            )
-            g.update({
-                "QgsColorRampShader": QgsColorRampShader,
-                "QgsRasterShader": QgsRasterShader,
-                "QgsSingleBandPseudoColorRenderer": QgsSingleBandPseudoColorRenderer,
-                "QgsSingleBandGrayRenderer": QgsSingleBandGrayRenderer,
-                "QgsGraduatedSymbolRenderer": QgsGraduatedSymbolRenderer,
-                "QgsClassificationQuantile": QgsClassificationQuantile,
-                "QgsVectorLayerSimpleLabeling": QgsVectorLayerSimpleLabeling,
-            })
-        except ImportError:
-            pass
-        g.update({
-            "Qgis": Qgis,
-            "QgsApplication": QgsApplication,
-            "QgsCoordinateReferenceSystem": QgsCoordinateReferenceSystem,
-            "QgsCoordinateTransform": QgsCoordinateTransform,
-            "QgsCoordinateTransformContext": QgsCoordinateTransformContext,
-            "QgsDataSourceUri": QgsDataSourceUri,
-            "QgsDistanceArea": QgsDistanceArea,
-            "QgsExpression": QgsExpression,
-            "QgsExpressionContext": QgsExpressionContext,
-            "QgsExpressionContextUtils": QgsExpressionContextUtils,
-            "QgsFeature": QgsFeature,
-            "QgsFeatureRequest": QgsFeatureRequest,
-            "QgsField": QgsField,
-            "QgsFields": QgsFields,
-            "QgsGeometry": QgsGeometry,
-            "QgsLayerTreeGroup": QgsLayerTreeGroup,
-            "QgsLayerTreeLayer": QgsLayerTreeLayer,
-            "QgsMapLayer": QgsMapLayer,
-            "QgsMapLayerType": QgsMapLayerType,
-            "QgsMapSettings": QgsMapSettings,
-            "QgsMapThemeCollection": QgsMapThemeCollection,
-            "QgsMarkerSymbol": QgsMarkerSymbol,
-            "QgsMessageLog": QgsMessageLog,
-            "QgsPalLayerSettings": QgsPalLayerSettings,
-            "QgsPoint": QgsPoint,
-            "QgsPointCloudLayer": QgsPointCloudLayer,
-            "QgsPointXY": QgsPointXY,
-            "QgsProcessingFeedback": QgsProcessingFeedback,
-            "QgsProject": QgsProject,
-            "QgsRasterBandStats": QgsRasterBandStats,
-            "QgsRasterLayer": QgsRasterLayer,
-            "QgsRectangle": QgsRectangle,
-            "QgsRendererRange": QgsRendererRange,
-            "QgsSingleSymbolRenderer": QgsSingleSymbolRenderer,
-            "QgsSpatialIndex": QgsSpatialIndex,
-            "QgsSymbol": QgsSymbol,
-            "QgsTextFormat": QgsTextFormat,
-            "QgsVectorDataProvider": QgsVectorDataProvider,
-            "QgsVectorFileWriter": QgsVectorFileWriter,
-            "QgsVectorLayer": QgsVectorLayer,
-            "QgsVectorLayerUtils": QgsVectorLayerUtils,
-            "QgsWkbTypes": QgsWkbTypes,
-            # Layout / print — available in QGIS 3.28+ / QGIS 4
-            "QgsLayout": QgsLayout,
-            "QgsLayoutExporter": QgsLayoutExporter,
-            "QgsLayoutItemLabel": QgsLayoutItemLabel,
-            "QgsLayoutItemLegend": QgsLayoutItemLegend,
-            "QgsLayoutItemMap": QgsLayoutItemMap,
-            "QgsLayoutItemNorthArrow": QgsLayoutItemNorthArrow,
-            "QgsLayoutItemPage": QgsLayoutItemPage,
-            "QgsLayoutItemPicture": QgsLayoutItemPicture,
-            "QgsLayoutItemScaleBar": QgsLayoutItemScaleBar,
-            "QgsLayoutMeasurement": QgsLayoutMeasurement,
-            "QgsLayoutObject": QgsLayoutObject,
-            "QgsLayoutPoint": QgsLayoutPoint,
-            "QgsLayoutSize": QgsLayoutSize,
-            "QgsLayoutUnit": QgsLayoutUnit,
-            "QgsPrintLayout": QgsPrintLayout,
-            "QgsPageLayout": QgsPageLayout,
-        })
+        import qgis.core as qc
+        core_classes = [
+            "Qgis", "QgsApplication", "QgsCoordinateReferenceSystem", "QgsCoordinateTransform",
+            "QgsCoordinateTransformContext", "QgsDataSourceUri", "QgsDistanceArea", "QgsExpression",
+            "QgsExpressionContext", "QgsExpressionContextUtils", "QgsFeature", "QgsFeatureRequest",
+            "QgsField", "QgsFields", "QgsGeometry", "QgsLayerTreeGroup", "QgsLayerTreeLayer",
+            "QgsMapLayer", "QgsMapLayerType", "QgsMapSettings", "QgsMapThemeCollection",
+            "QgsMarkerSymbol", "QgsMessageLog", "QgsPalLayerSettings", "QgsPoint", "QgsPointCloudLayer",
+            "QgsPointXY", "QgsProcessingFeedback", "QgsProject", "QgsRasterBandStats", "QgsRasterLayer",
+            "QgsRectangle", "QgsRendererRange", "QgsSingleSymbolRenderer", "QgsSpatialIndex",
+            "QgsSymbol", "QgsSymbolLayer", "QgsTextFormat", "QgsVectorDataProvider", "QgsVectorFileWriter",
+            "QgsVectorLayer", "QgsVectorLayerUtils", "QgsWkbTypes",
+            # Layout classes
+            "QgsLayout", "QgsLayoutItemLabel", "QgsLayoutItemLegend", "QgsLayoutItemMap",
+            "QgsLayoutItemNorthArrow", "QgsLayoutItemPage", "QgsLayoutItemPicture",
+            "QgsLayoutItemScaleBar", "QgsLayoutMeasurement", "QgsLayoutObject", "QgsLayoutPoint",
+            "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem", "QgsLayoutUnits", "QgsPageLayout",
+            "QgsPrintLayout", "QgsLayoutExporter",
+            # Pseudocolor/renderer
+            "QgsColorRampShader", "QgsRasterShader", "QgsSingleBandPseudoColorRenderer",
+            "QgsSingleBandGrayRenderer", "QgsGraduatedSymbolRenderer", "QgsClassificationQuantile",
+            "QgsVectorLayerSimpleLabeling"
+        ]
+        for name in core_classes:
+            if hasattr(qc, name):
+                g[name] = getattr(qc, name)
     except ImportError:
         pass
 
     # ── QGIS GUI ──
     try:
-        from qgis.gui import (
-            QgsMapCanvas,
-            QgsMapToolEmitPoint,
-            QgsRubberBand,
-            QgsVertexMarker,
-        )
-        g.update({
-            "QgsMapCanvas": QgsMapCanvas,
-            "QgsMapToolEmitPoint": QgsMapToolEmitPoint,
-            "QgsRubberBand": QgsRubberBand,
-            "QgsVertexMarker": QgsVertexMarker,
-        })
+        import qgis.gui as qg
+        gui_classes = ["QgsMapCanvas", "QgsMapToolEmitPoint", "QgsRubberBand", "QgsVertexMarker"]
+        for name in gui_classes:
+            if hasattr(qg, name):
+                g[name] = getattr(qg, name)
     except ImportError:
         pass
-
     # ── PyQt6 ──
     try:
         from PyQt6.QtCore import Qt, QVariant, QDate, QDateTime
@@ -541,15 +412,17 @@ class QGISCodeExecutor(QObject):
                         except Exception:
                             pass
                     elif code == "__capture_canvas__":
+                        err_msg = ""
                         try:
                             b64 = self._capture_canvas()
-                        except Exception:
+                        except Exception as e:
                             b64 = ""
+                            err_msg = f" (Exception: {str(e)})"
                         PNG_PREFIX = "iVBORw0KGgo"
                         if not b64 or len(b64.strip()) < 16:
                             response = {
                                 "id": req_id, "success": False,
-                                "error": "Canvas capture returned empty image data. Canvas may be uninitialised.",
+                                "error": f"Canvas capture returned empty image data. Canvas may be uninitialised.{err_msg}",
                             }
                         elif not b64.strip().startswith(PNG_PREFIX):
                             response = {
@@ -629,23 +502,60 @@ class QGISCodeExecutor(QObject):
     def _capture_canvas(self) -> str:
         """Capture the QGIS map canvas as a base64 PNG string.
 
-        Validates the buffer before encoding — raises RuntimeError if the image is
-        empty/invalid so `__capture_canvas__` can return a text error instead of an
-        empty data URL that would produce an Anthropic insertBlob validation error.
+        CRITICAL: QGIS/Qt widgets can ONLY be painted on the GUI
+        (main) thread. The executor runs tool code on a worker
+        thread (via asyncio.to_thread in agent_dispatcher), so calling
+        canvas.render() here would silently produce an empty image.
+        We marshal the actual render onto the main thread with
+        QMetaObject.invokeMethod(..., BlockingQueuedConnection) and
+        block until it returns, then encode.
         """
         from PyQt6.QtGui import QImage, QPainter
-        from PyQt6.QtCore import QSize
+        from PyQt6.QtCore import QSize, QMetaObject, Qt, QCoreApplication
         import io
+
         canvas = self.iface.mapCanvas()
-        size = canvas.size()
-        img = QImage(QSize(size.width(), size.height()), QImage.Format.Format_ARGB32)
-        img.fill(0)
-        painter = QPainter(img)
-        canvas.render(painter)
-        painter.end()
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        raw = buf.getvalue()
+
+        def _do_render() -> bytes:
+            size = canvas.size()
+            w, h = size.width(), size.height()
+            if w <= 0 or h <= 0:
+                # Canvas not laid out yet — fall back to widget dims.
+                w = canvas.width() or 800
+                h = canvas.height() or 600
+            img = QImage(QSize(w, h), QImage.Format.Format_ARGB32)
+            img.fill(0)
+            painter = QPainter(img)
+            canvas.render(painter)
+            painter.end()
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        app = QCoreApplication.instance()
+        if app is not None and app.thread() is not None and \
+                app.thread() is not canvas.thread():
+            # Off the GUI thread — marshal the render across.
+            result_holder = {}
+            def _run():
+                try:
+                    result_holder["data"] = _do_render()
+                except Exception as e:  # noqa
+                    result_holder["error"] = str(e)
+            QMetaObject.invokeMethod(
+                canvas,
+                Qt.ConnectionType.BlockingQueuedConnection,
+                Qt.Callable(_run),
+            )
+            if "error" in result_holder:
+                raise RuntimeError(result_holder["error"])
+            raw = result_holder["data"]
+        else:
+            # Already on the GUI thread — render directly.
+            canvas.repaint()
+            app.processEvents() if app is not None else None
+            raw = _do_render()
+
         if not raw or len(raw) < 8:
             raise RuntimeError("Canvas capture produced an empty/invalid image buffer")
         return base64.b64encode(raw).decode()

@@ -48,3 +48,25 @@ def format_thinking_html(text: str) -> str:
     html = escape_html(text)
     html = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", html)
     return html.replace("\n", "<br>")
+
+
+def style_button(btn, active: bool = False, danger: bool = False) -> None:
+    from PyQt6.QtCore import Qt
+    from aery_plugin.ui_constants import ERROR_COLOR, BG_BASE, TEXT_DIM, ACCENT, BORDER, BG_HIGH
+    fg = ERROR_COLOR if danger else (BG_BASE if active else TEXT_DIM)
+    bg = ACCENT if active else "transparent"
+    border_acc = ACCENT if active else BORDER
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: {bg};
+            color: {fg};
+            border: 1px solid {border_acc};
+            border-radius: 4px;
+            padding: 4px 8px;
+        }}
+        QPushButton:hover {{
+            background-color: {ACCENT if active else BG_HIGH};
+            border-color: {ACCENT};
+        }}
+    """)

@@ -625,3 +625,21 @@ def test_process_question_forwards_run_id(executor):
             "run_id must be forwarded from metadata through _process_question to the question event"
     finally:
         _qe._process_question = orig_pq
+
+def test_process_queue_thread_safety_guard(executor):
+    """_process_queue must be safe to call from a worker thread."""
+    result_holder = {}
+
+    def target():
+        try:
+            result_holder["result"] = executor.execute("result = 'thread-safe'")
+        except Exception as e:
+            result_holder["error"] = str(e)
+
+    worker = threading.Thread(target=target)
+    worker.start()
+    worker.join(timeout=10)
+    assert "error" not in result_holder, result_holder.get("error")
+    assert result_holder["result"]["success"] is True
+    assert result_holder["result"]["result"] == "thread-safe"
+

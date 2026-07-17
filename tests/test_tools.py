@@ -222,3 +222,40 @@ def test_custom_tools_load_from_file():
             registry = ToolRegistry(executor=None)
             names = [t["function"]["name"] for t in registry.list_tools()]
             assert "loaded_tool" in names
+
+
+
+def test_normalize_replaces_qgsmapcanvas_instance():
+    from aery_plugin.tools import ToolRegistry
+    code = "canvas = QgsMapCanvas.instance()\ncanvas.refresh()"
+    out = ToolRegistry._normalize_qgis4_code(code)
+    assert "iface.mapCanvas()" in out
+    assert "QgsMapCanvas.instance()" not in out
+
+def test_normalize_replaces_qgsproject_triggerrepaint():
+    from aery_plugin.tools import ToolRegistry
+    code = "QgsProject.instance().triggerRepaint()"
+    out = ToolRegistry._normalize_qgis4_code(code)
+    assert "iface.mapCanvas().refresh()" in out
+    assert "triggerRepaint()" not in out
+
+
+
+def test_resolve_basemap_known_names():
+    from aery_plugin.tools import resolve_basemap, BASEMAP_REGISTRY
+    assert resolve_basemap("osm")["label"] == "OpenStreetMap"
+    assert resolve_basemap("esri imagery")["label"] == "Esri World Imagery"
+    assert resolve_basemap("carto-dark")["label"] == "CARTO Dark Matter"
+    assert resolve_basemap("bogus-name") is None
+
+def test_resolve_basemap_raw_url():
+    from aery_plugin.tools import resolve_basemap
+    entry = resolve_basemap("https://x.example.com/{z}/{x}/{y}.png")
+    assert entry["url"] == "https://x.example.com/{z}/{x}/{y}.png"
+
+def test_load_basemap_registered_and_always_included():
+    from aery_plugin.tools import ToolRegistry
+    reg = ToolRegistry(executor=None)
+    names = [t["function"]["name"] for t in reg.list_tools()]
+    assert "load_basemap" in names
+    assert "load_basemap" in ToolRegistry._always_include

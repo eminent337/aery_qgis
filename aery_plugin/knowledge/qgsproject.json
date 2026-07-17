@@ -1,0 +1,92 @@
+[
+  {
+    "name": "instance",
+    "signature": "instance() -> QgProject",
+    "description": "Returns the singleton instance of QgProject. Use this to access the currently loaded project from anywhere in the code.",
+    "keywords": ["instance", "singleton", "project", "current", "QgProject"]
+  },
+  {
+    "name": "fileName",
+    "signature": "fileName() -> str",
+    "description": "Returns the absolute file path of the current project file (.qgz or .qgs), or an empty string if no file is saved.",
+    "keywords": ["filename", "path", "file", "project", "QgProject"]
+  },
+  {
+    "name": "read",
+    "signature": "read(path: str = None) -> bool",
+    "description": "Reads the project file from the specified path (or the project's fileName if not provided). Returns True if successful.",
+    "keywords": ["read", "load", "open", "project", "file", "QgProject"]
+  },
+  {
+    "name": "write",
+    "signature": "write(path: str = None) -> bool",
+    "description": "Writes the project to the specified path (or the existing fileName if not provided). Returns True if successful.",
+    "keywords": ["write", "save", "project", "file", "QgProject"]
+  },
+  {
+    "name": "addMapLayer",
+    "signature": "addMapLayer(layer: QgMapLayer, addToLegend: bool = True, takeOwnership: bool = True) -> QgMapLayer",
+    "description": "Adds a map layer to the project. If takeOwnership is True, the project manages the layer's memory.",
+    "keywords": ["add", "layer", "map", "QgProject"]
+  },
+  {
+    "name": "removeMapLayer",
+    "signature": "removeMapLayer(layer: QgMapLayer | str) -> None",
+    "description": "Removes a layer from the project by layer instance or layer ID. The layer is deleted if takeOwnership was True.",
+    "keywords": ["remove", "delete", "layer", "map", "QgProject"]
+  },
+  {
+    "name": "mapLayersByName",
+    "signature": "mapLayersByName(name: str) -> list[QgMapLayer]",
+    "description": "Returns all map layers matching the given name. May return multiple layers with the same name.",
+    "keywords": ["layers", "name", "find", "search", "QgProject"]
+  },
+  {
+    "name": "mapLayers",
+    "signature": "mapLayers() -> dict[str, QgMapLayer]",
+    "description": "Returns a dictionary of all map layers in the project, keyed by layer ID.",
+    "keywords": ["layers", "all", "map", "dictionary", "QgProject"]
+  },
+  {
+    "name": "layerStore",
+    "signature": "layerStore() -> QgMapLayerStore",
+    "description": "Returns the internal layer store that manages all layers in the project.",
+    "keywords": ["store", "layer", "layers", "QgProject"]
+  },
+  {
+    "name": "setCrs",
+    "signature": "setCrs(crs: QgCoordinateReferenceSystem) -> None",
+    "description": "Sets the project's default coordinate reference system, used for new layers and map canvas.",
+    "keywords": ["crs", "coordinate", "projection", "set", "QgProject"]
+  },
+  {
+    "name": "crs",
+    "signature": "crs() -> QgCoordinateReferenceSystem",
+    "description": "Returns the project's default coordinate reference system.",
+    "keywords": ["crs", "coordinate", "projection", "srs", "QgProject"]
+  },
+  {
+    "name": "homePath",
+    "signature": "homePath() -> str",
+    "description": "Returns the project's home directory path (typically where the .qgs/.qgz file is located) for resolving relative paths.",
+    "keywords": ["home", "path", "directory", "relative", "QgProject"]
+  },
+  {
+    "name": "setTitle",
+    "signature": "setTitle(title: str) -> None",
+    "description": "Sets the project's title, displayed in window titles and metadata.",
+    "keywords": ["title", "set", "name", "project", "QgProject"]
+  },
+  {
+    "name": "title",
+    "signature": "title() -> str",
+    "description": "Returns the project's title, or an empty string if no title is set.",
+    "keywords": ["title", "name", "project", "QgProject"]
+  },
+  {
+    "name": "absoluteFilePath",
+    "signature": "absoluteFilePath(path: str) -> str",
+    "description": "Converts a relative path (relative to project home) to an absolute file path.",
+    "keywords": ["absolute", "path", "file", "relative", "QgProject"]
+  }
+]

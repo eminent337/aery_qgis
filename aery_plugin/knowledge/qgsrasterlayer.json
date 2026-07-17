@@ -1,0 +1,74 @@
+[
+  {
+    "name": "dataProvider",
+    "signature": "dataProvider() -> QgRasterDataProvider",
+    "description": "Returns the layer's raster data provider, which handles data access and band manipulation.",
+    "keywords": ["provider", "data", "raster", "access", "QgRasterLayer"]
+  },
+  {
+    "name": "width",
+    "signature": "width() -> int",
+    "description": "Returns the raster width in pixels (number of columns).",
+    "keywords": ["width", "pixels", "columns", "raster", "QgRasterLayer"]
+  },
+  {
+    "name": "height",
+    "signature": "height() -> int",
+    "description": "Returns the raster height in pixels (number of rows).",
+    "keywords": ["height", "pixels", "rows", "raster", "QgRasterLayer"]
+  },
+  {
+    "name": "bandCount",
+    "signature": "bandCount() -> int",
+    "description": "Returns the number of bands (layers) in the raster dataset.",
+    "keywords": ["band", "count", "bands", "layers", "raster", "QgRasterLayer"]
+  },
+  {
+    "name": "dataType",
+    "signature": "dataType(bandNo: int) -> QgRasterBlock.PrimaryDataType",
+    "description": "Returns the data type of the specified band (e.g., Byte, Int16, Float32).",
+    "keywords": ["data", "type", "band", "dtype", "QgRasterLayer"]
+  },
+  {
+    "name": "renderer",
+    "signature": "renderer() -> QgRasterRenderer",
+    "description": "Returns the current raster renderer used for displaying the layer.",
+    "keywords": ["renderer", "render", "display", "QgRasterLayer"]
+  },
+  {
+    "name": "setRenderer",
+    "signature": "setRenderer(renderer: QgRasterRenderer) -> None",
+    "description": "Sets a custom raster renderer for the layer (e.g., singleband gray, multispectral, paletted).",
+    "keywords": ["renderer", "set", "display", "QgRasterLayer"]
+  },
+  {
+    "name": "extent",
+    "signature": "extent() -> QgRectangle",
+    "description": "Returns the spatial extent (bounding box) of the raster layer.",
+    "keywords": ["extent", "bounding", "box", "bounds", "spatial", "QgRasterLayer"]
+  },
+  {
+    "name": "crs",
+    "signature": "crs() -> QgCoordinateReferenceSystem",
+    "description": "Returns the coordinate reference system of the raster layer.",
+    "keywords": ["crs", "coordinate", "projection", "srs", "QgRasterLayer"]
+  },
+  {
+    "name": "subsetString",
+    "signature": "subsetString() -> str",
+    "description": "Returns the current SQL subset string (where clause) used to mask pixels.",
+    "keywords": ["subset", "sql", "where", "mask", "QgRasterLayer"]
+  },
+  {
+    "name": "setSubsetString",
+    "signature": "setSubsetString(subset: str) -> bool",
+    "description": "Sets an SQL subset string to mask pixels. Only pixels matching the expression are rendered.",
+    "keywords": ["subset", "sql", "where", "mask", "set", "QgRasterLayer"]
+  },
+  {
+    "name": "clone",
+    "signature": "clone() -> QgRasterLayer",
+    "description": "Creates a deep copy of the raster layer with the same source and properties.",
+    "keywords": ["clone", "copy", "duplicate", "QgRasterLayer"]
+  }
+]

@@ -11,7 +11,7 @@ from qgis.core import QgsProject
 from aery_plugin.chat_panel import ChatPanel
 from aery_plugin.provider_settings import AeryConfigDialog
 from aery_plugin.qgis_executor import QGISCodeExecutor
-from aery_plugin.engine_adapter import AeryEngineAdapter
+from aery_plugin.agent import Agent
 
 class AeryPlugin:
     """Main plugin class.
@@ -22,7 +22,7 @@ class AeryPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.executor: Optional[QGISCodeExecutor] = None
-        self.agent: Optional[AeryEngineAdapter] = None
+        self.agent: Optional[Agent] = None
         self.panel: Optional[ChatPanel] = None
         self.action: Optional[QAction] = None
 
@@ -32,8 +32,7 @@ class AeryPlugin:
         self.executor = QGISCodeExecutor(iface=self.iface)
         self.executor.start_socket_server()
 
-        # Create agent
-        self.agent = AeryEngineAdapter()
+        self.agent = Agent(executor=self.executor, iface=self.iface)
         # Create chat panel
         self.panel = ChatPanel(
             self.iface.mainWindow(),
@@ -51,6 +50,10 @@ class AeryPlugin:
         self.action.setChecked(True)
         self.action.triggered.connect(self._toggle_panel)
         self.iface.addPluginToMenu("Aery", self.action)
+
+        # Fetch active free models from Kilo in background to auto-update
+        import threading
+        threading.Thread(target=self._fetch_kilo_models_bg, daemon=True).start()
 
         # Mark panel as ready
         self.panel.set_ready()
@@ -132,3 +135,36 @@ class AeryPlugin:
         if path:
             return os.path.dirname(path)
         return os.path.expanduser("~")
+    def _fetch_kilo_models_bg(self) -> None:
+        """Fetch active free models from Kilo gateway and cache them."""
+        import urllib.request
+        import json
+        try:
+            from aery_plugin.oauth_helper import AGENT_DIR
+            auth_path = os.path.join(AGENT_DIR, "auth.json")
+            if not os.path.exists(auth_path):
+                return
+            with open(auth_path) as f:
+                auth = json.load(f)
+            token = auth.get("kilo", {}).get("access", "")
+            if not token:
+                return
+            req = urllib.request.Request(
+                "https://api.kilo.ai/api/gateway/models",
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET"
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            free_models = []
+            for m in data.get("data", []):
+                model_id = m.get("id", "")
+                name = m.get("name", model_id)
+                if ":free" in model_id or model_id == "openrouter/free":
+                    free_models.append((model_id, name))
+            if free_models:
+                cache_path = os.path.join(AGENT_DIR, "kilo_models.json")
+                with open(cache_path, "w") as f:
+                    json.dump(free_models, f, indent=2)
+        except Exception:
+            pass

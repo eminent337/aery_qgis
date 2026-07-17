@@ -119,8 +119,6 @@ class ChatPanel(QDockWidget):
         super().__init__("Aery", parent)
         self.setTitleBarWidget(QWidget())
 
-        from .engine_adapter import AeryEngineAdapter
-        self.engine = AeryEngineAdapter()
 
         self.iface = iface
         self.agent = agent
@@ -1380,3 +1378,18 @@ class ChatPanel(QDockWidget):
             "All generated files go to your QGIS project directory.\n"
         )
         self._show_dialog("Interface References", body)
+
+    def on_project_changed(self) -> None:
+        """Invalidate context cache when project changes."""
+        if self.agent:
+            self.agent.invalidate_project_context()
+
+    def notify_layer_added(self, name: str, layer_type: str) -> None:
+        """Invalidate context cache when a layer is added."""
+        if self.agent:
+            self.agent.invalidate_project_context()
+
+    def notify_layers_removed(self, count: int) -> None:
+        """Invalidate context cache when layers are removed."""
+        if self.agent:
+            self.agent.invalidate_project_context()

@@ -476,8 +476,9 @@ def test_scopes_dialog_saves_enabled_models(empty_auth, tmp_path):
 
     from aery_plugin.provider_settings import ScopesDialog
     auth_path = os.path.join(empty_auth, "auth.json")
+    auth_path = os.path.join(empty_auth, "auth.json")
     with open(auth_path, "w") as f:
-        json.dump({"anthropic": {"type": "api_key", "key": "sk-test"}}, f)
+        json.dump({"opencode": {"type": "api_key", "key": "sk-test"}}, f)
 
     with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
          patch.object(oauth_helper, "AUTH_PATH", auth_path):
@@ -504,8 +505,9 @@ def test_scopes_dialog_save_all(empty_auth):
 
     from aery_plugin.provider_settings import ScopesDialog
     auth_path = os.path.join(empty_auth, "auth.json")
+    auth_path = os.path.join(empty_auth, "auth.json")
     with open(auth_path, "w") as f:
-        json.dump({"anthropic": {"type": "api_key", "key": "sk-test"}}, f)
+        json.dump({"opencode": {"type": "api_key", "key": "sk-test"}}, f)
 
     with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
          patch.object(oauth_helper, "AUTH_PATH", auth_path):
@@ -525,12 +527,11 @@ def test_scopes_dialog_save_none(empty_auth):
     sp = os.path.join(empty_auth, "settings.json")
     with open(sp, "w") as f:
         json.dump({"quietStartup": True, "defaultThinkingLevel": "off",
-                   "enabledModels": ["anthropic/claude"]}, f)
-
+                   "enabledModels": ["opencode/glm-5-free"]}, f)
     from aery_plugin.provider_settings import ScopesDialog
     auth_path = os.path.join(empty_auth, "auth.json")
     with open(auth_path, "w") as f:
-        json.dump({"anthropic": {"type": "api_key", "key": "sk-test"}}, f)
+        json.dump({"opencode": {"type": "api_key", "key": "sk-test"}}, f)
 
     with patch.object(oauth_helper, "AGENT_DIR", empty_auth), \
          patch.object(oauth_helper, "AUTH_PATH", auth_path):
