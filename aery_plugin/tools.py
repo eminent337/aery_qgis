@@ -1722,15 +1722,24 @@ _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
 
-# 4. Canvas handling
+# 4. Canvas handling -- make the canvas actually render the new layer.
 canvas = iface.mapCanvas()
+# Register the layer in the canvas's active layer set (legend->canvas sync can
+# lag), then force a full redraw so the basemap paints immediately.
+_cur = list(canvas.layers())
+if layer not in _cur:
+    _cur.append(layer)
+canvas.setLayers(_cur)
+canvas.refresh()
+layer.triggerRepaint()
 
-# 6. Wait for async tile download FIRST (allow QGIS to render).
-#    NOTE: pumping events here can let queued "zoom to full extent" signals
-#    fire, so we must set the canvas extent AFTER this loop, not before.
-for _ in range(30):
+# Wait briefly for async tile download so the first paint isn't blank, then
+# refresh again. Keep this short -- GDAL fetches tiles in the GUI thread, so a
+# long pump here is what made basemap loads take minutes.
+for _ in range(10):
     QApplication.processEvents()
     time.sleep(0.1)
+canvas.refresh()
 
 # 5. Extent handling: do NOT change the user's view. Per project rules, loading
 #    a basemap must only add the layer and leave the canvas exactly as it was.
@@ -1738,32 +1747,25 @@ for _ in range(30):
 _zoomed = False
 _extent_after_set = str(canvas.extent())
 
-# 7. Test QGIS network access to OSM tiles for diagnostics
-_net_error = "N/A"
-_net_status = "N/A"
-_net_size = "N/A"
+# 6. Lightweight network sanity check (NO blocking QEventLoop -- that was the
+#    cause of multi-minute loads). Just probe reachability, don't wait.
+_net_error = "skipped"
+_net_status = "skipped"
+_net_size = "skipped"
 try:
     from qgis.core import QgsNetworkAccessManager
-    from PyQt6.QtCore import QUrl, QEventLoop
+    from PyQt6.QtCore import QUrl
     from PyQt6.QtNetwork import QNetworkRequest
     _nam = QgsNetworkAccessManager.instance()
-    _url = QUrl("https://tile.openstreetmap.org/0/0/0.png")
-    _req = QNetworkRequest(_url)
+    _req = QNetworkRequest(QUrl("https://tile.openstreetmap.org/0/0/0.png"))
     _req.setAttribute(QNetworkRequest.Attribute.User, "QGIS Testing")
-    _loop = QEventLoop()
-    _reply = _nam.get(_req)
-    _reply.finished.connect(_loop.quit)
-    _loop.exec()
-    _net_error = str(_reply.error())
-    _net_status = str(_reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute))
-    _net_size = str(_reply.bytesAvailable())
-    _reply.deleteLater()
+    _nam.get(_req).finished.connect(lambda: None)
 except Exception as _e:
-    _net_error = f"Exception: {{str(_e)}}"
+    _net_error = f"Exception: {str(_e)}"
 
 # Diagnostics to log file for debugging
 _extent = canvas.extent()
-_diag = {{
+_diag = {
     "provider": layer.providerType(),
     "crs": layer.crs().authid(),
     "extent": str(layer.extent()),
@@ -1780,7 +1782,7 @@ _diag = {{
     "network_status": _net_status,
     "network_size": _net_size,
     "metadata": layer.htmlMetadata() if hasattr(layer, "htmlMetadata") else "N/A",
-}}
+}
 with open("/tmp/aery_basemap_diag.json", "w") as f:
     import json; json.dump(_diag, f, indent=2)
 
