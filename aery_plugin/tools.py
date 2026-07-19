@@ -304,7 +304,7 @@ class ToolRegistry:
         self._tools[name] = tool
     _always_include = {
         "run_qgis_code", "get_project_context", "capture_canvas",
-        "zoom_to_layer", "set_map_extent", "pan_to", "refresh_canvas",
+        "zoom_to_layer", "set_map_extent", "pan_to", "zoom_to_place", "refresh_canvas",
         "toggle_layer_visibility", "set_layer_style", "export_layer",
         "remove_layer", "run_processing_algorithm",
         "web_search", "web_fetch", "run_qgis_algorithms_by_id",
@@ -316,9 +316,6 @@ class ToolRegistry:
         "add_layer", "remove_layer", "toggle_layer_visibility", "set_layer_style",
         "run_qgis_algorithms_by_id",
     }
-    def invalidate_project_context(self) -> None:
-        """Mark the cached project snapshot stale after a project mutation."""
-        self._project_context_dirty = True
     def invalidate_project_context(self) -> None:
         """Mark the cached project snapshot stale after a project mutation."""
         self._project_context_dirty = True
@@ -1189,7 +1186,36 @@ result = f"Algorithm execution complete: {{out}}"
                 '{"x": -74.0, "y": 40.7, "crs": "EPSG:4326"}',
             ],
         })
-        known = ", ".join(sorted(BASEMAP_REGISTRY.keys()))
+        self.register({
+            "name": "zoom_to_place",
+            "description": (
+                "Zoom the map canvas to a named place (e.g. a country, city, or region) "
+                "by geocoding its name. The agent should ALWAYS use this for requests like "
+                "'zoom to Ghana' or 'center on Accra' instead of hand-writing PyQGIS or "
+                "guessing bounding-box coordinates. Resolves the place name to a bounding "
+                "box via Nominatim and zooms the canvas to it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "place": {
+                        "type": "string",
+                        "description": "Place name to zoom to (e.g. 'Ghana', 'Accra', 'Lake Victoria')",
+                    },
+                    "crs": {
+                        "type": "string",
+                        "description": "CRS to zoom in (defaults to the project CRS). Usually leave default.",
+                        "default": "",
+                    },
+                },
+                "required": ["place"],
+            },
+            "execute": self._execute_zoom_to_place,
+            "examples": [
+                '{"place": "Ghana"}',
+                '{"place": "Accra, Ghana"}',
+            ],
+        })
         known = ", ".join(sorted(BASEMAP_REGISTRY.keys()))
         self.register({
             "name": "load_basemap",
@@ -1548,6 +1574,42 @@ result = "Canvas centered"
 """
         return await self._execute_qgis_code({"code": code})
 
+    async def _execute_zoom_to_place(self, params: dict) -> str:
+        place = params["place"].strip()
+        target_crs = params.get("crs", "") or ""
+        code = f"""
+import json, urllib.request, urllib.parse
+from qgis.core import (
+    QgsRectangle, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
+    QgsProject, QgsGeometry, QgsPointXY,
+)
+
+place = {repr(place)}
+target_crs_str = {repr(target_crs)}
+
+url = ("https://nominatim.openstreetmap.org/search?format=json"
+       "&limit=1&q=" + urllib.parse.quote(place))
+req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
+with urllib.request.urlopen(req, timeout=20) as resp:
+    data = json.loads(resp.read().decode("utf-8"))
+if not data:
+    raise RuntimeError(f"Geocoding returned no results for place: '{{place}}'")
+bb = data[0]["boundingbox"]
+# boundingbox is [south, north, east, west] from Nominatim
+south, north, east, west = (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
+# Build in EPSG:4326 then transform to the project CRS
+src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+dest_crs = QgsProject.instance().crs()
+rect = QgsRectangle(west, south, east, north)
+if src_crs.isValid() and dest_crs.isValid() and src_crs != dest_crs:
+    xform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+    rect = xform.transformBoundingBox(rect)
+canvas = iface.mapCanvas()
+canvas.setExtent(rect)
+canvas.refresh()
+result = f"Zoomed to '{{place}}' ({{data[0].get('display_name', place)}})"
+"""
+        return await self._execute_qgis_code({"code": code})
     async def _execute_refresh_canvas(self, params: dict) -> str:
         code = """
 iface.mapCanvas().refresh()
@@ -1565,12 +1627,52 @@ result = "Canvas refreshed"
             )
         url = entry["url"]
         name = (params.get("name") or "").strip() or entry["label"]
-        # QGIS 4.0+ XYZ tile layer. type=xyz + url placeholders.
-        # World-mercator extent set directly; no CRS transform to avoid
-        # silent failures that leave the canvas blank after addMapLayer.
-        # QGIS 4.0+ XYZ tile layer. Minimal code that works:
-        # no crs= in URI, no layer.setCrs(), world-mercator extent,
-        # CRS-transformed if project isn't 3857.
+        # Build the tile source. QGIS 4.x removed the dedicated 'xyz' raster
+        # provider, but the WMS provider still accepts a `type=xyz` URI. The
+        # KEY detail the earlier attempt missed: the URI MUST include
+        # zmin/zmax/crs so QGIS can build the tile-matrix set and actually
+        # stream tiles. Without them the layer is "valid" but fetches 0 tiles
+        # (the earlier "static image" bug). With them, this is QGIS's native,
+        # fully zoomable XYZ basemap path (QgsSingleBandColorDataRenderer).
+        import re as _re, tempfile as _tf, os as _os, time as _time
+        _gdal_url = url.replace("{z}", "${z}").replace("{x}", "${x}").replace("{y}", "${y}")
+        # GDAL WMS TMS XML is the ONLY path that streams real per-zoom tiles on
+        # QGIS 4.2+. The native 'xyz' provider was removed and the WMS
+        # 'type=xyz' URI is "valid" but fetches 0 tiles (verified dead on this
+        # exact QGIS build). GDAL's WMS driver is independent of QGIS's removed
+        # xyz provider and streams correctly during canvas renders.
+        # A persistent (not per-load-unique) cache dir is required: a unique
+        # dir broke tiling in the live GUI. Use one stable dir per basemap name.
+        _safe_name = _re.sub("[^a-z0-9]", "_", name.lower())
+        _xml_cache_dir = _os.path.join(_tf.gettempdir(), f"aery_gdal_cache_{_safe_name}")
+        _xml = (
+            "<GDAL_WMS>\n"
+            '  <Service name="TMS">\n'
+            f"    <ServerUrl>{_gdal_url}</ServerUrl>\n"
+            "  </Service>\n"
+            "  <DataWindow>\n"
+            "    <UpperLeftX>-20037508.34</UpperLeftX>\n"
+            "    <UpperLeftY>20037508.34</UpperLeftY>\n"
+            "    <LowerRightX>20037508.34</LowerRightX>\n"
+            "    <LowerRightY>-20037508.34</LowerRightY>\n"
+            "    <TileLevel>19</TileLevel>\n"
+            "    <TileCountX>1</TileCountX>\n"
+            "    <TileCountY>1</TileCountY>\n"
+            "    <YOrigin>top</YOrigin>\n"
+            "  </DataWindow>\n"
+            "  <Projection>EPSG:3857</Projection>\n"
+            "  <BlockSizeX>256</BlockSizeX>\n"
+            "  <BlockSizeY>256</BlockSizeY>\n"
+            "  <BandsCount>3</BandsCount>\n"
+            '  <DataType>byte</DataType>\n'
+            "  <OverviewCount>-1</OverviewCount>\n"
+            "  <MaxConnections>4</MaxConnections>\n"
+            '  <UserAgent>Aery QGIS Plugin (contact: aery-user; purpose: basemap preview)</UserAgent>\n'
+            "  <ZeroBlockHttpCodes>204,404</ZeroBlockHttpCodes>\n"
+            "  <Cache><Path>" + _xml_cache_dir + "</Path></Cache>\n"
+            "</GDAL_WMS>"
+        )
+        _xmlpath = _os.path.join(_tf.gettempdir(), f"aery_basemap_{_safe_name}.xml")
         code = f"""
 from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform, QgsLayerTreeLayer
 from PyQt6.QtWidgets import QApplication
@@ -1581,11 +1683,37 @@ _existing = [l for l in QgsProject.instance().mapLayers().values()
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
 
-uri = 'type=xyz&url={url}&zmax=19&zmin=0'
-layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
+# Choose the correct basemap loading path for the running QGIS version.
+# Loading path for the running QGIS version.
+# QGIS <= 4.1 ships a native 'xyz' raster provider that loads XYZ tiles directly.
+# QGIS >= 4.2 REMOVED the 'xyz' provider and its WMS 'type=xyz' URI is "valid"
+# but fetches 0 tiles, so we MUST use the GDAL WMS TMS XML path, which is the
+# only method that actually streams per-zoom tiles on 4.2+.
+_xml = {repr(_xml)}
+_xmlpath = {repr(_xmlpath)}
+_url = {repr(url)}
+from qgis.core import Qgis as _Qgis
+_qver = _Qgis.versionInt()
+def _build_xyz_uri(u):
+    return "type=xyz&url=" + u + "&zmin=0&zmax=19&crs=EPSG:3857"
+layer = None
+if _qver < 40200:
+    # Native XYZ provider (QGIS <= 4.1): the correct, simplest path.
+    layer = QgsRasterLayer(_build_xyz_uri(_url), {repr(name)}, 'xyz')
+if layer is None or not layer.isValid():
+    # QGIS >= 4.2 (no xyz provider) OR xyz path failed: GDAL WMS TMS XML.
+    # Streams real tiles per zoom; exposes 3 RGB bands -> QgsMultiBandColorRenderer.
+    with open(_xmlpath, "w") as _xf:
+        _xf.write(_xml)
+    layer = QgsRasterLayer(_xmlpath, {repr(name)}, 'gdal')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-# 2. Add to project registry (do not add to legend automatically)
+# Force an RGB color renderer for the GDAL/WMS-XML path (3 real bands). For the
+# native xyz path (single-band color-data renderer) we leave it alone.
+if layer.providerType() == 'gdal' and layer.bandCount() >= 3:
+    from qgis.core import QgsMultiBandColorRenderer
+    layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
+    layer.triggerRepaint()
 QgsProject.instance().addMapLayer(layer, False)
 
 # 3. Add manually to the bottom (end of children list) of the root layer tree
@@ -1597,27 +1725,18 @@ _node.setItemVisibilityChecked(True)
 # 4. Canvas handling
 canvas = iface.mapCanvas()
 
-# 5. Extent handling: Zoom if the canvas is zoomed out too far (out of bounds) or empty
-_extent = canvas.extent()
-_zoomed = False
-if _extent.isEmpty() or _extent.width() > 40075016:
-    crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
-    # Safe regional extent to avoid out-of-bounds Mercator width on wide monitors
-    safe_extent = QgsRectangle(-8000000, -5000000, 8000000, 8000000)
-    if canvas.mapSettings().destinationCrs() != crs3857:
-        xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
-        safe_extent = xform.transformBoundingBox(safe_extent)
-    canvas.zoomToExtent(safe_extent)
-    canvas.refresh()
-    _zoomed = True
-_extent_after_set = str(canvas.extent())
-
-# 6. Wait for async tile download (allow QGIS to render)
+# 6. Wait for async tile download FIRST (allow QGIS to render).
+#    NOTE: pumping events here can let queued "zoom to full extent" signals
+#    fire, so we must set the canvas extent AFTER this loop, not before.
 for _ in range(30):
     QApplication.processEvents()
     time.sleep(0.1)
 
-_extent_after_wait = str(canvas.extent())
+# 5. Extent handling: do NOT change the user's view. Per project rules, loading
+#    a basemap must only add the layer and leave the canvas exactly as it was.
+#    We never zoom, pan, or adjust the extent on basemap load.
+_zoomed = False
+_extent_after_set = str(canvas.extent())
 
 # 7. Test QGIS network access to OSM tiles for diagnostics
 _net_error = "N/A"
@@ -1643,15 +1762,15 @@ except Exception as _e:
     _net_error = f"Exception: {{str(_e)}}"
 
 # Diagnostics to log file for debugging
+_extent = canvas.extent()
 _diag = {{
     "provider": layer.providerType(),
     "crs": layer.crs().authid(),
     "extent": str(layer.extent()),
     "canvas_crs": canvas.mapSettings().destinationCrs().authid(),
-    "extent_before": str(_extent),
+    "extent_before_set": str(_extent),
     "zoomed_branch_fired": _zoomed,
     "extent_after_set": _extent_after_set,
-    "extent_after_wait": _extent_after_wait,
     "canvas_layers": [l.name() for l in canvas.layers()],
     "node_visible": _node.itemVisibilityChecked(),
     "opacity": layer.renderer().opacity() if layer.renderer() else "N/A",
