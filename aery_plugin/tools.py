@@ -1674,21 +1674,25 @@ result = "Canvas refreshed"
         )
         _xmlpath = _os.path.join(_tf.gettempdir(), f"aery_basemap_{_safe_name}.xml")
         code = f"""
+import time as _t
+_LOG = "/tmp/aery_basemap_trace.log"
+def _trace(msg):
+    try:
+        with open(_LOG, "a") as _lf:
+            _lf.write(f"{{_t.time():.3f}} {{msg}}\\n")
+    except Exception:
+        pass
+_trace("START")
 from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform, QgsLayerTreeLayer
 from PyQt6.QtWidgets import QApplication
 import time
 # 1. Clean up existing basemap layers with the same name or XYZ source to prevent duplication
-_existing = [l for l in QgsProject.instance().mapLayers().values() 
+_existing = [l for l in QgsProject.instance().mapLayers().values()
              if l.name() == {repr(name)} or "type=xyz" in l.publicSource()]
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
+_trace("cleaned")
 
-# Choose the correct basemap loading path for the running QGIS version.
-# Loading path for the running QGIS version.
-# QGIS <= 4.1 ships a native 'xyz' raster provider that loads XYZ tiles directly.
-# QGIS >= 4.2 REMOVED the 'xyz' provider and its WMS 'type=xyz' URI is "valid"
-# but fetches 0 tiles, so we MUST use the GDAL WMS TMS XML path, which is the
-# only method that actually streams per-zoom tiles on 4.2+.
 _xml = {repr(_xml)}
 _xmlpath = {repr(_xmlpath)}
 _url = {repr(url)}
@@ -1698,47 +1702,43 @@ def _build_xyz_uri(u):
     return "type=xyz&url=" + u + "&zmin=0&zmax=19&crs=EPSG:3857"
 layer = None
 if _qver < 40200:
-    # Native XYZ provider (QGIS <= 4.1): the correct, simplest path.
     layer = QgsRasterLayer(_build_xyz_uri(_url), {repr(name)}, 'xyz')
+_trace("xyz_try done valid=" + str(layer.isValid() if layer else None))
 if layer is None or not layer.isValid():
-    # QGIS >= 4.2 (no xyz provider) OR xyz path failed: GDAL WMS TMS XML.
-    # Streams real tiles per zoom; exposes 3 RGB bands -> QgsMultiBandColorRenderer.
     with open(_xmlpath, "w") as _xf:
         _xf.write(_xml)
+    _trace("xml_written")
     layer = QgsRasterLayer(_xmlpath, {repr(name)}, 'gdal')
+    _trace("gdal_layer_created valid=" + str(layer.isValid()))
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-# Force an RGB color renderer for the GDAL/WMS-XML path (3 real bands). For the
-# native xyz path (single-band color-data renderer) we leave it alone.
 if layer.providerType() == 'gdal' and layer.bandCount() >= 3:
     from qgis.core import QgsMultiBandColorRenderer
     layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
     layer.triggerRepaint()
+_trace("renderer_set")
 QgsProject.instance().addMapLayer(layer, False)
+_trace("added_to_project")
 
-# 3. Add manually to the bottom (end of children list) of the root layer tree
 _root = QgsProject.instance().layerTreeRoot()
 _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
+_trace("tree_node_added")
 
-# 4. Canvas handling -- make the canvas actually render the new layer.
 canvas = iface.mapCanvas()
-# Register the layer in the canvas's active layer set (legend->canvas sync can
-# lag), then force a full redraw so the basemap paints immediately.
 _cur = list(canvas.layers())
 if layer not in _cur:
     _cur.append(layer)
 canvas.setLayers(_cur)
-canvas.refresh()
+_trace("setLayers_done")
+try:
+    canvas.refresh()
+    _trace("refresh_done")
+except Exception as _re:
+    _trace("refresh_exception: " + str(_re))
 layer.triggerRepaint()
-
-# Do NOT block on tile downloads. GDAL fetches tiles synchronously inside
-# processEvents(), so pumping events here (or calling refresh in a loop) makes
-# the load hang for minutes at world-extent views and can return nothing.
-# Instead: register the layer, force a single refresh, and return immediately.
-# QGIS streams tiles into the canvas asynchronously after the tool returns.
-canvas.refresh()
+_trace("DONE")
 
 # 5. Extent handling: do NOT change the user's view. Per project rules, loading
 #    a basemap must only add the layer and leave the canvas exactly as it was.
