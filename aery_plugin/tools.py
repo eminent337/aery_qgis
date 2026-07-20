@@ -1648,10 +1648,15 @@ _existing = [l for l in QgsProject.instance().mapLayers().values()
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
 
-uri = 'type=xyz&url={url}&zmax=19&zmin=0'
+uri = 'type=xyz&url={url}&zmax=19&zmin=0&crs=EPSG:3857'
 layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
+# Ensure the layer is explicitly in Web Mercator so QGIS builds the per-zoom
+# tile matrix correctly (without this, low-zoom overview renders but deeper
+# zooms fetch no tiles -> 'country names only, no detail').
+if layer.isValid() and layer.crs().authid() != 'EPSG:3857':
+    layer.setCrs(QgsCoordinateReferenceSystem('EPSG:3857'))
 # 2. Add to project registry (do not add to legend automatically)
 QgsProject.instance().addMapLayer(layer, False)
 
