@@ -1713,13 +1713,15 @@ if canvas.mapSettings().destinationCrs() != _crs3857:
     canvas.setDestinationCrs(_crs3857)
 if QgsProject.instance().crs() != _crs3857:
     QgsProject.instance().setCrs(_crs3857)
-# Give the basemap a valid view to stream tiles from. If the canvas has no
-# usable extent (empty/degenerate), zoom to the layer's (world) extent. An
-# existing valid view is left alone.
+# A basemap is only useful with a valid view. If the canvas extent is empty or
+# degenerate (common in a fresh/blank project, where scale can be ~1e13 and
+# nothing is in view), zoom to the layer's (world) extent so tiles actually
+# stream and the basemap paints. This is standard for basemap loading.
 _ce = canvas.extent()
 _cw = _ce.width() if _ce and not _ce.isEmpty() else 0
-if not _ce or _ce.isEmpty() or _cw > 40075016 or _cw <= 0:
+if _cw <= 0 or _cw > 40075016 or _ce is None or _ce.isEmpty():
     canvas.zoomToExtent(layer.extent())
+    canvas.refresh()
 canvas.refresh()
 
 _diag = {{
@@ -1728,6 +1730,7 @@ _diag = {{
     "bands": layer.bandCount(),
     "renderer": type(layer.renderer()).__name__,
     "canvas_crs": canvas.mapSettings().destinationCrs().authid(),
+    "canvas_scale": round(canvas.scale(), 1),
     "layer_isValid": layer.isValid(),
     "canvas_layers": [l.name() for l in canvas.layers()],
 }}
