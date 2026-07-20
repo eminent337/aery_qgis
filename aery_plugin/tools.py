@@ -1659,19 +1659,7 @@ if layer.isValid() and layer.crs().authid() != 'EPSG:3857':
     layer.setCrs(QgsCoordinateReferenceSystem('EPSG:3857'))
 # 2. Add to project registry (do not add to legend automatically)
 QgsProject.instance().addMapLayer(layer, False)
-
-# 2b. Web basemaps are authored in EPSG:3857. If the project/canvas is in a
-#     different CRS, QGIS reprojects the basemap on the fly and resamples the
-#     LOW-zoom tile instead of fetching the matching zoom -> blurry when you
-#     zoom in. Force the project + canvas to 3857 so the basemap streams at
-#     native resolution. This reprojects the existing view (same geographic
-#     location stays visible) -- it does NOT zoom or pan the map.
-_crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
-if QgsProject.instance().crs() != _crs3857:
-    QgsProject.instance().setCrs(_crs3857)
-canvas = iface.mapCanvas()
-if canvas.mapSettings().destinationCrs() != _crs3857:
-    canvas.setDestinationCrs(_crs3857)
+QgsProject.instance().addMapLayer(layer, False)
 
 # 3. Add manually to the bottom (end of children list) of the root layer tree
 _root = QgsProject.instance().layerTreeRoot()
@@ -1679,13 +1667,18 @@ _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
 
-# 4. Canvas handling (canvas already set to EPSG:3857 above)
-# 5. Extent handling: Zoom only if the canvas is empty or wildly out of bounds.
-#    The canvas is already EPSG:3857, so use the safe 3857 extent directly.
+# 4. Canvas handling
+canvas = iface.mapCanvas()
+
+# 5. Extent handling: Zoom if the canvas is zoomed out too far (out of bounds) or empty
 _extent = canvas.extent()
 _zoomed = False
 if _extent.isEmpty() or _extent.width() > 40075016:
+    crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
     safe_extent = QgsRectangle(-8000000, -5000000, 8000000, 8000000)
+    if canvas.mapSettings().destinationCrs() != crs3857:
+        xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
+        safe_extent = xform.transformBoundingBox(safe_extent)
     canvas.zoomToExtent(safe_extent)
     canvas.refresh()
     _zoomed = True
