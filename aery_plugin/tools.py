@@ -1638,107 +1638,86 @@ result = "Canvas refreshed"
         # (country names render). The GDAL-WMS rewrite broke loading entirely;
         # this wms/type=xyz path is the known-good baseline. Deep-zoom streaming
         # is a follow-up once loading is confirmed stable again.
+        # GDAL WMS TMS XML path. On QGIS 4.2 the native 'xyz' provider is gone
+        # and the 'wms'+'type=xyz' URI renders XYZ PNGs as a SINGLE band
+        # (QgsSingleBandColorDataRenderer) -> "zooming into a static image".
+        # GDAL's WMS/TMS driver reads the tiles as real 3-band RGB
+        # (BandsCount=3) and streams per-zoom, which is what makes the basemap
+        # sharp and tile-aware. This is the path that actually works on 4.2.
+        import re as _re, tempfile as _tf, os as _os
+        _gdal_url = url.replace("{z}", "${z}").replace("{x}", "${x}").replace("{y}", "${y}")
+        _safe_name = _re.sub("[^a-z0-9]", "_", name.lower())
+        _xmlpath = _os.path.join(_tf.gettempdir(), f"aery_basemap_{_safe_name}.xml")
+        _xml = (
+            "<GDAL_WMS>\n"
+            '  <Service name="TMS">\n'
+            f"    <ServerUrl>{_gdal_url}</ServerUrl>\n"
+            "  </Service>\n"
+            "  <DataWindow>\n"
+            "    <UpperLeftX>-20037508.34</UpperLeftX>\n"
+            "    <UpperLeftY>20037508.34</UpperLeftY>\n"
+            "    <LowerRightX>20037508.34</LowerRightX>\n"
+            "    <LowerRightY>-20037508.34</LowerRightY>\n"
+            "    <TileLevel>19</TileLevel>\n"
+            "    <TileCountX>1</TileCountX>\n"
+            "    <TileCountY>1</TileCountY>\n"
+            "    <YOrigin>top</YOrigin>\n"
+            "  </DataWindow>\n"
+            "  <Projection>EPSG:3857</Projection>\n"
+            "  <BlockSizeX>256</BlockSizeX>\n"
+            "  <BlockSizeY>256</BlockSizeY>\n"
+            "  <BandsCount>3</BandsCount>\n"
+            '  <UserAgent>Aery QGIS Plugin</UserAgent>\n'
+            "  <ZeroBlockHttpCodes>204,404</ZeroBlockHttpCodes>\n"
+            "  <Cache><Path>" + _os.path.join(_tf.gettempdir(), f"aery_gdal_cache_{_safe_name}") + "</Path></Cache>\n"
+            "</GDAL_WMS>"
+        )
         code = f"""
-from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform, QgsLayerTreeLayer
-from PyQt6.QtWidgets import QApplication
+from qgis.core import QgsRasterLayer, QgsProject, QgsRectangle, QgsLayerTreeLayer
 import time
-# 1. Clean up existing basemap layers with the same name or XYZ source to prevent duplication
+# 1. Clean up existing basemap layers with the same name or XYZ source
 _existing = [l for l in QgsProject.instance().mapLayers().values()
              if l.name() == {repr(name)} or "type=xyz" in l.publicSource()]
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
 
-uri = 'type=xyz&url={url}&zmax=19&zmin=0&crs=EPSG:3857'
-layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
+with open({repr(_xmlpath)}, "w") as _xf:
+    _xf.write({repr(_xml)})
+layer = QgsRasterLayer({repr(_xmlpath)}, {repr(name)}, 'gdal')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-# The wms/type=xyz provider reports bandCount=1 and defaults to
-# QgsSingleBandColorDataRenderer, which makes XYZ RGB tiles render BLURRY when
-# zoomed in (it interpolates the packed single band). Force a 3-band RGB
-# (QgsMultiBandColorRenderer) so R/G/B are composited and stay sharp at all
-# zooms. OSM/CARTO/Esri XYZ PNGs are RGB even though the provider says 1 band.
-if layer.isValid():
-    from qgis.core import QgsMultiBandColorRenderer
-    layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
-    layer.triggerRepaint()
-# 2. Add to project registry (do not add to legend automatically)
+# GDAL exposes 3 real RGB bands; composite them so the basemap is sharp and
+# tile-aware at every zoom (not a single stretched image).
+from qgis.core import QgsMultiBandColorRenderer
+layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
+layer.triggerRepaint()
 QgsProject.instance().addMapLayer(layer, False)
 
-# 3. Add manually to the bottom (end of children list) of the root layer tree
 _root = QgsProject.instance().layerTreeRoot()
 _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
 
-# 4. Canvas handling
 canvas = iface.mapCanvas()
+_cur = list(canvas.layers())
+if layer not in _cur:
+    _cur.append(layer)
+canvas.setLayers(_cur)
+canvas.refresh()
 
-# 5. Extent handling: Zoom if the canvas is zoomed out too far (out of bounds) or empty
-_extent = canvas.extent()
-_zoomed = False
-if _extent.isEmpty() or _extent.width() > 40075016:
-    crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
-    safe_extent = QgsRectangle(-8000000, -5000000, 8000000, 8000000)
-    if canvas.mapSettings().destinationCrs() != crs3857:
-        xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
-        safe_extent = xform.transformBoundingBox(safe_extent)
-    canvas.zoomToExtent(safe_extent)
-    canvas.refresh()
-    _zoomed = True
-_extent_after_set = str(canvas.extent())
-
-# 6. Wait for async tile download (allow QGIS to render)
-for _ in range(30):
-    QApplication.processEvents()
-    time.sleep(0.1)
-
-_extent_after_wait = str(canvas.extent())
-
-# 7. Test QGIS network access to OSM tiles for diagnostics
-_net_error = "N/A"
-_net_status = "N/A"
-_net_size = "N/A"
-try:
-    from qgis.core import QgsNetworkAccessManager
-    from PyQt6.QtCore import QUrl, QEventLoop
-    from PyQt6.QtNetwork import QNetworkRequest
-    _nam = QgsNetworkAccessManager.instance()
-    _url = QUrl("https://tile.openstreetmap.org/0/0/0.png")
-    _req = QNetworkRequest(_url)
-    _req.setAttribute(QNetworkRequest.Attribute.User, "QGIS Testing")
-    _loop = QEventLoop()
-    _reply = _nam.get(_req)
-    _reply.finished.connect(_loop.quit)
-    _loop.exec()
-    _net_error = str(_reply.error())
-    _net_status = str(_reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute))
-    _net_size = str(_reply.bytesAvailable())
-    _reply.deleteLater()
-except Exception as _e:
-    _net_error = f"Exception: {{str(_e)}}"
-
-# Diagnostics to log file for debugging
 _diag = {{
     "provider": layer.providerType(),
     "crs": layer.crs().authid(),
-    "extent": str(layer.extent()),
+    "bands": layer.bandCount(),
+    "renderer": type(layer.renderer()).__name__,
     "canvas_crs": canvas.mapSettings().destinationCrs().authid(),
-    "extent_before": str(_extent),
-    "zoomed_branch_fired": _zoomed,
-    "extent_after_set": _extent_after_set,
-    "extent_after_wait": _extent_after_wait,
-    "canvas_layers": [l.name() for l in canvas.layers()],
-    "node_visible": _node.itemVisibilityChecked(),
-    "opacity": layer.renderer().opacity() if layer.renderer() else "N/A",
-    "render_flag": canvas.renderFlag() if hasattr(canvas, "renderFlag") else "N/A",
     "layer_isValid": layer.isValid(),
-    "network_error": _net_error,
-    "network_status": _net_status,
-    "network_size": _net_size,
-    "metadata": layer.htmlMetadata() if hasattr(layer, "htmlMetadata") else "N/A",
+    "canvas_layers": [l.name() for l in canvas.layers()],
 }}
+with open("/tmp/aery_basemap_diag.json", "w") as f:
+    import json; json.dump(_diag, f, indent=2)
 
-result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
+result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, bands={{layer.bandCount()}}, renderer={{type(layer.renderer()).__name__}})"
 """
         return await self._execute_qgis_code({"code": code})
 
