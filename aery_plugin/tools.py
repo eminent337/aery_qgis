@@ -1652,13 +1652,16 @@ uri = 'type=xyz&url={url}&zmax=19&zmin=0&crs=EPSG:3857'
 layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-# Ensure the layer is explicitly in Web Mercator so QGIS builds the per-zoom
-# tile matrix correctly (without this, low-zoom overview renders but deeper
-# zooms fetch no tiles -> 'country names only, no detail').
-if layer.isValid() and layer.crs().authid() != 'EPSG:3857':
-    layer.setCrs(QgsCoordinateReferenceSystem('EPSG:3857'))
+# The wms/type=xyz provider reports bandCount=1 and defaults to
+# QgsSingleBandColorDataRenderer, which makes XYZ RGB tiles render BLURRY when
+# zoomed in (it interpolates the packed single band). Force a 3-band RGB
+# (QgsMultiBandColorRenderer) so R/G/B are composited and stay sharp at all
+# zooms. OSM/CARTO/Esri XYZ PNGs are RGB even though the provider says 1 band.
+if layer.isValid():
+    from qgis.core import QgsMultiBandColorRenderer
+    layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
+    layer.triggerRepaint()
 # 2. Add to project registry (do not add to legend automatically)
-QgsProject.instance().addMapLayer(layer, False)
 QgsProject.instance().addMapLayer(layer, False)
 
 # 3. Add manually to the bottom (end of children list) of the root layer tree
