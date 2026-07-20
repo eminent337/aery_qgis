@@ -1703,16 +1703,23 @@ _cur = list(canvas.layers())
 if layer not in _cur:
     _cur.append(layer)
 canvas.setLayers(_cur)
-# If the canvas has no valid extent (empty or degenerate scale, e.g. after a
-# fresh project), GDAL cannot compute which tiles to request and only fetches
-# empty overview tiles -> "static blurry image, no deep zoom". Zoom to a valid
-# extent so the basemap has a real view to stream tiles for. We only do this
-# when the view is empty/out-of-bounds; an existing valid view is left alone.
+# Web basemaps are authored in EPSG:3857. If the canvas/project is in another
+# CRS (e.g. EPSG:4326), the 3857 basemap reprojects to a degenerate extent and
+# renders nothing. Force the canvas + project to 3857 so the basemap displays.
+# This reprojects the existing geographic view (same place stays visible) and
+# does NOT silently drop data.
+_crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
+if canvas.mapSettings().destinationCrs() != _crs3857:
+    canvas.setDestinationCrs(_crs3857)
+if QgsProject.instance().crs() != _crs3857:
+    QgsProject.instance().setCrs(_crs3857)
+# Give the basemap a valid view to stream tiles from. If the canvas has no
+# usable extent (empty/degenerate), zoom to the layer's (world) extent. An
+# existing valid view is left alone.
 _ce = canvas.extent()
 _cw = _ce.width() if _ce and not _ce.isEmpty() else 0
 if not _ce or _ce.isEmpty() or _cw > 40075016 or _cw <= 0:
     canvas.zoomToExtent(layer.extent())
-    canvas.refresh()
 canvas.refresh()
 
 _diag = {{
