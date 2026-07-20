@@ -1747,21 +1747,12 @@ canvas.refresh()
 _zoomed = False
 _extent_after_set = str(canvas.extent())
 
-# 6. Lightweight network sanity check (NO blocking QEventLoop -- that was the
-#    cause of multi-minute loads). Just probe reachability, don't wait.
-_net_error = "skipped"
-_net_status = "skipped"
-_net_size = "skipped"
-try:
-    from qgis.core import QgsNetworkAccessManager
-    from PyQt6.QtCore import QUrl
-    from PyQt6.QtNetwork import QNetworkRequest
-    _nam = QgsNetworkAccessManager.instance()
-    _req = QNetworkRequest(QUrl("https://tile.openstreetmap.org/0/0/0.png"))
-    _req.setAttribute(QNetworkRequest.Attribute.User, "QGIS Testing")
-    _nam.get(_req).finished.connect(lambda: None)
-except Exception as _e:
-    _net_error = f"Exception: {str(_e)}"
+# 6. Network probe removed: it was only diagnostic and its exception binding
+#    (_e) could raise NameError inside the sandbox executor. The basemap load
+#    does not depend on it. Tile fetching is verified by the canvas render.
+_net_error = "not checked"
+_net_status = "not checked"
+_net_size = "not checked"
 
 # Diagnostics to log file for debugging
 _extent = canvas.extent()
