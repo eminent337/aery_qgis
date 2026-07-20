@@ -1733,12 +1733,11 @@ canvas.setLayers(_cur)
 canvas.refresh()
 layer.triggerRepaint()
 
-# Wait briefly for async tile download so the first paint isn't blank, then
-# refresh again. Keep this short -- GDAL fetches tiles in the GUI thread, so a
-# long pump here is what made basemap loads take minutes.
-for _ in range(10):
-    QApplication.processEvents()
-    time.sleep(0.1)
+# Do NOT block on tile downloads. GDAL fetches tiles synchronously inside
+# processEvents(), so pumping events here (or calling refresh in a loop) makes
+# the load hang for minutes at world-extent views and can return nothing.
+# Instead: register the layer, force a single refresh, and return immediately.
+# QGIS streams tiles into the canvas asynchronously after the tool returns.
 canvas.refresh()
 
 # 5. Extent handling: do NOT change the user's view. Per project rules, loading
