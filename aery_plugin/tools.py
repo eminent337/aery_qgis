@@ -1618,6 +1618,13 @@ result = "Canvas refreshed"
         return await self._execute_qgis_code({"code": code})
 
     async def _execute_load_basemap(self, params: dict) -> str:
+        # TRACE: confirms the Python method is entered at all.
+        try:
+            with open("/tmp/aery_basemap_py_trace.log", "a") as _ptf:
+                import time as _pt
+                _ptf.write(f"{_pt.time():.3f} ENTER _execute_load_basemap params={params}\n")
+        except Exception:
+            pass
         reference = params.get("basemap", "osm") or "osm"
         entry = resolve_basemap(reference)
         if entry is None:
@@ -1627,62 +1634,11 @@ result = "Canvas refreshed"
             )
         url = entry["url"]
         name = (params.get("name") or "").strip() or entry["label"]
-        # Build the tile source. QGIS 4.x removed the dedicated 'xyz' raster
-        # provider, but the WMS provider still accepts a `type=xyz` URI. The
-        # KEY detail the earlier attempt missed: the URI MUST include
-        # zmin/zmax/crs so QGIS can build the tile-matrix set and actually
-        # stream tiles. Without them the layer is "valid" but fetches 0 tiles
-        # (the earlier "static image" bug). With them, this is QGIS's native,
-        # fully zoomable XYZ basemap path (QgsSingleBandColorDataRenderer).
-        import re as _re, tempfile as _tf, os as _os, time as _time
-        _gdal_url = url.replace("{z}", "${z}").replace("{x}", "${x}").replace("{y}", "${y}")
-        # GDAL WMS TMS XML is the ONLY path that streams real per-zoom tiles on
-        # QGIS 4.2+. The native 'xyz' provider was removed and the WMS
-        # 'type=xyz' URI is "valid" but fetches 0 tiles (verified dead on this
-        # exact QGIS build). GDAL's WMS driver is independent of QGIS's removed
-        # xyz provider and streams correctly during canvas renders.
-        # A persistent (not per-load-unique) cache dir is required: a unique
-        # dir broke tiling in the live GUI. Use one stable dir per basemap name.
-        _safe_name = _re.sub("[^a-z0-9]", "_", name.lower())
-        _xml_cache_dir = _os.path.join(_tf.gettempdir(), f"aery_gdal_cache_{_safe_name}")
-        _xml = (
-            "<GDAL_WMS>\n"
-            '  <Service name="TMS">\n'
-            f"    <ServerUrl>{_gdal_url}</ServerUrl>\n"
-            "  </Service>\n"
-            "  <DataWindow>\n"
-            "    <UpperLeftX>-20037508.34</UpperLeftX>\n"
-            "    <UpperLeftY>20037508.34</UpperLeftY>\n"
-            "    <LowerRightX>20037508.34</LowerRightX>\n"
-            "    <LowerRightY>-20037508.34</LowerRightY>\n"
-            "    <TileLevel>19</TileLevel>\n"
-            "    <TileCountX>1</TileCountX>\n"
-            "    <TileCountY>1</TileCountY>\n"
-            "    <YOrigin>top</YOrigin>\n"
-            "  </DataWindow>\n"
-            "  <Projection>EPSG:3857</Projection>\n"
-            "  <BlockSizeX>256</BlockSizeX>\n"
-            "  <BlockSizeY>256</BlockSizeY>\n"
-            "  <BandsCount>3</BandsCount>\n"
-            '  <DataType>byte</DataType>\n'
-            "  <OverviewCount>-1</OverviewCount>\n"
-            "  <MaxConnections>4</MaxConnections>\n"
-            '  <UserAgent>Aery QGIS Plugin (contact: aery-user; purpose: basemap preview)</UserAgent>\n'
-            "  <ZeroBlockHttpCodes>204,404</ZeroBlockHttpCodes>\n"
-            "  <Cache><Path>" + _xml_cache_dir + "</Path></Cache>\n"
-            "</GDAL_WMS>"
-        )
-        _xmlpath = _os.path.join(_tf.gettempdir(), f"aery_basemap_{_safe_name}.xml")
+        # RESTORED to the checkpoint version that the user confirmed LOADS
+        # (country names render). The GDAL-WMS rewrite broke loading entirely;
+        # this wms/type=xyz path is the known-good baseline. Deep-zoom streaming
+        # is a follow-up once loading is confirmed stable again.
         code = f"""
-import time as _t
-_LOG = "/tmp/aery_basemap_trace.log"
-def _trace(msg):
-    try:
-        with open(_LOG, "a") as _lf:
-            _lf.write(f"{{_t.time():.3f}} {{msg}}\\n")
-    except Exception:
-        pass
-_trace("START")
 from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform, QgsLayerTreeLayer
 from PyQt6.QtWidgets import QApplication
 import time
@@ -1691,78 +1647,77 @@ _existing = [l for l in QgsProject.instance().mapLayers().values()
              if l.name() == {repr(name)} or "type=xyz" in l.publicSource()]
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
-_trace("cleaned")
 
-_xml = {repr(_xml)}
-_xmlpath = {repr(_xmlpath)}
-_url = {repr(url)}
-from qgis.core import Qgis as _Qgis
-_qver = _Qgis.versionInt()
-def _build_xyz_uri(u):
-    return "type=xyz&url=" + u + "&zmin=0&zmax=19&crs=EPSG:3857"
-layer = None
-if _qver < 40200:
-    layer = QgsRasterLayer(_build_xyz_uri(_url), {repr(name)}, 'xyz')
-_trace("xyz_try done valid=" + str(layer.isValid() if layer else None))
-if layer is None or not layer.isValid():
-    with open(_xmlpath, "w") as _xf:
-        _xf.write(_xml)
-    _trace("xml_written")
-    layer = QgsRasterLayer(_xmlpath, {repr(name)}, 'gdal')
-    _trace("gdal_layer_created valid=" + str(layer.isValid()))
+uri = 'type=xyz&url={url}&zmax=19&zmin=0'
+layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-if layer.providerType() == 'gdal' and layer.bandCount() >= 3:
-    from qgis.core import QgsMultiBandColorRenderer
-    layer.setRenderer(QgsMultiBandColorRenderer(layer.dataProvider(), 1, 2, 3))
-    layer.triggerRepaint()
-_trace("renderer_set")
+# 2. Add to project registry (do not add to legend automatically)
 QgsProject.instance().addMapLayer(layer, False)
-_trace("added_to_project")
 
+# 3. Add manually to the bottom (end of children list) of the root layer tree
 _root = QgsProject.instance().layerTreeRoot()
 _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
-_trace("tree_node_added")
 
+# 4. Canvas handling
 canvas = iface.mapCanvas()
-_cur = list(canvas.layers())
-if layer not in _cur:
-    _cur.append(layer)
-canvas.setLayers(_cur)
-_trace("setLayers_done")
-try:
-    canvas.refresh()
-    _trace("refresh_done")
-except Exception as _re:
-    _trace("refresh_exception: " + str(_re))
-layer.triggerRepaint()
-_trace("DONE")
 
-# 5. Extent handling: do NOT change the user's view. Per project rules, loading
-#    a basemap must only add the layer and leave the canvas exactly as it was.
-#    We never zoom, pan, or adjust the extent on basemap load.
+# 5. Extent handling: Zoom if the canvas is zoomed out too far (out of bounds) or empty
+_extent = canvas.extent()
 _zoomed = False
+if _extent.isEmpty() or _extent.width() > 40075016:
+    crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
+    safe_extent = QgsRectangle(-8000000, -5000000, 8000000, 8000000)
+    if canvas.mapSettings().destinationCrs() != crs3857:
+        xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
+        safe_extent = xform.transformBoundingBox(safe_extent)
+    canvas.zoomToExtent(safe_extent)
+    canvas.refresh()
+    _zoomed = True
 _extent_after_set = str(canvas.extent())
 
-# 6. Network probe removed: it was only diagnostic and its exception binding
-#    (_e) could raise NameError inside the sandbox executor. The basemap load
-#    does not depend on it. Tile fetching is verified by the canvas render.
-_net_error = "not checked"
-_net_status = "not checked"
-_net_size = "not checked"
+# 6. Wait for async tile download (allow QGIS to render)
+for _ in range(30):
+    QApplication.processEvents()
+    time.sleep(0.1)
+
+_extent_after_wait = str(canvas.extent())
+
+# 7. Test QGIS network access to OSM tiles for diagnostics
+_net_error = "N/A"
+_net_status = "N/A"
+_net_size = "N/A"
+try:
+    from qgis.core import QgsNetworkAccessManager
+    from PyQt6.QtCore import QUrl, QEventLoop
+    from PyQt6.QtNetwork import QNetworkRequest
+    _nam = QgsNetworkAccessManager.instance()
+    _url = QUrl("https://tile.openstreetmap.org/0/0/0.png")
+    _req = QNetworkRequest(_url)
+    _req.setAttribute(QNetworkRequest.Attribute.User, "QGIS Testing")
+    _loop = QEventLoop()
+    _reply = _nam.get(_req)
+    _reply.finished.connect(_loop.quit)
+    _loop.exec()
+    _net_error = str(_reply.error())
+    _net_status = str(_reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute))
+    _net_size = str(_reply.bytesAvailable())
+    _reply.deleteLater()
+except Exception as _e:
+    _net_error = f"Exception: {{str(_e)}}"
 
 # Diagnostics to log file for debugging
-_extent = canvas.extent()
 _diag = {{
     "provider": layer.providerType(),
     "crs": layer.crs().authid(),
     "extent": str(layer.extent()),
     "canvas_crs": canvas.mapSettings().destinationCrs().authid(),
-    "extent_before_set": str(_extent),
+    "extent_before": str(_extent),
     "zoomed_branch_fired": _zoomed,
     "extent_after_set": _extent_after_set,
+    "extent_after_wait": _extent_after_wait,
     "canvas_layers": [l.name() for l in canvas.layers()],
     "node_visible": _node.itemVisibilityChecked(),
     "opacity": layer.renderer().opacity() if layer.renderer() else "N/A",
@@ -1773,8 +1728,6 @@ _diag = {{
     "network_size": _net_size,
     "metadata": layer.htmlMetadata() if hasattr(layer, "htmlMetadata") else "N/A",
 }}
-with open("/tmp/aery_basemap_diag.json", "w") as f:
-    import json; json.dump(_diag, f, indent=2)
 
 result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
 """
