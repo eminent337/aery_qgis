@@ -1703,6 +1703,16 @@ _cur = list(canvas.layers())
 if layer not in _cur:
     _cur.append(layer)
 canvas.setLayers(_cur)
+# If the canvas has no valid extent (empty or degenerate scale, e.g. after a
+# fresh project), GDAL cannot compute which tiles to request and only fetches
+# empty overview tiles -> "static blurry image, no deep zoom". Zoom to a valid
+# extent so the basemap has a real view to stream tiles for. We only do this
+# when the view is empty/out-of-bounds; an existing valid view is left alone.
+_ce = canvas.extent()
+_cw = _ce.width() if _ce and not _ce.isEmpty() else 0
+if not _ce or _ce.isEmpty() or _cw > 40075016 or _cw <= 0:
+    canvas.zoomToExtent(layer.extent())
+    canvas.refresh()
 canvas.refresh()
 
 _diag = {{
