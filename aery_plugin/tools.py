@@ -1756,7 +1756,7 @@ _net_size = "not checked"
 
 # Diagnostics to log file for debugging
 _extent = canvas.extent()
-_diag = {
+_diag = {{
     "provider": layer.providerType(),
     "crs": layer.crs().authid(),
     "extent": str(layer.extent()),
@@ -1773,7 +1773,7 @@ _diag = {
     "network_status": _net_status,
     "network_size": _net_size,
     "metadata": layer.htmlMetadata() if hasattr(layer, "htmlMetadata") else "N/A",
-}
+}}
 with open("/tmp/aery_basemap_diag.json", "w") as f:
     import json; json.dump(_diag, f, indent=2)
 
