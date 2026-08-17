@@ -602,15 +602,19 @@ class TranscriptView(QScrollArea):
         hdr.setStyleSheet(f"color:{ACCENT};font-family:{FONT_MONO};font-size:9px;font-weight:800;background:transparent;")
         lay.addWidget(hdr)
         img_lbl = QLabel()
+        img_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        img_lbl.setScaledContents(True)
         try:
             raw = base64.b64decode(b64_data)
             qimg = QImage.fromData(raw)
-            pix = QPixmap.fromImage(qimg).scaledToWidth(460, Qt.TransformationMode.SmoothTransformation)
+            # Constrain image width to fit compact panel (max 260px) without forcing dock expansion
+            pix = QPixmap.fromImage(qimg).scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
             img_lbl.setPixmap(pix)
+            img_lbl.setMaximumWidth(260)
         except Exception:
             img_lbl.setText("[image render failed]")
         img_lbl.setStyleSheet("background:transparent;")
-        lay.addWidget(img_lbl)
+        lay.addWidget(img_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
         self._feed_layout.insertWidget(self._feed_layout.count() - 1, frame)
         QTimer.singleShot(50, self.scroll_to_bottom)
 
