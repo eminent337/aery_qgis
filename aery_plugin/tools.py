@@ -1664,23 +1664,26 @@ if not QgsProject.instance().crs().isValid() or QgsProject.instance().crs().auth
 QgsProject.instance().addMapLayer(layer)
 # 3. Canvas handling & canvas layer set
 canvas = iface.mapCanvas()
-if canvas.mapSettings().destinationCrs() != crs3857 and len(QgsProject.instance().mapLayers()) <= 1:
-    canvas.setDestinationCrs(crs3857)
+# Force canvas rendering engine to active
+canvas.setRenderFlag(True)
+# Ensure CRS is EPSG:3857
+canvas.setDestinationCrs(crs3857)
 # Explicitly ensure the canvas has all project layers in its rendering set
 _all_layers = list(QgsProject.instance().mapLayers().values())
 canvas.setLayers(_all_layers)
+# Ensure layer tree node is checked/visible
+_node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+if _node:
+    _node.setItemVisibilityChecked(True)
 _extent = canvas.extent()
 _zoomed = False
 if _extent.isEmpty() or _extent.width() > 40075016:
+    # Zoom to world extent by default
     safe_extent = QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34)
-    if canvas.mapSettings().destinationCrs() != crs3857:
-        xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
-        safe_extent = xform.transformBoundingBox(safe_extent)
     canvas.zoomToExtent(safe_extent)
     _zoomed = True
 canvas.refreshAllLayers()
 canvas.refresh()
-_extent_after_set = str(canvas.extent())
 result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
 """
         return await self._execute_qgis_code({"code": code})
