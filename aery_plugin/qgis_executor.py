@@ -14,19 +14,28 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, QTimer
-
 # Cached globals — built once on first execution, reused for all subsequent calls
 _GLOBALS_CACHE: Optional[dict[str, Any]] = None
-
-
+def _sanitize_code(code: str) -> str:
+    """Remove/block code that manipulates canvas background brush/pixmap.
+    Prevents LLM from setting static images as canvas background from captured screenshots.
+    """
+    dangerous_patterns = [
+        "setBackgroundBrush",
+        "backgroundBrush",
+        "backgroundPixmap",
+        "setBackgroundPixmap",
+    ]
+    for pattern in dangerous_patterns:
+        if pattern in code:
+            raise ValueError(f"Canvas background manipulation blocked: '{pattern}' not allowed. Use proper layers instead.")
+    return code
 def _build_globals() -> dict[str, Any]:
     """Import every useful QGIS/PyQt6/geo class once and cache."""
     global _GLOBALS_CACHE
     if _GLOBALS_CACHE is not None:
         return _GLOBALS_CACHE
-
     g: dict[str, Any] = {}
-
     # ── stdlib always available ──
     import base64 as _b64, json as _json, os as _os, math as _math
     import re as _re, csv as _csv, pathlib as _pathlib, datetime as _dt
@@ -40,27 +49,6 @@ def _build_globals() -> dict[str, Any]:
         "tempfile": _tmp, "statistics": _stats, "collections": _coll,
         "itertools": _it,
     })
-
-    # ── QGIS Core — dynamically import every class to avoid version conflicts ──
-    try:
-        import qgis.core as qc
-        core_classes = [
-            "Qgis", "QgsApplication", "QgsCoordinateReferenceSystem", "QgsCoordinateTransform",
-            "QgsCoordinateTransformContext", "QgsDataSourceUri", "QgsDistanceArea", "QgsExpression",
-            "QgsExpressionContext", "QgsExpressionContextUtils", "QgsFeature", "QgsFeatureRequest",
-            "QgsField", "QgsFields", "QgsGeometry", "QgsLayerTreeGroup", "QgsLayerTreeLayer",
-            "QgsMapLayer", "QgsMapLayerType", "QgsMapSettings", "QgsMapThemeCollection",
-            "QgsMarkerSymbol", "QgsMessageLog", "QgsPalLayerSettings", "QgsPoint", "QgsPointCloudLayer",
-            "QgsPointXY", "QgsProcessingFeedback", "QgsProject", "QgsRasterBandStats", "QgsRasterLayer",
-            "QgsRectangle", "QgsRendererRange", "QgsSingleSymbolRenderer", "QgsSpatialIndex",
-            "QgsSymbol", "QgsSymbolLayer", "QgsTextFormat", "QgsVectorDataProvider", "QgsVectorFileWriter",
-            "QgsVectorLayer", "QgsVectorLayerUtils", "QgsWkbTypes",
-            # Layout classes
-            "QgsLayout", "QgsLayoutItemLabel", "QgsLayoutItemLegend", "QgsLayoutItemMap",
-            "QgsLayoutItemNorthArrow", "QgsLayoutItemPage", "QgsLayoutItemPicture",
-            "QgsLayoutItemScaleBar", "QgsLayoutMeasurement", "QgsLayoutObject", "QgsLayoutPoint",
-            "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem", "QgsLayoutUnits", "QgsPageLayout",
-            "QgsPrintLayout", "QgsLayoutExporter",
             # Pseudocolor/renderer
             "QgsColorRampShader", "QgsRasterShader", "QgsSingleBandPseudoColorRenderer",
             "QgsSingleBandGrayRenderer", "QgsGraduatedSymbolRenderer", "QgsClassificationQuantile",
@@ -430,7 +418,8 @@ class QGISCodeExecutor(QObject):
                                 "result": f"[non-image base64, {len(b64)} chars]",
                             }
                         else:
-                            response = {"id": req_id, "success": True, "result": b64}
+                            # Return as data URL so LLM can see it as image (multimodal) not confusing raw base64 text
+                            response = {"id": req_id, "success": True, "result": f"data:image/png;base64,{b64}"}
                     elif code == "__ask_user__":
                         # Forward run_id so the answer can be tied back to the triggering turn
                         qp = {**metadata.get("params", {}), "run_id": metadata.get("run_id")}
@@ -461,6 +450,8 @@ class QGISCodeExecutor(QObject):
                         _sys_mod.modules["subprocess"] = _sub_mod
                         g["subprocess"] = _sub_mod
                         try:
+                            # Sanitize code to block canvas background manipulation
+                            _sanitize_code(code)
                             local_vars: dict[str, Any] = {
                                 "iface": self.iface,
                                 "project_dir": project_dir,
