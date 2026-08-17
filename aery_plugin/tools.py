@@ -1652,37 +1652,33 @@ uri = 'type=xyz&url={url}&zmax=19&zmin=0'
 layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
+# Ensure project and canvas CRS are set to EPSG:3857 (Web Mercator) so XYZ tiles tile dynamically without rasterization blur
+crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
+if not QgsProject.instance().crs().isValid() or QgsProject.instance().crs().authid() == "":
+    QgsProject.instance().setCrs(crs3857)
 # 2. Add to project registry (do not add to legend automatically)
 QgsProject.instance().addMapLayer(layer, False)
-
 # 3. Add manually to the bottom (end of children list) of the root layer tree
 _root = QgsProject.instance().layerTreeRoot()
 _node = QgsLayerTreeLayer(layer)
 _root.addChildNode(_node)
 _node.setItemVisibilityChecked(True)
-
-# 4. Canvas handling
+# 4. Canvas handling & refresh
 canvas = iface.mapCanvas()
-
-# 5. Extent handling: Zoom if the canvas is zoomed out too far (out of bounds) or empty
+if canvas.mapSettings().destinationCrs() != crs3857 and len(QgsProject.instance().mapLayers()) <= 1:
+    canvas.setDestinationCrs(crs3857)
 _extent = canvas.extent()
 _zoomed = False
 if _extent.isEmpty() or _extent.width() > 40075016:
-    crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
-    safe_extent = QgsRectangle(-8000000, -5000000, 8000000, 8000000)
+    safe_extent = QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34)
     if canvas.mapSettings().destinationCrs() != crs3857:
         xform = QgsCoordinateTransform(crs3857, canvas.mapSettings().destinationCrs(), QgsProject.instance())
         safe_extent = xform.transformBoundingBox(safe_extent)
     canvas.zoomToExtent(safe_extent)
-    canvas.refresh()
     _zoomed = True
+canvas.refreshAllLayers()
+canvas.refresh()
 _extent_after_set = str(canvas.extent())
-
-# 6. Wait for async tile download (allow QGIS to render)
-for _ in range(30):
-    QApplication.processEvents()
-    time.sleep(0.1)
-
 _extent_after_wait = str(canvas.extent())
 
 # 7. Test QGIS network access to OSM tiles for diagnostics
