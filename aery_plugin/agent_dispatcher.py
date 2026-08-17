@@ -21,6 +21,8 @@ class ToolDispatcher:
             "create_map_layout", "batch_process", "run_model",
             "style_layer", "label_layer", "set_layer_style",
             "load_basemap",
+            # View-altering tools: agent must visually confirm the result
+            "zoom_to_layer", "set_map_extent", "pan_to", "zoom_to_place", "refresh_canvas",
         }
 
     async def execute_all(self, tool_calls: list[dict], on_event: Optional[Callable] = None) -> tuple[list, list]:

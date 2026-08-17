@@ -1,11 +1,27 @@
 [
   [
+    "stepfun/step-3.7-flash:free",
+    "StepFun: Step 3.7 Flash (free)"
+  ],
+  [
+    "poolside/laguna-s-2.1:free",
+    "Poolside: Laguna S 2.1 (free)"
+  ],
+  [
     "tencent/hy3:free",
     "Tencent: Hy3 (free)"
   ],
   [
-    "stepfun/step-3.7-flash:free",
-    "StepFun: Step 3.7 Flash (free)"
+    "dots-studio/dots-3-note-preview:free",
+    "Dots Studio: Dots3-Note Preview (free)"
+  ],
+  [
+    "liquid/lfm-2.5-2.6b:free",
+    "LiquidAI: LFM2.5-2.6B (free)"
+  ],
+  [
+    "nvidia/nemotron-3.5-lightning:free",
+    "NVIDIA: Nemotron 3.5 Lightning (free)"
   ],
   [
     "poolside/laguna-xs-2.1:free",
@@ -14,6 +30,10 @@
   [
     "cohere/north-mini-code:free",
     "Cohere: North Mini Code (free)"
+  ],
+  [
+    "z-ai/glm-5.2:free",
+    "Z.ai: GLM 5.2 (free)"
   ],
   [
     "nvidia/nemotron-3.5-content-safety:free",
@@ -28,19 +48,11 @@
     "NVIDIA: Nemotron 3 Nano Omni (free)"
   ],
   [
-    "poolside/laguna-m.1:free",
-    "Poolside: Laguna M.1 (free)"
-  ],
-  [
     "nvidia/nemotron-3-super-120b-a12b:free",
     "NVIDIA: Nemotron 3 Super (free)"
   ],
   [
     "openrouter/free",
-    "Free Models Router"
-  ],
-  [
-    "kwaipilot/kat-coder-pro-v2.5:free",
-    "Kwaipilot: KAT-Coder-Pro V2.5 (free)"
+    "OpenRouter Free Models Router"
   ]
 ]
