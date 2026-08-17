@@ -43,14 +43,17 @@ class AeryPlugin:
             Qt.DockWidgetArea.RightDockWidgetArea,
             self.panel,
         )
-        try:
-            # Resize dock widget area to compact width (280px)
-            main_win = self.iface.mainWindow()
-            if main_win:
-                main_win.resizeDocks([self.panel], [280], Qt.Orientation.Horizontal)
-        except Exception:
-            pass
-        # Menu action
+        # Schedule dock resize after QGIS completes window restore & layout pass
+        from PyQt6.QtCore import QTimer
+        def _apply_compact_dock():
+            try:
+                main_win = self.iface.mainWindow()
+                if main_win and self.panel:
+                    main_win.resizeDocks([self.panel], [280], Qt.Orientation.Horizontal)
+            except Exception:
+                pass
+        QTimer.singleShot(200, _apply_compact_dock)
+        QTimer.singleShot(1000, _apply_compact_dock)
         self.action = QAction("Aery Agent")
         self.action.setCheckable(True)
         self.action.setChecked(True)

@@ -173,6 +173,8 @@ class ChatPanel(QDockWidget):
         self.setMaximumWidth(420)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
+        # Reset geometry on show event
+        QTimer.singleShot(100, self._apply_compact_width)
         self.setAcceptDrops(True)
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setSingleShot(True)
@@ -238,6 +240,14 @@ class ChatPanel(QDockWidget):
     def _activity_label(self):
         """Backward-compat alias (label moved to ActivityStrip)."""
         return self._activity.label
+
+    def _apply_compact_width(self) -> None:
+        try:
+            parent = self.parent() or (self.iface.mainWindow() if hasattr(self, "iface") and self.iface else None)
+            if parent and hasattr(parent, "resizeDocks"):
+                parent.resizeDocks([self], [280], Qt.Orientation.Horizontal)
+        except Exception:
+            pass
 
     def sizeHint(self) -> QSize:
         return QSize(280, 700)
