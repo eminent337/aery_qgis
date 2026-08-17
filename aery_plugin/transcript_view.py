@@ -53,12 +53,25 @@ class MessageBubble(QFrame):
     ):
         super().__init__(parent)
         self.setObjectName(f"msg_{msg_type}")
-
+        # Exact structured styling from Aerynel desktop assistant:
+        # YOU (User message)      -> #1E1F26 card with #3C4A46 border
+        # AERY (Assistant reply)  -> #1A1B22 card with #3C4A46 border
+        # SYSTEM (System notices) -> #1E1F26 card with #3C4A46 border
+        # ERROR                   -> border-rose-500 with rose tint
+        card_bg = BG_PANEL if msg_type == "assistant" else BG_CARD if msg_type in ("user", "system") else BG_SURFACE
+        border_color = ERROR_COLOR if msg_type == "error" else BORDER
+        self.setStyleSheet(f"""
+            QFrame#msg_{msg_type} {{
+                background: {card_bg};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+        """)
         colors = {
             "assistant": ACCENT,
             "user": TEXT_DIM,
             "error": ERROR_COLOR,
-            "system": TEXT_MUTED,
+            "system": "#7DD3FC",
             "tool": WARNING_COLOR,
         }
         border = colors.get(msg_type, TEXT_DIM)
@@ -69,7 +82,6 @@ class MessageBubble(QFrame):
             "system": "SYSTEM",
             "tool": "TOOL",
         }.get(msg_type, sender.upper())
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
@@ -190,31 +202,40 @@ class ToolBlock(QFrame):
         self._details = details
         self._code = code
         self._name = name
-
+        # Structured TOOL card matching Aerynel desktop assistant
+        self.setStyleSheet(f"""
+            QFrame#toolBlock {{
+                background: {BG_CARD};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+            }}
+        """)
         status_color = {
             "running": ACCENT,
             "done": SUCCESS_COLOR,
             "error": ERROR_COLOR,
         }.get(status, TEXT_MUTED)
-
         status_icon = {
             "running": "\u25cc",
             "done": "\u2713",
             "error": "\u2717",
         }.get(status, "\u00b7")
-
         self._root_layout = QVBoxLayout(self)
         self._root_layout.setContentsMargins(10, 8, 10, 8)
         self._root_layout.setSpacing(4)
-
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-
-        nm = QLabel(name.upper())
-        nm.setStyleSheet(
+        tag = QLabel("TOOL")
+        tag.setStyleSheet(
             f"color:{WARNING_COLOR};font-family:{FONT_MONO};font-size:10px;"
-            "font-weight:800;letter-spacing:0.07em;background:transparent;"
+            "font-weight:900;letter-spacing:0.08em;background:transparent;"
+        )
+        header.addWidget(tag)
+        nm = QLabel(name)
+        nm.setStyleSheet(
+            f"color:{TEXT_MAIN};font-family:{FONT_MONO};font-size:11px;"
+            "font-weight:700;background:transparent;"
         )
         header.addWidget(nm)
         header.addStretch()

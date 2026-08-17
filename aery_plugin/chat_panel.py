@@ -169,7 +169,8 @@ class ChatPanel(QDockWidget):
         self._input_area.send_btn.clicked.connect(self._on_send_button)
 
         self._build_ui()
-        self.resize(320, 760)
+        self.resize(295, 760)
+        self.setMinimumWidth(260)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
         self._sync_dock_button()
@@ -507,6 +508,33 @@ class ChatPanel(QDockWidget):
 
         if event_type == "user":
             pass
+
+        elif event_type == "tool_start":
+            tool = event.get("tool", "")
+            params = event.get("params", {})
+            param_str = json.dumps(params) if isinstance(params, dict) and params else ""
+            self._set_activity(self._activity.activity_for_tool(tool), active=True, detail=tool)
+            self._finalize_streaming_bubble()
+            block = self._transcript.add_tool_block(tool, "running", details=param_str)
+            self._transcript.active_tool_block = block
+
+        elif event_type == "tool_done":
+            tool = event.get("tool", "")
+            result = event.get("result", "")
+            if self._transcript.active_tool_block:
+                self._transcript.active_tool_block.update_status("done", details=str(result)[:500])
+                self._transcript.active_tool_block = None
+            else:
+                self._transcript.add_tool_block(tool, "done", details=str(result)[:500])
+
+        elif event_type == "tool_error":
+            tool = event.get("tool", "")
+            error = event.get("error", "")
+            if self._transcript.active_tool_block:
+                self._transcript.active_tool_block.update_status("error", details=str(error))
+                self._transcript.active_tool_block = None
+            else:
+                self._transcript.add_bubble("ERROR", f"{tool}: {error}", "error")
 
         elif event_type == "tool_use_summary":
             summary = event.get("summary", "")
