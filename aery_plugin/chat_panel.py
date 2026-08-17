@@ -169,7 +169,6 @@ class ChatPanel(QDockWidget):
         self._input_area.send_btn.clicked.connect(self._on_send_button)
 
         self._build_ui()
-        self.resize(295, 760)
         self.setMinimumWidth(260)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
@@ -240,6 +239,10 @@ class ChatPanel(QDockWidget):
         """Backward-compat alias (label moved to ActivityStrip)."""
         return self._activity.label
 
+    def sizeHint(self) -> QSize:
+        return QSize(280, 700)
+    def minimumSizeHint(self) -> QSize:
+        return QSize(250, 400)
     def _set_session_state(self, state: SessionState) -> None:
         if self._session_state == state:
             return

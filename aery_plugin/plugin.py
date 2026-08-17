@@ -43,7 +43,13 @@ class AeryPlugin:
             Qt.DockWidgetArea.RightDockWidgetArea,
             self.panel,
         )
-
+        try:
+            # Resize dock widget area to compact width (280px)
+            main_win = self.iface.mainWindow()
+            if main_win:
+                main_win.resizeDocks([self.panel], [280], Qt.Orientation.Horizontal)
+        except Exception:
+            pass
         # Menu action
         self.action = QAction("Aery Agent")
         self.action.setCheckable(True)
