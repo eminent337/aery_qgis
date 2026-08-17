@@ -1643,45 +1643,29 @@ result = "Canvas refreshed"
         # this wms/type=xyz path is the known-good baseline. Deep-zoom streaming
         # is a follow-up once loading is confirmed stable again.
         code = f"""
-from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle, QgsCoordinateTransform, QgsLayerTreeLayer
-from PyQt6.QtWidgets import QApplication
-import time
+from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle
 # 1. Clean up existing basemap layers with the same name or XYZ source to prevent duplication
 _existing = [l for l in QgsProject.instance().mapLayers().values()
              if l.name() == {repr(name)} or "type=xyz" in l.publicSource()]
 for _old in _existing:
     QgsProject.instance().removeMapLayer(_old)
-
+# 2. Standard XYZ URI matching QGIS manual browser connection
 uri = 'type=xyz&url={url}&zmax=19&zmin=0'
 layer = QgsRasterLayer(uri, {repr(name)}, 'wms')
 if not layer.isValid():
     raise RuntimeError(f"Basemap layer failed to load: {{layer.error().summary()}}")
-# Ensure project and canvas CRS are set to EPSG:3857 (Web Mercator) so XYZ tiles tile dynamically without rasterization blur
+# 3. Ensure Project CRS is EPSG:3857 (Web Mercator)
 crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
-if not QgsProject.instance().crs().isValid() or QgsProject.instance().crs().authid() == "":
-    QgsProject.instance().setCrs(crs3857)
-# 2. Add layer directly to QgsProject
+QgsProject.instance().setCrs(crs3857)
+# 4. Add layer normally to QgsProject (QGIS auto-bridges it to layer tree & canvas)
 QgsProject.instance().addMapLayer(layer)
-# 3. Canvas handling & canvas layer set
+# 5. Canvas handling
 canvas = iface.mapCanvas()
-# Force canvas rendering engine to active
 canvas.setRenderFlag(True)
-# Ensure CRS is EPSG:3857
 canvas.setDestinationCrs(crs3857)
-# Explicitly ensure the canvas has all project layers in its rendering set
-_all_layers = list(QgsProject.instance().mapLayers().values())
-canvas.setLayers(_all_layers)
-# Ensure layer tree node is checked/visible
-_node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
-if _node:
-    _node.setItemVisibilityChecked(True)
 _extent = canvas.extent()
-_zoomed = False
-if _extent.isEmpty() or _extent.width() > 40075016:
-    # Zoom to world extent by default
-    safe_extent = QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34)
-    canvas.zoomToExtent(safe_extent)
-    _zoomed = True
+if _extent.isEmpty() or _extent.width() > 40075016 or _extent.width() < 1:
+    canvas.setExtent(QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34))
 canvas.refreshAllLayers()
 canvas.refresh()
 result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
