@@ -1617,7 +1617,7 @@ result = "Canvas refreshed"
 """
         return await self._execute_qgis_code({"code": code})
 
-    async def _execute_load_basemap(self, params: dict) -> str:
+    async def _execute_load_basemap(self, params: dict, on_progress: Optional[Callable] = None) -> str:
         # TRACE: confirms the Python method is entered at all.
         try:
             with open("/tmp/aery_basemap_py_trace.log", "a") as _ptf:
@@ -1677,7 +1677,7 @@ if _extent.isEmpty() or _extent.width() > 40075016:
 canvas.refreshAllLayers()
 canvas.refresh()
 _extent_after_set = str(canvas.extent())
-result = f"Added basemap '{layer.name()}' (provider={layer.providerType()}, crs={layer.crs().authid()})"
+result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
 """
         return await self._execute_qgis_code({"code": code})
     async def _execute_toggle_layer_visibility(self, params: dict) -> str:
