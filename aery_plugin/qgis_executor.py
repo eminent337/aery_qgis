@@ -16,6 +16,7 @@ from typing import Any, Optional
 from PyQt6.QtCore import QObject, QTimer
 # Cached globals — built once on first execution, reused for all subsequent calls
 _GLOBALS_CACHE: Optional[dict[str, Any]] = None
+# ── Sanitization: Block dangerous canvas background manipulation ──
 def _sanitize_code(code: str) -> str:
     """Remove/block code that manipulates canvas background brush/pixmap.
     Prevents LLM from setting static images as canvas background from captured screenshots.
@@ -35,7 +36,9 @@ def _build_globals() -> dict[str, Any]:
     global _GLOBALS_CACHE
     if _GLOBALS_CACHE is not None:
         return _GLOBALS_CACHE
+
     g: dict[str, Any] = {}
+
     # ── stdlib always available ──
     import base64 as _b64, json as _json, os as _os, math as _math
     import re as _re, csv as _csv, pathlib as _pathlib, datetime as _dt
@@ -49,6 +52,27 @@ def _build_globals() -> dict[str, Any]:
         "tempfile": _tmp, "statistics": _stats, "collections": _coll,
         "itertools": _it,
     })
+
+    # ── QGIS Core — dynamically import every class to avoid version conflicts ──
+    try:
+        import qgis.core as qc
+        core_classes = [
+            "Qgis", "QgsApplication", "QgsCoordinateReferenceSystem", "QgsCoordinateTransform",
+            "QgsCoordinateTransformContext", "QgsDataSourceUri", "QgsDistanceArea", "QgsExpression",
+            "QgsExpressionContext", "QgsExpressionContextUtils", "QgsFeature", "QgsFeatureRequest",
+            "QgsField", "QgsFields", "QgsGeometry", "QgsLayerTreeGroup", "QgsLayerTreeLayer",
+            "QgsMapLayer", "QgsMapLayerType", "QgsMapSettings", "QgsMapThemeCollection",
+            "QgsMarkerSymbol", "QgsMessageLog", "QgsPalLayerSettings", "QgsPoint", "QgsPointCloudLayer",
+            "QgsPointXY", "QgsProcessingFeedback", "QgsProject", "QgsRasterBandStats", "QgsRasterLayer",
+            "QgsRectangle", "QgsRendererRange", "QgsSingleSymbolRenderer", "QgsSpatialIndex",
+            "QgsSymbol", "QgsSymbolLayer", "QgsTextFormat", "QgsVectorDataProvider", "QgsVectorFileWriter",
+            "QgsVectorLayer", "QgsVectorLayerUtils", "QgsWkbTypes",
+            # Layout classes
+            "QgsLayout", "QgsLayoutItemLabel", "QgsLayoutItemLegend", "QgsLayoutItemMap",
+            "QgsLayoutItemNorthArrow", "QgsLayoutItemPage", "QgsLayoutItemPicture",
+            "QgsLayoutItemScaleBar", "QgsLayoutMeasurement", "QgsLayoutObject", "QgsLayoutPoint",
+            "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem", "QgsLayoutUnits", "QgsPageLayout",
+            "QgsPrintLayout", "QgsLayoutExporter",
             # Pseudocolor/renderer
             "QgsColorRampShader", "QgsRasterShader", "QgsSingleBandPseudoColorRenderer",
             "QgsSingleBandGrayRenderer", "QgsGraduatedSymbolRenderer", "QgsClassificationQuantile",
