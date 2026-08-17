@@ -510,28 +510,52 @@ class QGISCodeExecutor(QObject):
         QMetaObject.invokeMethod(..., BlockingQueuedConnection) and
         block until it returns, then encode.
         """
-        from PyQt6.QtGui import QImage, QPainter
-        from PyQt6.QtCore import QSize, QMetaObject, Qt, QCoreApplication
-        import io
-
+        from PyQt6.QtGui import QImage, QColor
+        from PyQt6.QtCore import QSize, QMetaObject, Qt, QCoreApplication, QByteArray, QBuffer, QEventLoop, QTimer
+        from qgis.core import QgsMapSettings, QgsMapRendererSequentialJob, QgsProject
+        import base64
         canvas = self.iface.mapCanvas()
-
         def _do_render() -> bytes:
-            size = canvas.size()
-            w, h = size.width(), size.height()
-            if w <= 0 or h <= 0:
-                # Canvas not laid out yet — fall back to widget dims.
-                w = canvas.width() or 800
-                h = canvas.height() or 600
-            img = QImage(QSize(w, h), QImage.Format.Format_ARGB32)
-            img.fill(0)
-            painter = QPainter(img)
-            canvas.render(painter)
-            painter.end()
-            buf = io.BytesIO()
+            sw = canvas.width()
+            sh = canvas.height()
+            if sw < 1 or sh < 1:
+                sw, sh = 800, 600
+            max_dim = max(sw, sh)
+            scale = 1024.0 / max_dim if max_dim > 1024 else 0.75
+            out_w = max(1, int(sw * scale))
+            out_h = max(1, int(sh * scale))
+            # Build official QgsMapSettings from canvas state and project layers
+            settings = QgsMapSettings()
+            layers = canvas.layers()
+            if not layers:
+                layers = list(QgsProject.instance().mapLayers().values())
+            settings.setLayers(layers)
+            settings.setDestinationCrs(canvas.mapSettings().destinationCrs())
+            settings.setExtent(canvas.extent())
+            settings.setOutputSize(QSize(out_w, out_h))
+            settings.setBackgroundColor(QColor(255, 255, 255))
+            # Run sequential map render job to properly fetch raster/vector tiles
+            job = QgsMapRendererSequentialJob(settings)
+            loop = QEventLoop()
+            job.finished.connect(loop.quit)
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(loop.quit)
+            timer.start(5000)
+            job.start()
+            loop.exec()
+            img = job.renderedImage()
+            if img.isNull():
+                raise RuntimeError("Map renderer produced a null image")
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QBuffer.OpenModeFlag.WriteOnly)
             img.save(buf, format="PNG")
-            return buf.getvalue()
-
+            buf.close()
+            raw = bytes(ba)
+            if not raw or len(raw) < 8:
+                raise RuntimeError("Canvas capture produced an empty image buffer")
+            return raw
         app = QCoreApplication.instance()
         if app is not None and app.thread() is not None and \
                 app.thread() is not canvas.thread():
@@ -552,12 +576,8 @@ class QGISCodeExecutor(QObject):
             raw = result_holder["data"]
         else:
             # Already on the GUI thread — render directly.
-            canvas.repaint()
-            app.processEvents() if app is not None else None
             raw = _do_render()
 
-        if not raw or len(raw) < 8:
-            raise RuntimeError("Canvas capture produced an empty/invalid image buffer")
         return base64.b64encode(raw).decode()
 
     @staticmethod
