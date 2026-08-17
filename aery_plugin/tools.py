@@ -1677,56 +1677,9 @@ if _extent.isEmpty() or _extent.width() > 40075016:
 canvas.refreshAllLayers()
 canvas.refresh()
 _extent_after_set = str(canvas.extent())
-_extent_after_wait = str(canvas.extent())
-
-# 7. Test QGIS network access to OSM tiles for diagnostics
-_net_error = "N/A"
-_net_status = "N/A"
-_net_size = "N/A"
-try:
-    from qgis.core import QgsNetworkAccessManager
-    from PyQt6.QtCore import QUrl, QEventLoop
-    from PyQt6.QtNetwork import QNetworkRequest
-    _nam = QgsNetworkAccessManager.instance()
-    _url = QUrl("https://tile.openstreetmap.org/0/0/0.png")
-    _req = QNetworkRequest(_url)
-    _req.setAttribute(QNetworkRequest.Attribute.User, "QGIS Testing")
-    _loop = QEventLoop()
-    _reply = _nam.get(_req)
-    _reply.finished.connect(_loop.quit)
-    _loop.exec()
-    _net_error = str(_reply.error())
-    _net_status = str(_reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute))
-    _net_size = str(_reply.bytesAvailable())
-    _reply.deleteLater()
-except Exception as _e:
-    _net_error = f"Exception: {{str(_e)}}"
-
-# Diagnostics to log file for debugging
-_diag = {{
-    "provider": layer.providerType(),
-    "crs": layer.crs().authid(),
-    "extent": str(layer.extent()),
-    "canvas_crs": canvas.mapSettings().destinationCrs().authid(),
-    "extent_before": str(_extent),
-    "zoomed_branch_fired": _zoomed,
-    "extent_after_set": _extent_after_set,
-    "extent_after_wait": _extent_after_wait,
-    "canvas_layers": [l.name() for l in canvas.layers()],
-    "node_visible": _node.itemVisibilityChecked(),
-    "opacity": layer.renderer().opacity() if layer.renderer() else "N/A",
-    "render_flag": canvas.renderFlag() if hasattr(canvas, "renderFlag") else "N/A",
-    "layer_isValid": layer.isValid(),
-    "network_error": _net_error,
-    "network_status": _net_status,
-    "network_size": _net_size,
-    "metadata": layer.htmlMetadata() if hasattr(layer, "htmlMetadata") else "N/A",
-}}
-
-result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
+result = f"Added basemap '{layer.name()}' (provider={layer.providerType()}, crs={layer.crs().authid()})"
 """
         return await self._execute_qgis_code({"code": code})
-
     async def _execute_toggle_layer_visibility(self, params: dict) -> str:
         layer_name = params["layer_name"]
         visible = params["visible"]
