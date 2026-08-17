@@ -488,13 +488,30 @@ class QGISCodeExecutor(QObject):
                         _sys_mod.modules["subprocess"] = _sub_mod
                         g["subprocess"] = _sub_mod
                         try:
-                            # DEFENSIVE: Clear any stale canvas background before executing tool code
+                            # DEFENSIVE: Clear any stale canvas background on GUI thread before executing tool code
                             # This prevents "magic static image" from previous runs persisting
+                            # Must run on GUI thread like _capture_canvas does
                             try:
+                                from PyQt6.QtCore import QMetaObject, Qt
                                 canvas = self.iface.mapCanvas()
-                                from PyQt6.QtGui import QBrush, QColor
-                                canvas.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
-                                canvas.setAutoFillBackground(True)
+                                def _clear_bg():
+                                    from PyQt6.QtGui import QBrush, QColor
+                                    canvas.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
+                                    canvas.setAutoFillBackground(True)
+                                app = None
+                                try:
+                                    from PyQt6.QtCore import QCoreApplication
+                                    app = QCoreApplication.instance()
+                                except Exception:
+                                    pass
+                                if app is not None and app.thread() is not None and app.thread() is not canvas.thread():
+                                    QMetaObject.invokeMethod(
+                                        canvas,
+                                        Qt.ConnectionType.BlockingQueuedConnection,
+                                        Qt.Callable(_clear_bg),
+                                    )
+                                else:
+                                    _clear_bg()
                             except Exception:
                                 pass
                             # Sanitize code to block canvas background manipulation
