@@ -1583,10 +1583,8 @@ from qgis.core import (
     QgsRectangle, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsProject, QgsGeometry, QgsPointXY,
 )
-
 place = {repr(place)}
 target_crs_str = {repr(target_crs)}
-
 url = ("https://nominatim.openstreetmap.org/search?format=json"
        "&limit=1&q=" + urllib.parse.quote(place))
 req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
@@ -1607,7 +1605,10 @@ rect = QgsRectangle(west, south, east, north)
 if src_crs != dest_crs:
     xform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
     rect = xform.transformBoundingBox(rect)
+# Critical: sync canvas destination CRS to project CRS before setting extent
 canvas = iface.mapCanvas()
+canvas.setDestinationCrs(dest_crs)
+canvas.setRenderFlag(True)
 canvas.setExtent(rect)
 canvas.refreshAllLayers()
 canvas.refresh()
