@@ -488,6 +488,15 @@ class QGISCodeExecutor(QObject):
                         _sys_mod.modules["subprocess"] = _sub_mod
                         g["subprocess"] = _sub_mod
                         try:
+                            # DEFENSIVE: Clear any stale canvas background before executing tool code
+                            # This prevents "magic static image" from previous runs persisting
+                            try:
+                                canvas = self.iface.mapCanvas()
+                                from PyQt6.QtGui import QBrush, QColor
+                                canvas.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
+                                canvas.setAutoFillBackground(True)
+                            except Exception:
+                                pass
                             # Sanitize code to block canvas background manipulation
                             _sanitize_code(code)
                             local_vars: dict[str, Any] = {
