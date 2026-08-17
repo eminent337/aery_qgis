@@ -1642,7 +1642,6 @@ result = "Canvas refreshed"
         # RESTORED to the checkpoint version that the user confirmed LOADS
         # (country names render). The GDAL-WMS rewrite broke loading entirely;
         # this wms/type=xyz path is the known-good baseline. Deep-zoom streaming
-        # is a follow-up once loading is confirmed stable again.
         code = f"""
 from qgis.core import QgsRasterLayer, QgsProject, QgsCoordinateReferenceSystem, QgsRectangle
 # 1. Clean up existing basemap layers with the same name or XYZ source to prevent duplication
@@ -1660,13 +1659,16 @@ crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
 QgsProject.instance().setCrs(crs3857)
 # 4. Add layer normally to QgsProject (QGIS auto-bridges it to layer tree & canvas)
 QgsProject.instance().addMapLayer(layer)
-# 5. Canvas handling
+# 5. Ensure layer tree node is checked/visible (critical for basemap to render)
+_node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+if _node:
+    _node.setItemVisibilityChecked(True)
+# 6. Canvas handling: sync destination CRS, set world extent, refresh
 canvas = iface.mapCanvas()
 canvas.setRenderFlag(True)
 canvas.setDestinationCrs(crs3857)
-_extent = canvas.extent()
-if _extent.isEmpty() or _extent.width() > 40075016 or _extent.width() < 1:
-    canvas.setExtent(QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34))
+# Always set world extent for basemap to ensure full world view
+canvas.setExtent(QgsRectangle(-20037508.34, -20037508.34, 20037508.34, 20037508.34))
 canvas.refreshAllLayers()
 canvas.refresh()
 result = f"Added basemap '{{layer.name()}}' (provider={{layer.providerType()}}, crs={{layer.crs().authid()}})"
