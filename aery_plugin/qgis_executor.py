@@ -967,6 +967,9 @@ class QGISCodeExecutor(QObject):
                 pass  # not in QGIS context (tests)
 
     def execute(self, code: str, timeout: int = 300) -> dict[str, Any]:
+        """Execute code on the main GUI thread via the QTimer queue.
+        This ensures Qt widget access (canvas, layers) happens on the correct thread.
+        """
         result_queue: queue.Queue = queue.Queue()
         self._normal_queue.put(("direct", code, result_queue, {
             "method": "run_code",
@@ -974,7 +977,8 @@ class QGISCodeExecutor(QObject):
             "source": "plugin",
             "started_at": time.perf_counter(),
         }))
-        self._process_queue()
+        # DO NOT call _process_queue() here — it must run on the main thread via QTimer
+        # Just wait for the result; QTimer will process the queue on the GUI thread
         return result_queue.get(timeout=timeout)
 
     def shutdown(self):
