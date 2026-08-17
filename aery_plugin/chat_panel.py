@@ -170,9 +170,9 @@ class ChatPanel(QDockWidget):
 
         self._build_ui()
         self.setMinimumWidth(260)
+        self.setMaximumWidth(420)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
-        self._sync_dock_button()
         self.setAcceptDrops(True)
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setSingleShot(True)
@@ -242,11 +242,12 @@ class ChatPanel(QDockWidget):
     def sizeHint(self) -> QSize:
         return QSize(280, 700)
     def minimumSizeHint(self) -> QSize:
-        return QSize(250, 400)
+        return QSize(260, 400)
+    def maximumSize(self) -> QSize:
+        return QSize(420, 16777215)
     def _set_session_state(self, state: SessionState) -> None:
         if self._session_state == state:
             return
-        self._session_state = state
         if state == SessionState.RUNNING:
             self._activity.set_active("working...")
             self._update_send_btn(streaming=True)
@@ -515,12 +516,18 @@ class ChatPanel(QDockWidget):
         elif event_type == "tool_start":
             tool = event.get("tool", "")
             params = event.get("params", {})
-            param_str = json.dumps(params) if isinstance(params, dict) and params else ""
+            param_str = ""
+            if isinstance(params, dict) and params:
+                try:
+                    # Filter out non-serializable QGIS objects (e.g. iface)
+                    safe_params = {k: v for k, v in params.items() if k != "iface" and not hasattr(v, "__class__") or isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+                    param_str = json.dumps(safe_params)
+                except Exception:
+                    param_str = str({k: str(v) for k, v in params.items() if k != "iface"})
             self._set_activity(self._activity.activity_for_tool(tool), active=True, detail=tool)
             self._finalize_streaming_bubble()
             block = self._transcript.add_tool_block(tool, "running", details=param_str)
             self._transcript.active_tool_block = block
-
         elif event_type == "tool_done":
             tool = event.get("tool", "")
             result = event.get("result", "")
