@@ -1656,17 +1656,15 @@ if not layer.isValid():
 crs3857 = QgsCoordinateReferenceSystem('EPSG:3857')
 if not QgsProject.instance().crs().isValid() or QgsProject.instance().crs().authid() == "":
     QgsProject.instance().setCrs(crs3857)
-# 2. Add to project registry (do not add to legend automatically)
-QgsProject.instance().addMapLayer(layer, False)
-# 3. Add manually to the bottom (end of children list) of the root layer tree
-_root = QgsProject.instance().layerTreeRoot()
-_node = QgsLayerTreeLayer(layer)
-_root.addChildNode(_node)
-_node.setItemVisibilityChecked(True)
-# 4. Canvas handling & refresh
+# 2. Add layer directly to QgsProject
+QgsProject.instance().addMapLayer(layer)
+# 3. Canvas handling & canvas layer set
 canvas = iface.mapCanvas()
 if canvas.mapSettings().destinationCrs() != crs3857 and len(QgsProject.instance().mapLayers()) <= 1:
     canvas.setDestinationCrs(crs3857)
+# Explicitly ensure the canvas has all project layers in its rendering set
+_all_layers = list(QgsProject.instance().mapLayers().values())
+canvas.setLayers(_all_layers)
 _extent = canvas.extent()
 _zoomed = False
 if _extent.isEmpty() or _extent.width() > 40075016:
