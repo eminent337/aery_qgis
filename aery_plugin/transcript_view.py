@@ -53,6 +53,7 @@ class MessageBubble(QFrame):
     ):
         super().__init__(parent)
         self.setObjectName(f"msg_{msg_type}")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         # Exact structured styling from Aerynel desktop assistant:
         # YOU (User message)      -> #1E1F26 card with #3C4A46 border
         # AERY (Assistant reply)  -> #1A1B22 card with #3C4A46 border
@@ -198,6 +199,7 @@ class ToolBlock(QFrame):
     ):
         super().__init__(parent)
         self.setObjectName("toolBlock")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         self._expanded = False
         self._details = details
         self._code = code
