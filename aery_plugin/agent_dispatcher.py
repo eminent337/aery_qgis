@@ -133,28 +133,7 @@ class ToolDispatcher:
             exec_results.append(res)
 
         # Single canvas capture per batch (not per tool)
+        # Note: Do not automatically capture or inject raster snapshots into the live canvas after tools
+        # to ensure the interactive QGIS map canvas remains live, panning and vector streaming at all zoom levels.
         _any_visual_success = False
-        for _, nm, _, h_err in exec_results:
-            if nm in self._visual_tools and not h_err:
-                _any_visual_success = True
-                break
-                
-        if _any_visual_success:
-            try:
-                cap = await asyncio.to_thread(self.agent.executor.execute, "__capture_canvas__", 8)
-                if cap.get("success") and cap.get("result", ""):
-                    b64 = cap["result"]
-                    for i in range(len(exec_results) - 1, -1, -1):
-                        tc_i, nm_i, res_i, h_err_i = exec_results[i]
-                        if nm_i in self._visual_tools and not h_err_i:
-                            exec_results[i] = (tc_i, nm_i, res_i + "\\n\\n[Canvas capture attached]", h_err_i)
-                            break
-                    if on_event:
-                        from PyQt6.QtCore import QTimer as _Qtimer
-                        _Qtimer.singleShot(0, lambda b64=b64: on_event({
-                            "type": "canvas_capture", "data": b64,
-                        }))
-            except Exception as e:
-                logger.error("[Aery agent] canvas capture after batch failed: %s", e)
-
         return exec_results, turn_snapshots
