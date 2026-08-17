@@ -26,6 +26,20 @@ def _sanitize_code(code: str) -> str:
         "backgroundBrush",
         "backgroundPixmap",
         "setBackgroundPixmap",
+        "setStyleSheet",
+        "setBackgroundRole",
+        "backgroundRole",
+        "QPalette",
+        "setAutoFillBackground",
+        "autoFillBackground",
+        "QBrush",
+        "QPixmap",
+        "loadFromData",
+        "fromData",
+        "QImage",
+        "base64.b64decode",
+        "base64.decodebytes",
+        "data:image",
     ]
     for pattern in dangerous_patterns:
         if pattern in code:
