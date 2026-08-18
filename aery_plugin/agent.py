@@ -132,6 +132,9 @@ class Agent(QObject):
         self._project_dir: Optional[str] = None
         self.permissions = PermissionManager()
         self.context_builder = ContextBuilder()
+        # Audit trail — initialized lazily on first session start
+        self._audit_logger = None
+        self._trace_id: Optional[str] = None
         self.dispatcher = ToolDispatcher(self)
 
         self._lock = threading.RLock()
@@ -643,6 +646,13 @@ class Agent(QObject):
         # Plan-first: reset state variables at start of run
         self._state = AgentState.PLANNING
         self._retry_count = 0
+        # Start audit trace for this agent run
+        self._trace_id = None
+        try:
+            from aery_plugin.telemetry import get_collector
+            self._trace_id = get_collector().start_trace("agent_run")
+        except Exception:
+            pass
         self._pending_plan = ""
         self._pending_steps = []
         self._current_step_index = 0
@@ -811,7 +821,25 @@ class Agent(QObject):
                                     except Exception as e:
                                         logger.debug(f"[Speculative validation error]: {e}")
                 logger.info(f"[Aery Agent] stream ended, chunks={chunk_count} full_content_len={len(full_content)} tool_calls={len(tool_calls)}")
-                # Filter out provider-internal tool calls (e.g. default_api: for Gemini)
+                # Record LLM call telemetry
+                try:
+                    from aery_plugin.telemetry import get_collector
+                    _provider = self._provider_id or "unknown"
+                    _model = self._model or "unknown"
+                    _response_id = str(uuid.uuid4())[:8]
+                    get_collector().record_llm_call(
+                        provider=_provider, model=_model,
+                        latency_ms=chunk_count * 50,  # rough estimate
+                        completion_tokens=len(full_content.split()),
+                        success=not (self._cancelled),
+                        finish_reason="tool_calls" if tool_calls else "stop",
+                        response_id=_response_id,
+                        is_streaming=True,
+                        temperature=temperature,
+                        max_tokens=max_tokens_override,
+                    )
+                except Exception:
+                    pass
                 before = len(tool_calls)
                 tool_calls = self._client.filter_tool_calls(tool_calls)
                 if len(tool_calls) < before:
@@ -968,6 +996,16 @@ class Agent(QObject):
                             "role": "tool", "tool_call_id": tc.get("id", ""),
                             "tool_name": name, "content": tool_result[:8000],
                         })
+                        # Record to audit trail
+                        if self._audit_logger and self._project_dir:
+                            try:
+                                self._audit_logger.write_audit_entry(
+                                    self._project_dir, req_id=name,
+                                    code="", response={"success": not had_error},
+                                    metadata={"tool_name": name, "run_id": self._session_id or ""}
+                                )
+                            except Exception:
+                                pass
                     self._trim_messages()
             else:
                 # Final response
@@ -981,6 +1019,14 @@ class Agent(QObject):
 
     def reset(self):
         """Clear conversation history and start fresh session."""
+        # Flush audit trail before resetting
+        if self._audit_logger:
+            try:
+                self._audit_logger.flush()
+            except Exception:
+                pass
+            self._audit_logger = None
+        self._trace_id = None
         with self._lock:
             # Stop worker thread if running
             if self._thread and self._thread.isRunning():
@@ -1012,11 +1058,18 @@ class Agent(QObject):
 
     def start_session(self, project_dir: str) -> str:
         """Start a new persisted session. Returns session ID."""
+        from aery_plugin.session import create_session
         with self._lock:
-            from aery_plugin.session import create_session
             self._project_dir = project_dir
             self._session_id = create_session(project_dir)
-            return self._session_id
+        # Lazy-init audit trail on first real session
+        if self._audit_logger is None and self._session_id:
+            try:
+                from aery_plugin.executor_audit import AuditLogger
+                self._audit_logger = AuditLogger(run_id=self._session_id)
+            except Exception as e:
+                logger.debug(f"AuditLogger init failed: {e}")
+        return self._session_id
 
     def resume_session(self, project_dir: str, session_id: str) -> list[dict]:
         """Resume a previous session. Returns loaded messages."""
@@ -1092,6 +1145,19 @@ class Agent(QObject):
         """Return an ISO-format timestamp."""
         import datetime
         return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+    def get_audit_log_path(self) -> Optional[str]:
+        """Return path to the audit log file, or None if not available."""
+        if not self._audit_logger or not self._project_dir:
+            return None
+        audit_dir = self._audit_logger.get_audit_dir(self._project_dir)
+        return os.path.join(audit_dir, "operations.jsonl")
+    def get_llm_call_history(self) -> list[dict]:
+        """Return LLM call records from telemetry."""
+        try:
+            from aery_plugin.telemetry import get_collector
+            return get_collector().get_llm_calls()
+        except Exception:
+            return []
 
     def _try_parse_partial_json(self, s: str) -> dict:
         import json
