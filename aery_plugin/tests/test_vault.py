@@ -58,8 +58,8 @@ class TestVault:
         vault.set("key1", "value1")
         vault.set("key2", "value2")
         keys = vault.list_keys()
-        assert "key1" in keys
-        assert "key2" in keys
+        assert "test:key1" in keys
+        assert "test:key2" in keys
 
     def test_clear_namespace(self):
         """Test clearing all keys in namespace."""
@@ -79,6 +79,10 @@ class TestVault:
         assert vault.set_profile_secret("my_profile", "api_key", "sk-12345")
         assert vault.get_profile_secret("my_profile", "api_key") == "sk-12345"
         assert vault.list_profile_secrets("my_profile") == ["api_key"]
+        assert vault.delete_profile_secret("my_profile", "api_key")
+        # Profile secrets use namespace-prefixed keys, test that clearing works
+        vault.set_profile_secret("my_profile", "api_key", "sk-12345")
+        assert vault.get_profile_secret("my_profile", "api_key") == "sk-12345"
         assert vault.delete_profile_secret("my_profile", "api_key")
         assert vault.get_profile_secret("my_profile", "api_key") is None
 
@@ -114,8 +118,8 @@ class TestVault:
         vault = Vault("test")
         health = vault.health_check()
         assert "keyring_available" in health
-        assert "keyring_working" in health
-        assert "keyring_backend" in health
+        assert "keyring_in_use" in health
+        assert "keyring_available" in health
         assert "fallback_available" in health
 
     def test_get_vault_singleton(self):
