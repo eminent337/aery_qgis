@@ -554,6 +554,21 @@ class Agent(QObject):
         # Store profile for use in prompt building and tool filtering
         self._active_profile = active_profile
         self._provider_id = provider_id
+        # Wire profile policy into PolicyEngine and ToolRegistry
+        try:
+            from aery_plugin.policy import get_policy_engine, Policy
+            if active_profile.policy:
+                policy_name = f'profile:{active_profile.id}'
+                p = Policy.from_dict(active_profile.policy)
+                get_policy_engine().add_policy(policy_name, p)
+                self._policy_name = policy_name
+            else:
+                self._policy_name = None
+        except Exception:
+            self._policy_name = None
+        # Update tool registry's policy reference
+        if hasattr(self, 'tools') and self.tools:
+            self.tools._policy_name = self._policy_name
         return provider_id, auth_entry, model
 
     def initialize(self):

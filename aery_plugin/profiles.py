@@ -40,6 +40,8 @@ class AssistantProfile:
     mcp_servers: list[str] = field(default_factory=list)
     # Model parameters (temperature, max_tokens, etc.)
     model_params: dict[str, Any] = field(default_factory=dict)
+    # RBAC policy for this profile (tool allow/deny lists)
+    policy: Optional[dict] = None
     # Provider-specific credential storage (OAuth tokens, API keys, etc.)
     credentials: dict[str, Any] = field(default_factory=dict)
     # Optional: gateway config for managed deployments

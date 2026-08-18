@@ -118,6 +118,8 @@ class ToolRegistry:
         # Pull the PermissionManager from the agent if provided so that
         # check_permission can read per-session flags (e.g. code_approved).
         self._permissions = getattr(agent, "permissions", None) if agent is not None else None
+        # Policy engine reference for RBAC evaluation
+        self._policy_name = getattr(agent, "_policy_name", None) if agent is not None else None
         self._register_core_tools()
         self._register_default_hooks()
         self._load_custom_tools()
@@ -468,6 +470,22 @@ class ToolRegistry:
             return {"behavior": "allow"}
         if self._permission_mode == "dontAsk":
             return {"behavior": "deny", "message": "Tool execution blocked in dontAsk mode"}
+        # Evaluate PolicyEngine RBAC if profile has a policy
+        if getattr(self, "_policy_name", None):
+            try:
+                from aery_plugin.policy import get_policy_engine, Decision
+                result = get_policy_engine().evaluate_tool_access(tool_name, self._policy_name)
+                if result.decision == Decision.DENY:
+                    return {"behavior": "deny", "message": result.reason}
+                if result.decision == Decision.ASK_APPROVAL:
+                    return {
+                        "behavior": "ask",
+                        "tool_name": tool_name,
+                        "description": f"Policy requires approval: {result.reason}",
+                        "risk_level": "high",
+                    }
+            except Exception:
+                pass  # fall through to existing permission logic
         is_destructive = False
         if tool_name in DESTRUCTIVE_TOOLS:
             patterns = DESTRUCTIVE_TOOLS[tool_name]
