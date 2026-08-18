@@ -348,50 +348,77 @@ class ChatPanel(QDockWidget):
         outer.addLayout(brand_col)
 
         right_col = QVBoxLayout()
-        right_col.setContentsMargins(0, 2, 0, 0)
-        right_col.setSpacing(0)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(2)
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(5)
-        status_row.setContentsMargins(0, 0, 0, 0)
+        # Top row: Dock/Undock (at the top) + Status dot
+        top_control_row = QHBoxLayout()
+        top_control_row.setSpacing(4)
+        top_control_row.setContentsMargins(0, 0, 0, 0)
+        top_control_row.addStretch()
+
         self._status_dot = QLabel("\u25cf")
         self._status_dot.setStyleSheet(
             f"color:{TEXT_MUTED};font-size:10px;background:transparent;"
         )
-        status_row.addWidget(self._status_dot)
-        status_row.addStretch()
-        right_col.addLayout(status_row)
-
-        control_row = QHBoxLayout()
-        control_row.setSpacing(4)
-        control_row.setContentsMargins(0, 2, 0, 1)
-        control_row.addStretch()
+        top_control_row.addWidget(self._status_dot)
 
         self._dock_btn = QToolButton()
         self._dock_btn.setToolTip("Dock / Undock")
         self._dock_btn.setAutoRaise(True)
         self._dock_btn.setFixedSize(18, 18)
-        self._dock_btn.setText("\u21f1")
+        self._dock_btn.setText("\u29c9")  # ⧉ Window pop-out icon
         self._dock_btn.setStyleSheet(
-            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
+            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:12px; }}"
             f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
         )
         self._dock_btn.clicked.connect(self._toggle_floating)
-        control_row.addWidget(self._dock_btn)
+        top_control_row.addWidget(self._dock_btn)
+        right_col.addLayout(top_control_row)
+
+        # Bottom row: Clear Chat (⌫), AI Settings (⚙), Sessions (💬) (down)
+        bottom_control_row = QHBoxLayout()
+        bottom_control_row.setSpacing(4)
+        bottom_control_row.setContentsMargins(0, 0, 0, 0)
+        bottom_control_row.addStretch()
+
+        self._clear_btn = QToolButton()
+        self._clear_btn.setToolTip("Clear Chat History")
+        self._clear_btn.setAutoRaise(True)
+        self._clear_btn.setFixedSize(18, 18)
+        self._clear_btn.setText("\u232b")  # ⌫ Eraser
+        self._clear_btn.setStyleSheet(
+            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
+            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
+        )
+        self._clear_btn.clicked.connect(self._on_clear_clicked)
+        bottom_control_row.addWidget(self._clear_btn)
 
         self._gear_btn = QToolButton()
-        self._gear_btn.setToolTip("Settings")
+        self._gear_btn.setToolTip("AI Settings")
         self._gear_btn.setAutoRaise(True)
         self._gear_btn.setFixedSize(18, 18)
-        self._gear_btn.setText("\u2699")
+        self._gear_btn.setText("\u2699")  # ⚙
         self._gear_btn.setStyleSheet(
             f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
             f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
         )
-        self._gear_btn.clicked.connect(self._show_settings_menu)
-        control_row.addWidget(self._gear_btn)
+        self._gear_btn.clicked.connect(self._on_cfg_clicked)
+        bottom_control_row.addWidget(self._gear_btn)
 
-        right_col.addLayout(control_row)
+        self._session_btn = QToolButton()
+        self._session_btn.setToolTip("Conversation Sessions")
+        self._session_btn.setAutoRaise(True)
+        self._session_btn.setFixedSize(18, 18)
+        self._session_btn.setText("\U0001F4AC")  # 💬 Session balloon
+        self._session_btn.setStyleSheet(
+            f"QToolButton {{ color:{TEXT_DIM}; background:transparent; border:none; font-size:11px; }}"
+            f"QToolButton:hover {{ color:{ACCENT}; background:{BG_HIGH}; border-radius:3px; }}"
+        )
+        self._session_btn.clicked.connect(self._show_sessions_dialog)
+        bottom_control_row.addWidget(self._session_btn)
+
+        right_col.addLayout(bottom_control_row)
         outer.addLayout(right_col)
 
         return header
@@ -555,15 +582,19 @@ class ChatPanel(QDockWidget):
                 self._transcript.active_tool_block = None
             else:
                 self._transcript.add_bubble("ERROR", f"{tool}: {error}", "error")
-
         elif event_type == "tool_use_summary":
             summary = event.get("summary", "")
             if summary and self._transcript.active_tool_block:
                 self._transcript.active_tool_block.update_status("done", details=summary)
                 self._transcript.active_tool_block = None
 
+        elif event_type == "reasoning":
+            # Reasoning trace from Strands streaming
+            text = event.get("text", "")
+            if text:
+                self._transcript.add_reasoning_block(text)
+
         elif event_type == "system":
-            subtype = event.get("subtype", "")
             if subtype == "api_retry":
                 attempt = event.get("attempt", 1)
                 max_retries = event.get("max_retries", 3)
@@ -934,14 +965,38 @@ class ChatPanel(QDockWidget):
             menu.exec(self.mapToGlobal(self.rect().topRight()))
 
     def _on_cfg_clicked(self) -> None:
-        if self.on_config:
-            self.on_config()
         try:
-            self.agent.reinitialize()
+            from aery_plugin.provider_settings import AerySettingsDialog
+            dlg = AerySettingsDialog(self)
+            self._dialogs.append(dlg)
+            dlg.exec()
+            self._dialogs.remove(dlg)
             self._refresh_provider_label()
+            try:
+                self.agent.reinitialize()
+            except Exception as _e:
+                logger.debug("chat_panel: agent reinitialize error: %s", _e)
         except Exception as e:
-            logger.error(f"Aery: agent reinitialize error: {e}")
+            self._transcript.add_bubble("ERROR", f"Settings: {e}", "error")
 
+    def _show_sessions_dialog(self) -> None:
+        try:
+            from aery_plugin.provider_settings import SessionSwitcherDialog
+            dlg = SessionSwitcherDialog(self)
+            dlg.session_switched.connect(self._on_session_switched)
+            self._dialogs.append(dlg)
+            dlg.exec()
+            self._dialogs.remove(dlg)
+        except Exception as e:
+            self._transcript.add_bubble("ERROR", f"Sessions dialog: {e}", "error")
+
+    def _on_session_switched(self, session_id: str) -> None:
+        self._transcript.clear()
+        try:
+            self.agent.reset()
+        except Exception:
+            pass
+        self._transcript.add_bubble("SYSTEM", f"Switched to session: {session_id[:8]}", "tool")
     def _show_model_switcher(self) -> None:
         try:
             from aery_plugin.provider_settings import ModelSwitcherDialog
@@ -979,13 +1034,20 @@ class ChatPanel(QDockWidget):
         self._input_area.setFixedHeight(max(66, input_height + 20))
 
     def _on_clear_clicked(self) -> None:
-        self._transcript.clear()
-        try:
-            self.agent.reset()
-        except Exception as e:
-            logger.error(f"Aery: agent reset error: {e}")
-        self._set_activity("ready", active=False)
-
+        reply = QMessageBox.question(
+            self,
+            "Clear Conversation",
+            "Are you sure you want to clear the conversation history and reset the assistant?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._transcript.clear()
+            try:
+                self.agent.reset()
+            except Exception as e:
+                logger.error(f"Aery: agent reset error: {e}")
+            self._set_activity("ready", active=False)
     def _clear_feed(self) -> None:
         """Remove all transcripts from feed layout (backward-compat alias for TranscriptView.clear)."""
         self._transcript.clear()

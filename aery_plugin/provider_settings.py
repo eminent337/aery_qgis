@@ -1,1417 +1,750 @@
-"""Provider configuration wizard for the Aery QGIS plugin.
+"""Modern, advanced, enterprise-grade Aery AI Settings Dialog.
 
-Matches Aery Core's /provider flow:
-  Screen 1 — Select authentication method
-    (use a subscription / use an API key / Aery gateway)
-  Screen 2 — Pick OAuth provider or API-key provider
-  Screen 3 — Per-provider config dialog (varies by requirement)
-  Backward-compat: AeryConfigDialog = AuthMethodWizard
+Matches native QGIS / Aerynel Workstation aesthetic:
+- Compact, high-finish UI styling (460x440 for Settings)
+- Direct browser launch via QDesktopServices & xdg-open & webbrowser fallback
+- Clean enterprise account status card with token metadata and disconnect confirmation
+- Aery SVG logo header
+- Model Selection (Curated free models)
 """
 
 import json
 import os
 import threading
+import time
+import urllib.parse
+import urllib.request
+import webbrowser
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPainter, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
-    QSizePolicy,
 )
 
 from . import oauth_helper
 
-# ── Palette ───────────────────────────────────────────────────────────────────
-BG      = "#09090b"
-SURFACE = "#18181b"
-ACCENT  = "#8abeb7"
-BORDER  = "#27272a"
-TEXT    = "#e4e4e7"
-DIM     = "#52525b"
-GREEN   = "#4ade80"
-RED     = "#f87171"
-YELLOW  = "#facc15"
-
-# ── Auth-method constants ─────────────────────────────────────────────────────
-AUTH_OAUTH  = "oauth"
-AUTH_APIKEY = "apikey"
-AUTH_GATEWAY = "gateway"
-
-# ── System font fallback ──────────────────────────────────────────────────────
-F_S  = 10   # small labels, section headers
-F_M  = 11   # body / normal
-F_H  = 12   # headings / emphasis
-F_B  = 14   # big title
-
-def _fs(size: int) -> str:
-    """Return a font-size CSS token clamped to sensible bounds."""
-    return f"{max(size, 8)}px"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _btn(text: str, fg: str = ACCENT, bg: str = "transparent",
-         fixed: bool = True, w: int = 0) -> QPushButton:
-    b = QPushButton(text)
-    if fixed:
-        b.setFixedHeight(26)
-    if w:
-        b.setFixedWidth(w)
-    b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setStyleSheet(
-        f"QPushButton {{ background:{bg}; color:{fg}; border:1px solid {fg};"
-        f" border-radius:2px; font-size:{_fs(F_M)}; font-weight:700; padding:0 8px; }}"
-        f" QPushButton:hover {{ background:{fg}; color:{BG}; }}"
-        f" QPushButton:disabled {{ opacity:0.4; }}"
-    )
-    return b
-
-
-def _input(placeholder: str = "", width: int = 0) -> QLineEdit:
-    e = QLineEdit()
-    e.setPlaceholderText(placeholder)
-    if width:
-        e.setFixedWidth(width)
-    e.setStyleSheet(
-        f"QLineEdit {{ background:{BG}; color:{TEXT}; border:1px solid {BORDER};"
-        f" border-radius:2px; padding:4px 8px; font-size:{_fs(F_M)}; }}"
-        f" QLineEdit:focus {{ border-color:{ACCENT}; }}"
-    )
-    return e
-
-
-def _section_hdr(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFixedHeight(28)
-    lbl.setStyleSheet(
-        f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.12em;"
-        f" border:none; background:transparent;"
-    )
-    return lbl
-
-
-def _apply_dialog_style(dlg: QDialog) -> None:
-    dlg.setStyleSheet(
-        f"QDialog, QWidget {{ background:{BG}; color:{TEXT}; font-family:'Inter',sans-serif; }}"
-        f" QScrollBar:vertical {{ background:{SURFACE}; width:5px; border:none; }}"
-        f" QScrollBar::handle:vertical {{ background:{BORDER}; border-radius:2px; min-height:20px; }}"
-        f" QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}"
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Clickable list item used on auth-method and provider-list screens
-# ══════════════════════════════════════════════════════════════════════════════
-
-class _ListButton(QPushButton):
-    """Dark two-row list button: title + optional subtitle. Signals: clicked(pid)."""
-
-    def __init__(self, title: str, subtitle: str = "", pid: str = "",
-                 bold: bool = False, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._pid = pid
-        self._selected = False
-        self._bold = bold
-
-        self.setText(f"{title}\n{subtitle}" if subtitle else title)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(44 if subtitle else 34)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        self._update_style()
-
-    def set_selected(self, on: bool) -> None:
-        self._selected = on
-        self._update_style()
-
-    def _update_style(self) -> None:
-        bg       = "#0f2020" if self._selected else "transparent"
-        border   = ACCENT   if self._selected else BORDER
-        title_clr = ACCENT  if self._selected else (ACCENT if self._bold else TEXT)
-        has_sub  = "\n" in self.text()
-        sub_clr   = ACCENT if self._selected else DIM
-        pad = "padding:7px 14px;" if has_sub else "padding:0 14px;"
-        fw = 900 if self._selected else (800 if self._bold else 500)
-        self.setStyleSheet(
-            f"QPushButton {{"
-            f"  background:{bg};"
-            f"  border:1px solid {border};"
-            f"  border-radius:3px;"
-            f"  {pad}"
-            f"  text-align:left;"
-            f"  font-size:{_fs(F_H)};"
-            f"  font-weight:{fw};"
-            f"  color:{title_clr};"
-            f"}}"
-            f" QPushButton:hover {{"
-            f"  background:{'#0f2020' if self._selected else SURFACE};"
-            f"  border-color:{ACCENT};"
-            f"  color:{ACCENT};"
-            f"}}"
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Screen 1 — Authentication method list
-# ══════════════════════════════════════════════════════════════════════════════
-
-class AuthMethodList(QWidget):
-    """Three-row list: Subscribe / API Key / Aery Gateway."""
-
-    method_selected = pyqtSignal(str)  # AUTH_*
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        root.addWidget(_section_hdr("SELECT AUTHENTICATION METHOD"))
-        root.addSpacing(6)
-
-        _items = [
-            (AUTH_OAUTH,
-             "Use a Subscription",
-             "OAuth providers: Google, Anthropic, GitHub Copilot"),
-            (AUTH_APIKEY,
-             "Use an API Key",
-             "Direct providers: OpenAI, Groq, DeepSeek, Mistral, and more"),
-            (AUTH_GATEWAY,
-             "Aery Gateway",
-             "One key — all providers via aery-web.pages.dev"),
-        ]
-
-        self._btns: dict[str, _ListButton] = {}
-        for method, title, sub in _items:
-            btn = _ListButton(title, sub, pid=method, bold=True)
-            btn.clicked.connect(lambda _, m=method: self.method_selected.emit(m))
-            root.addWidget(btn)
-            self._btns[method] = btn
-
-        root.addStretch()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Screen 2 — OAuth provider list
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ProviderOAuthList(QWidget):
-    """All OAuth providers, each with a LAUNCH AUTH / LOGOUT button."""
-
-    provider_selected = pyqtSignal(str)  # provider pid
-    logout_requested   = pyqtSignal(str)
-    status_changed     = pyqtSignal(str)  # provider pid
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._pid_map: dict[str, str] = {}
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        hdr = QLabel("SELECT OAUTH PROVIDER")
-        hdr.setStyleSheet(
-            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
-            f" border:none; background:transparent;"
-        )
-        hdr.setFixedHeight(26)
-        root.addWidget(hdr)
-        root.addSpacing(6)
-
-        self._body = QWidget()
-        self._blay  = QVBoxLayout(self._body)
-        self._blay.setContentsMargins(0, 0, 0, 0)
-        self._blay.setSpacing(4)
-        root.addWidget(self._body)
-        root.addStretch()
-
-        self._refresh()
-
-    def _refresh(self) -> None:
-        while self._blay.count():
-            item = self._blay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        self._pid_map.clear()
-        auth = oauth_helper._load_auth()
-
-        # Show profiles instead of raw providers
-        profiles = list_profiles()
-        default_pid = get_default_profile_id()
-
-        for profile in profiles:
-            pid = profile.provider
-            cfg = oauth_helper.OAUTH_CONFIGS.get(pid, {})
-            if not cfg:
-                continue
-            creds = auth.get(pid, {})
-            connected = bool(creds.get("access") or creds.get("accessToken")
-                             or creds.get("refresh") or creds.get("refreshToken"))
-            is_default = (pid == default_pid)
-            self._pid_map[pid] = cfg["name"]
-
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
-
-            # Connection status dot
-            dot = QLabel("●" if connected else "○")
-            dot.setFixedSize(16, 16)
-            dc = GREEN if connected else DIM
-            dot.setStyleSheet(
-                f"color:{dc}; font-size:{_fs(F_H)}; border:none; background:transparent;")
-            row.addWidget(dot)
-
-            # Profile name + provider name
-            name_text = f"{profile.name} ({cfg['name']})"
-            if is_default:
-                name_text += " ★"
-            nm = QLabel(name_text)
-            nm.setStyleSheet(
-                f"font-size:{_fs(F_H)}; font-weight:600; color:{TEXT};"
-                f" border:none; background:transparent;")
-            row.addWidget(nm, 1)
-
-            if connected:
-                lo = _btn("LOGOUT", RED)
-                lo.setFixedWidth(72)
-                lo.clicked.connect(lambda _, p=pid: self.logout_requested.emit(p))
-                row.addWidget(lo)
-            else:
-                login = _btn("LOGIN")
-                login.setFixedWidth(72)
-                login.clicked.connect(lambda _, p=pid: self.provider_selected.emit(p))
-                row.addWidget(login)
-
-            wrap = QWidget()
-            wrap.setLayout(row)
-            wrap.setStyleSheet(
-                f"QWidget {{ background:{SURFACE}; border:1px solid {BORDER}; border-radius:3px; padding:4px 8px; }}"
-                f" QWidget:hover {{ border-color:{ACCENT}; }}"
-            )
-            self._blay.addWidget(wrap)
-
-        # Add "Create Profile" button
-        add_row = QHBoxLayout()
-        add_row.setContentsMargins(0, 0, 0, 0)
-        add_row.setSpacing(8)
-        add_btn = _btn("+ CREATE PROFILE", ACCENT)
-        add_btn.clicked.connect(self._create_profile)
-        add_row.addWidget(add_btn, 1)
-        wrap = QWidget()
-        wrap.setLayout(add_row)
-        wrap.setStyleSheet(
-            f"QWidget {{ background:{SURFACE}; border:2px dashed {ACCENT}; border-radius:3px; padding:4px 8px; }}"
-        )
-        self._blay.addWidget(wrap)
-
-        self._blay.addStretch()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Screen 2b — API-key provider list
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ProviderApiKeyList(QWidget):
-    """All API-key-capable providers. Clicking one opens an ApiKeyDialog."""
-
-    provider_clicked = pyqtSignal(str)  # provider pid
-    delete_requested = pyqtSignal(str)  # custom provider pid
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        hdr = QLabel("SELECT PROVIDER")
-        hdr.setStyleSheet(
-            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.1em;"
-            f" border:none; background:transparent;")
-        hdr.setFixedHeight(26)
-        root.addWidget(hdr)
-        root.addSpacing(6)
-
-        # Scroll area for many providers
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
-
-        self._body = QWidget()
-        self._blay = QVBoxLayout(self._body)
-        self._blay.setContentsMargins(0, 0, 0, 0)
-        self._blay.setSpacing(4)
-
-        scroll.setWidget(self._body)
-        root.addWidget(scroll, 1)
-
-        self._refresh()
-
-    def _refresh(self) -> None:
-        while self._blay.count():
-            item = self._blay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        auth = oauth_helper._load_auth()
-        # Order: custom providers first, then gateway, then api_key providers
-
-        # Custom providers from models.json
-        custom_providers = oauth_helper.get_custom_providers()
-        for cp in custom_providers:
-            sub = f"{'✓ configured' if cp['connected'] else 'API key required'} · {len(cp.get('models', []))} models"
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(4)
-
-            btn = _ListButton(cp["name"], sub, pid=cp["id"])
-            btn.clicked.connect(lambda _, p=cp["id"]: self.provider_clicked.emit(p))
-            row.addWidget(btn, 1)
-
-            del_btn = _btn("×", RED)
-            del_btn.setFixedWidth(24)
-            del_btn.setToolTip(f"Remove {cp['name']}")
-            del_btn.clicked.connect(lambda _, p=cp["id"]: self._confirm_delete(p))
-            row.addWidget(del_btn)
-
-            wrap = QWidget()
-            wrap.setLayout(row)
-            self._blay.addWidget(wrap)
-
-        # Custom OpenAI-compatible add button
-        add_btn = _ListButton("＋ Custom OpenAI-compatible", "Add a new provider", pid="__add_custom__")
-        add_btn.clicked.connect(lambda _, p="__add_custom__": self.provider_clicked.emit(p))
-        self._blay.addWidget(add_btn)
-
-        # Gateway shortcut
-        gw_name = oauth_helper.API_PROVIDERS.get("aery-gateway", {}).get("name", "Aery Gateway")
-        gw_creds = bool(auth.get("aery-gateway", {}).get("key"))
-        sub = f"{'✓ connected' if gw_creds else 'not configured'} · {len(oauth_helper.API_PROVIDERS.get('aery-gateway', {}).get('models', []))} models"
-        btn = _ListButton("Aery Gateway", sub, pid="aery-gateway")
-        btn.clicked.connect(lambda _, p="aery-gateway": self.provider_clicked.emit(p))
-        self._blay.addWidget(btn)
-
-        for pid, cfg in oauth_helper.API_PROVIDERS.items():
-            if pid not in ('opencode', 'kilo', 'custom-openai'): continue
-            if pid == "aery-gateway":
-                continue
-            connected = bool(auth.get(pid, {}).get("key"))
-            sub = f"{'✓ configured' if connected else 'API key required'} · {len(cfg.get('models', []))} models"
-            btn = _ListButton(cfg["name"], sub, pid=pid)
-            btn.clicked.connect(lambda _, p=pid: self.provider_clicked.emit(p))
-            self._blay.addWidget(btn)
-
-        self._blay.addStretch()
-
-    def _confirm_delete(self, pid: str) -> None:
-        """Show confirmation dialog before deleting a custom provider."""
-        custom = oauth_helper.get_custom_providers()
-        name = pid
-        for cp in custom:
-            if cp["id"] == pid:
-                name = cp["name"]
-                break
-
-        reply = QMessageBox.question(
-            self, "Remove Provider",
-            f"Remove '{name}'? This will delete its API key and configuration.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            oauth_helper.delete_custom_provider(pid)
-            self._refresh()
-            self.provider_clicked.emit("__refresh__")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Per-provider API key configuration dialog
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _dialog_auth_hint(pid: str) -> str:
-    """Return the field variant for this provider's API-key dialog.
-
-    Returns one of: minimal | account_id | base_url | gateway | aws | custom
-    """
-    if pid == "aery-gateway":
-        return "gateway"
-    if pid == "amazon-bedrock":
-        return "aws"
-    if pid in ("openai-compatible", "claude-local"):
-        return "custom"
-    cfg = oauth_helper.API_PROVIDERS.get(pid, {})
-    if cfg.get("needs_account_id"):
-        return "account_id"
-    if cfg.get("needs_base_url"):
-        return "base_url"
-    return "minimal"
-
-
-class CustomProviderDialog(QDialog):
-    """Dialog to add a custom OpenAI-compatible provider."""
-
-    _FONT_SIZE = "14px"  # Fixed font size for dialog labels
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("ADD CUSTOM PROVIDER")
-        self.setModal(True)
-        self.setMinimumWidth(460)
-        _apply_dialog_style(self)
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(12)
-
-        title = QLabel("ADD CUSTOM OPENAI-COMPATIBLE PROVIDER")
-        title.setStyleSheet(
-            f"font-size:15px; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
-            f" border:none; background:transparent;")
-        root.addWidget(title)
-
-        sub = QLabel(
-            "Enter the base URL, model ID, and API key for any "
-            "OpenAI-compatible API endpoint."
-        )
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        root.addWidget(sub)
-
-        # Base URL
-        row_b = QHBoxLayout()
-        row_b.setSpacing(8)
-        blbl = QLabel("Base URL")
-        blbl.setFixedWidth(80)
-        blbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        row_b.addWidget(blbl)
-        self._url_inp = _input("https://api.example.com/v1", 280)
-        row_b.addWidget(self._url_inp, 1)
-        root.addLayout(row_b)
-
-        # Model ID
-        row_m = QHBoxLayout()
-        row_m.setSpacing(8)
-        mlbl = QLabel("Model ID")
-        mlbl.setFixedWidth(80)
-        mlbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        row_m.addWidget(mlbl)
-        self._model_inp = _input("e.g. gpt-4o, llama-3.1-8b", 280)
-        row_m.addWidget(self._model_inp, 1)
-        root.addLayout(row_m)
-
-        # API Key
-        row_k = QHBoxLayout()
-        row_k.setSpacing(8)
-        klbl = QLabel("API Key")
-        klbl.setFixedWidth(80)
-        klbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        row_k.addWidget(klbl)
-        self._key_inp = _input("sk-...", 280)
-        self._key_inp.setEchoMode(QLineEdit.EchoMode.Password)
-        row_k.addWidget(self._key_inp, 1)
-        root.addLayout(row_k)
-
-        root.addSpacing(8)
-
-        # Buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.addStretch()
-        cancel = _btn("CANCEL", DIM)
-        cancel.clicked.connect(self.reject)
-        btn_row.addWidget(cancel)
-        save = _btn("ADD", ACCENT, ACCENT)
-        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
-        save.clicked.connect(self._save)
-        btn_row.addWidget(save)
-        root.addLayout(btn_row)
-
-    def _save(self) -> None:
-        base_url = self._url_inp.text().strip()
-        model_id = self._model_inp.text().strip()
-        api_key = self._key_inp.text().strip()
-        if not base_url:
-            QMessageBox.warning(self, "Missing URL", "Base URL is required.")
-            return
-        if not model_id:
-            QMessageBox.warning(self, "Missing Model", "Model ID is required.")
-            return
-        if not api_key:
-            QMessageBox.warning(self, "Missing Key", "API key is required.")
-            return
-        try:
-            result = oauth_helper.save_custom_provider(base_url, model_id, api_key)
-            QMessageBox.information(self, "Provider Added",
-                                    f"Provider '{result['provider_id']}' added with model '{result['model_id']}'.")
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-
-
-class ApiKeyDialog(QDialog):
-    """Per-provider API key / credential dialog."""
-
-    _FONT_SIZE = "14px"  # Fixed font size for dialog labels
-
-    def __init__(self, pid: str, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._pid = pid
-        self._cfg  = oauth_helper.API_PROVIDERS.get(pid, {})
-        self._hint = _dialog_auth_hint(pid)
-
-        title = f"LOGIN {self._cfg.get('name', pid).upper()}"
-        self.setWindowTitle(title)
-        self.setModal(True)
-        self.setMinimumWidth(420)
-        _apply_dialog_style(self)
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
-
-        # Title
-        title = QLabel(f"LOGIN {self._cfg.get('name', self._pid).upper()}")
-        title.setStyleSheet(
-            f"font-size:15px; font-weight:800; color:{ACCENT}; letter-spacing:0.1em;"
-            f" border:none; background:transparent;")
-        root.addWidget(title)
-
-        # AWS banner
-        if self._hint == "aws":
-            banner = QLabel(
-                "Amazon Bedrock credentials are managed via the AWS CLI.\n"
-                "Configure with:  aws configure\n"
-                "Then restart Aery."
-            )
-            banner.setWordWrap(True)
-            banner.setStyleSheet(
-                f"font-size:{self._FONT_SIZE}; color:{DIM}; border:1px solid {BORDER};"
-                f" border-radius:3px; padding:10px 12px; background:{SURFACE};")
-            root.addWidget(banner)
-            root.addStretch()
-            return
-
-        # API key field (always present)
-        row_k = QHBoxLayout()
-        row_k.setSpacing(8)
-        klbl = QLabel("API Key")
-        klbl.setFixedWidth(80)
-        klbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        row_k.addWidget(klbl)
-        self._key_inp = _input("Enter API key…", 260)
-        self._key_inp.setStyleSheet(
-            self._key_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
-        row_k.addWidget(self._key_inp, 1)
-        root.addLayout(row_k)
-
-        # Account ID
-        if self._hint == "account_id":
-            row_a = QHBoxLayout()
-            row_a.setSpacing(8)
-            albl = QLabel("Account ID")
-            albl.setFixedWidth(80)
-            albl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-            row_a.addWidget(albl)
-            self._acct_inp = _input("Enter account ID…", 260)
-            self._acct_inp.setStyleSheet(
-                self._acct_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
-            row_a.addWidget(self._acct_inp, 1)
-            root.addLayout(row_a)
-
-        # Base URL
-        if self._hint in ("base_url", "custom"):
-            row_b = QHBoxLayout()
-            row_b.setSpacing(8)
-            blbl = QLabel("Base URL")
-            blbl.setFixedWidth(80)
-            blbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-            row_b.addWidget(blbl)
-            default_url = self._cfg.get("base_url", "https://api.openai.com/v1")
-            self._url_inp = _input(default_url, 260)
-            self._url_inp.setStyleSheet(
-                self._url_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
-            self._url_inp.setText(default_url)
-            row_b.addWidget(self._url_inp, 1)
-            root.addLayout(row_b)
-
-        # Model picker
-        if self._hint in ("base_url", "custom"):
-            row_m = QHBoxLayout()
-            row_m.setSpacing(8)
-            mlbl = QLabel("Model")
-            mlbl.setFixedWidth(80)
-            mlbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-            row_m.addWidget(mlbl)
-            self._model_combo = QComboBox()
-            self._model_combo.setFixedWidth(260)
-            self._model_combo.setStyleSheet(
-                f"QComboBox {{ background:{BG}; color:{TEXT}; border:1px solid {BORDER};"
-                f" border-radius:2px; padding:4px 6px; font-size:{self._FONT_SIZE}; }}"
-                f" QComboBox:hover {{ border-color:{ACCENT}; }}"
-                f" QComboBox QAbstractItemView {{ background:{SURFACE}; color:{TEXT}; selection-background-color:{ACCENT}; }}"
-            )
-            for mid, mlabel in self._cfg.get("models", []):
-                self._model_combo.addItem(mlabel, mid)
-            if self._model_combo.count() == 0:
-                self._model_combo.addItem("(no models listed)", "")
-            row_m.addWidget(self._model_combo, 1)
-            root.addLayout(row_m)
-
-        # Gateway key field label override
-        if self._hint == "gateway":
-            klbl.setText("Aery Key")
-            self._key_inp.setPlaceholderText("Paste Aery key…")
-
-        # Buttons
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.addStretch()
-        cancel = _btn("CANCEL", DIM)
-        cancel.clicked.connect(self.reject)
-        btn_row.addWidget(cancel)
-        save = _btn("SAVE", ACCENT, ACCENT)
-        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
-        save.clicked.connect(self._save)
-        btn_row.addWidget(save)
-        root.addLayout(btn_row)
-
-    def _save(self) -> None:
-        key = self._key_inp.text().strip()
-        if not key:
-            QMessageBox.warning(self, "Missing Key", "API key is required.")
-            return
-
-        if self._hint == "account_id":
-            acct = getattr(self, "_acct_inp", None)
-            account_id = acct.text().strip() if acct else ""
-            oauth_helper.save_api_key(self._pid, key, account_id=account_id)
-        elif self._hint in ("base_url", "custom"):
-            base_url = self._url_inp.text().strip()
-            selected_model = ""
-            mc = getattr(self, "_model_combo", None)
-            if mc and mc.currentIndex() >= 0:
-                selected_model = mc.currentData() or ""
-            oauth_helper.save_api_key(self._pid, key, base_url=base_url)
-            if selected_model:
-                oauth_helper.set_active_provider(self._pid, selected_model)
-        elif self._hint == "gateway":
-            oauth_helper.save_gateway_key(key)
-        else:
-            oauth_helper.save_api_key(self._pid, key)
-
-        self.accept()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Model Switcher dialog
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ModelSwitcherDialog(QDialog):
-    """Floating model picker — per-provider sections with model lists."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("MODEL SELECTION")
-        self.setFixedSize(490, 580)
-        self.setModal(True)
-        _apply_dialog_style(self)
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(8)
-
-        # Active provider badge
-        active = oauth_helper.get_active_provider()
-        hdr_txt = (f"Active: {active['name']}  {active.get('model', '')}"
-                   if active else "No active provider")
-        hdr = QLabel(hdr_txt)
-        hdr.setStyleSheet(
-            f"font-size:{_fs(F_M)}; font-weight:700; color:{ACCENT};"
-            f" border:none; background:{SURFACE}; border-radius:3px; padding:5px 8px;")
-        hdr.setFixedHeight(26)
-        root.addWidget(hdr)
-        root.addSpacing(8)
-
-        # Provider sections
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
-
-        body = QWidget()
-        blay = QVBoxLayout(body)
-        blay.setContentsMargins(0, 0, 0, 0)
-        blay.setSpacing(2)
-
-        active_pid   = active["id"]   if active else ""
-        active_model = active.get("model", "") if active else ""
-
-        auth = oauth_helper._load_auth()
-        
-        # Load enabledModels to filter the list
-        settings = {}
-        settings_path = os.path.join(oauth_helper.AGENT_DIR, "settings.json")
-        if os.path.exists(settings_path):
-            try:
-                with open(settings_path) as f:
-                    settings = json.load(f)
-            except:
-                pass
-        enabled_set = set(settings.get("enabledModels", []))
-
-        def _is_connected(pid: str) -> bool:
-            """Check if provider has credentials in auth.json or env."""
-            creds = auth.get(pid, {})
-            if creds.get("access") or creds.get("accessToken") or creds.get("refresh") or creds.get("refreshToken"):
-                return True
-            if creds.get("key"):
-                return True
-            env_key = oauth_helper.get_env_key(pid)
-            if env_key and os.environ.get(env_key):
-                return True
-            return False
-
-        # OAuth providers with models
-        for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo'): continue
-            if not _is_connected(pid):
-                continue
-            models = _oauth_models(pid)
-            filtered = [m for m in models if not enabled_set or f"{pid}:{m[0]}" in enabled_set]
-            if not filtered:
-                continue
-            blay.addWidget(self._provider_section(cfg["name"], pid, filtered,
-                                                  pid == active_pid, active_model))
-
-        # API key providers with models
-        for pid, cfg in oauth_helper.API_PROVIDERS.items():
-            if pid not in ('opencode', 'kilo', 'custom-openai'): continue
-            if pid == "aery-gateway":
-                continue
-            if not _is_connected(pid):
-                continue
-            models = cfg.get("models", [])
-            filtered = [m for m in models if not enabled_set or f"{pid}:{m[0]}" in enabled_set]
-            if not filtered:
-                continue
-            blay.addWidget(self._provider_section(cfg["name"], pid, filtered,
-                                                  pid == active_pid, active_model))
-
-        blay.addStretch()
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-
-    def _provider_section(self, name: str, pid: str, models: list,
-                          is_active_pid: bool, active_model: str) -> QWidget:
-        cont = QWidget()
-        cv   = QVBoxLayout(cont)
-        cv.setContentsMargins(0, 2, 0, 2)
-        cv.setSpacing(0)
-
-        # Section title
-        lbl = QLabel(name)
-        lbl.setStyleSheet(
-            f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
-            f" border:none; background:transparent;")
-        lbl.setFixedHeight(20)
-        cv.addWidget(lbl)
-
-        for mid, mlabel in models:
-            is_active = is_active_pid and mid == active_model
-            btn = QPushButton(mlabel)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFixedHeight(22)
-            fw = 900 if is_active else 400
-            fc = ACCENT if is_active else TEXT
-            prefix = "● " if is_active else "  "
-            btn.setText(f"{prefix}{mlabel}")
-            btn.setStyleSheet(
-                f"QPushButton {{ background:transparent; color:{fc}; border:none;"
-                f" border-radius:2px; font-size:{_fs(F_M)}; font-weight:{fw};"
-                f" padding:0 8px 0 16px; text-align:left; }}"
-                f" QPushButton:hover {{ background:{SURFACE}; color:{ACCENT}; }}"
-            )
-            btn.clicked.connect(lambda _, p=pid, m=mid, dlg=self: self._pick(p, m, dlg))
-            cv.addWidget(btn)
-
-        return cont
-
-    @staticmethod
-    def _pick(pid: str, mid: str, dlg: QDialog) -> None:
-        oauth_helper.set_active_provider(pid, mid)
-        dlg.accept()
-# Use canonical _oauth_models from oauth_helper — single source of truth
-_oauth_models = oauth_helper._oauth_models
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Scopes / enabled-models dialog
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ScopesDialog(QDialog):
-    """Manage enabledModels[] — checkboxes per configured provider/model."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("SCOPES MODEL")
-        self.setFixedSize(490, 520)
-        self.setModal(True)
-        _apply_dialog_style(self)
-        self._checkboxes: dict[str, QCheckBox] = {}
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(8)
-
-        sub = QLabel(
-            "Enabled models are visible to the auto-router. "
-            "Uncheck to hide a model."
-        )
-        sub.setWordWrap(True)
-        sub.setStyleSheet(
-            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
-        root.addWidget(sub)
-        root.addSpacing(4)
-        # Bulk controls
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-        enable_all = _btn("ENABLE ALL", DIM)
-        enable_all.clicked.connect(self._enable_all)
-        ctrl.addWidget(enable_all)
-        disable_all = _btn("DISABLE ALL", DIM)
-        disable_all.clicked.connect(self._disable_all)
-        ctrl.addWidget(disable_all)
-        ctrl.addStretch()
-        root.addLayout(ctrl)
-        root.addSpacing(6)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
-
-        body = QWidget()
-        blay = QVBoxLayout(body)
-        blay.setContentsMargins(0, 0, 0, 0)
-        blay.setSpacing(4)
-
-        auth     = oauth_helper._load_auth()
-        settings = {}
-        sp       = os.path.join(oauth_helper.AGENT_DIR, "settings.json")
-        try:
-            with open(sp) as f:
-                settings = json.load(f)
-        except Exception:
-            pass
-        enabled: set = set(settings.get("enabledModels", []))
-
-        def _is_connected(pid: str) -> bool:
-            """Check if provider has credentials in auth.json or env."""
-            creds = auth.get(pid, {})
-            if creds.get("access") or creds.get("accessToken") or creds.get("refresh") or creds.get("refreshToken"):
-                return True
-            if creds.get("key"):
-                return True
-            env_key = oauth_helper.get_env_key(pid)
-            if env_key and os.environ.get(env_key):
-                return True
-            return False
-
-        def _add_group(title: str, entries: list[tuple[str, str]], prefix: str = "") -> None:
-            if not entries:
-                return
-            lbl = QLabel(title)
-            lbl.setStyleSheet(
-                f"font-size:{_fs(F_S)}; font-weight:800; color:{DIM}; letter-spacing:0.08em;"
-                f" border:none; background:transparent;")
-            lbl.setFixedHeight(18)
-            blay.addWidget(lbl)
-            for mid, mlabel in entries:
-                key = f"{prefix}{mid}" if prefix else mid
-                cb  = QCheckBox(mlabel)
-                cb.setChecked(key in enabled if enabled else True)
-                cb.setStyleSheet(
-                    f"QCheckBox {{ color:{TEXT}; font-size:{_fs(F_M)}; spacing:6px; }}"
-                    f" QCheckBox::indicator {{ width:14px; height:14px; border:1px solid {BORDER}; border-radius:2px; background:{BG}; }}"
-                    f" QCheckBox::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}"
-                )
-                self._checkboxes[key] = cb
-                blay.addWidget(cb)
-
-        # OAuth providers
-        for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo'): continue
-            models = _oauth_models(pid)
-            if _is_connected(pid):
-                _add_group(cfg["name"], models, pid + "/")
-
-        # API key providers
-        for pid, cfg in oauth_helper.API_PROVIDERS.items():
-            if pid not in ('opencode', 'kilo', 'custom-openai'): continue
-            if pid == "aery-gateway":
-                continue
-            models = cfg.get("models", [])
-            if _is_connected(pid):
-                _add_group(cfg["name"], models, pid + "/")
-
-        blay.addStretch()
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-
-        # Footer buttons
-        ftr = QHBoxLayout()
-        ftr.setSpacing(8)
-        ftr.addStretch()
-        cancel = _btn("CANCEL", DIM)
-        cancel.clicked.connect(self.reject)
-        ftr.addWidget(cancel)
-        save = _btn("SAVE", ACCENT, ACCENT)
-        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
-        save.clicked.connect(self._save)
-        ftr.addWidget(save)
-        root.addLayout(ftr)
-
-    def _enable_all(self) -> None:
-        for cb in self._checkboxes.values():
-            cb.setChecked(True)
-
-    def _disable_all(self) -> None:
-        for cb in self._checkboxes.values():
-            cb.setChecked(False)
-
-    def _save(self) -> None:
-        sp = os.path.join(oauth_helper.AGENT_DIR, "settings.json")
-        settings: dict = {}
-        try:
-            with open(sp) as f:
-                settings = json.load(f)
-        except Exception:
-            pass
-
-        enabled = [k for k, cb in self._checkboxes.items() if cb.isChecked()]
-        if enabled:
-            settings["enabledModels"] = enabled
-        else:
-            settings.pop("enabledModels", None)
-
-        with open(sp, "w") as f:
-            json.dump(settings, f, indent=2)
-        self.accept()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# OAuth login thread worker
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _run_login(pid: str, on_done) -> None:
-    """Run oauth_helper.login_provider in a worker thread; call on_done(None | str)."""
+# ── Aesthetic Palette ───────────────────────────────────────────────────────────
+BG_DARK      = "#0d1117"
+BG_PANEL     = "#161b22"
+BG_CARD      = "#21262d"
+BG_INPUT     = "#090d12"
+BORDER       = "#30363d"
+BORDER_LIGHT = "#3d444d"
+ACCENT       = "#2dd4bf"      # Teal from Aerynel
+ACCENT_HOVER = "#5eead4"
+TEXT_PRIMARY = "#f0f6fc"
+TEXT_MUTED   = "#8b949e"
+TEXT_DIM     = "#6e7681"
+SUCCESS      = "#3fb950"
+DANGER       = "#f85149"
+DANGER_HOVER = "#ff7b72"
+
+
+def _open_url(url_str: str) -> None:
+    """Robust URL opener across Linux (Wayland/X11), Windows, and macOS."""
+    if not url_str:
+        return
+    import subprocess
+    import sys
+    # 1. Try QDesktopServices
     try:
-        ok = oauth_helper.login_provider(pid)
-        QTimer.singleShot(0, lambda: on_done(None if ok else "Login cancelled or failed"))
-    except RuntimeError as exc:
-        err_msg = str(exc)
-        QTimer.singleShot(0, lambda: on_done(err_msg))
-    except Exception as exc:
-        err_msg = str(exc)
-        QTimer.singleShot(0, lambda: on_done(err_msg))
+        if QDesktopServices.openUrl(QUrl(url_str)):
+            return
+    except Exception:
+        pass
+    # 2. Try xdg-open directly on Linux
+    if sys.platform.startswith("linux"):
+        try:
+            subprocess.Popen(["xdg-open", url_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception:
+            pass
+    # 3. Fallback to Python standard webbrowser
+    try:
+        webbrowser.open(url_str, new=2)
+    except Exception:
+        pass
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GitHub Copilot device-flow sub-dialog
-# ══════════════════════════════════════════════════════════════════════════════
+def _svg_pixmap(path: str, size: int) -> QPixmap:
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    if os.path.exists(path):
+        ren = QSvgRenderer(path)
+        painter = QPainter(pix)
+        ren.render(painter)
+        painter.end()
+    return pix
+
+
+def _dialog_stylesheet() -> str:
+    return f"""
+        QDialog {{
+            background-color: {BG_DARK};
+            color: {TEXT_PRIMARY};
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }}
+        QLabel {{
+            background: transparent;
+            color: {TEXT_PRIMARY};
+        }}
+        QFrame#card {{
+            background-color: {BG_PANEL};
+            border: 1px solid {BORDER};
+            border-radius: 8px;
+        }}
+        QFrame#innerCard {{
+            background-color: {BG_CARD};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+        }}
+        QComboBox {{
+            background-color: {BG_INPUT};
+            color: {TEXT_PRIMARY};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
+        QComboBox:hover {{
+            border-color: {TEXT_DIM};
+        }}
+        QComboBox:focus {{
+            border-color: {ACCENT};
+        }}
+        QComboBox::drop-down {{
+            border: none;
+            width: 20px;
+        }}
+        QComboBox QAbstractItemView {{
+            background-color: {BG_PANEL};
+            color: {TEXT_PRIMARY};
+            border: 1px solid {BORDER};
+            selection-background-color: {BG_CARD};
+            selection-color: {ACCENT};
+            padding: 4px;
+        }}
+    """
+
 
 class _DeviceFlowDialog(QDialog):
-    """Shows GitHub Copilot device-code; polls until authorised or timeout."""
+    """Refined OAuth Device Authorization Dialog with instant feedback & responsive polling."""
 
-    def __init__(self, pid: str, parent: Optional[QWidget] = None):
+    def __init__(self, pid: str = "kilo", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._pid = pid
-        self.setWindowTitle(f"LOGIN {oauth_helper.OAUTH_CONFIGS[pid]['name'].upper()}")
-        self.setFixedWidth(400)
+        self._user_code = ""
+        self._verification_url = "https://app.kilo.ai/device-auth"
+        self._cancelled = False
+        
+        self.setWindowTitle("Authorize Kilo AI Assistant")
+        self.setFixedSize(420, 340)
         self.setModal(True)
-        _apply_dialog_style(self)
+        self.setStyleSheet(_dialog_stylesheet())
 
+        self._build_ui()
+        threading.Thread(target=self._start_flow, daemon=True).start()
+
+    def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(12)
 
-        self._code_lbl = QLabel("Opening browser…")
-        self._code_lbl.setWordWrap(True)
-        self._code_lbl.setStyleSheet(
-            f"font-size:12px; font-weight:700; color:{ACCENT};"
-            f" border:none; background:{SURFACE}; border-radius:4px; padding:12px;")
-        root.addWidget(self._code_lbl)
+        header = QHBoxLayout()
+        header.setSpacing(10)
 
-        hint = QLabel(
-            "Enter the code above at github.com/login/device\n"
-            "This window will close automatically when complete."
+        icon_lbl = QLabel()
+        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons", "aery.svg")
+        icon_lbl.setPixmap(_svg_pixmap(svg_path, 30))
+        icon_lbl.setFixedSize(30, 30)
+        header.addWidget(icon_lbl)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        title = QLabel("Device Authorization")
+        title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {TEXT_PRIMARY};")
+        subtitle = QLabel("Confirm sign-in to activate Kilo AI models")
+        subtitle.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        header.addLayout(title_col)
+        header.addStretch()
+
+        root.addLayout(header)
+
+        self._status_box = QFrame()
+        self._status_box.setObjectName("card")
+        status_lay = QVBoxLayout(self._status_box)
+        status_lay.setContentsMargins(12, 12, 12, 12)
+        status_lay.setSpacing(8)
+
+        inst_label = QLabel("Copy verification code and confirm in the browser tab:")
+        inst_label.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+        status_lay.addWidget(inst_label)
+
+        code_box = QHBoxLayout()
+        code_box.setSpacing(6)
+
+        self._code_display = QLabel("REQUESTING…")
+        self._code_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._code_display.setFixedHeight(38)
+        self._code_display.setStyleSheet(
+            f"font-family: 'SF Mono', Consolas, Menlo, monospace; font-size: 16px; font-weight: 700;"
+            f" color: {ACCENT}; background: {BG_INPUT}; border: 1px dashed {ACCENT}; border-radius: 6px;"
+            f" letter-spacing: 0.12em;"
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            f"font-size:{_fs(F_M)}; color:{DIM}; border:none; background:transparent;")
-        root.addWidget(hint)
+        code_box.addWidget(self._code_display, 1)
 
-        threading.Thread(target=self._poll, daemon=True).start()
-
-    def _poll(self) -> None:
-        def on_code(c, u):
-            from PyQt6.QtCore import QTimer
-            from PyQt6.QtGui import QGuiApplication
-            def update_ui():
-                self._code_lbl.setText(f"Code: {c}\n\nURL: {u}\n\n(Copied to clipboard)")
-                cb = QGuiApplication.clipboard()
-                if cb: cb.setText(c)
-            QTimer.singleShot(0, update_ui)
-            import webbrowser
-            webbrowser.open(u)
-            
-        try:
-            cfg = oauth_helper.OAUTH_CONFIGS.get(self._pid, {})
-            ok = oauth_helper._device_flow_login(self._pid, cfg, code_callback=on_code)
-        except Exception as e:
-            err_msg = str(e)
-            QTimer.singleShot(0, lambda: self._fail(err_msg))
-            return
-        QTimer.singleShot(0, lambda: self._done(ok))
-
-    def _fail(self, msg: str) -> None:
-        QMessageBox.critical(self, "Login Failed", msg)
-        self.reject()
-
-    def _done(self, ok: bool) -> None:
-        if ok:
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Login Failed", "Device flow timed out or was cancelled.")
-            self.reject()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Top-level Wizard
-# ══════════════════════════════════════════════════════════════════════════════
-
-class AuthMethodWizard(QDialog):
-    """Aery provider configuration wizard.
-
-    Screen stack:
-      _page_auth_method  →  _page_oauth  |  _page_apikey  |  _gateway_page
-      per-provider dialogs open via ApiKeyDialog / OAuth link in browser
-
-    Backward-compat alias: AeryConfigDialog = AuthMethodWizard
-    """
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setFixedSize(490, 560)
-        self.setModal(True)
-        self.setWindowTitle("AERY — CONFIGURE")
-        _apply_dialog_style(self)
-
-        self._current_screen: Optional[QWidget] = None
-        self._build_chrome()
-        self._show_auth_method()
-
-    # ── Chrome ─────────────────────────────────────────────────────────────────
-
-    def _build_chrome(self) -> None:
-        self._root = QVBoxLayout(self)
-        self._root.setContentsMargins(0, 0, 0, 0)
-        self._root.setSpacing(0)
-
-        # Header
-        hdr = QFrame()
-        hdr.setFixedHeight(40)
-        hdr.setStyleSheet(f"background:{SURFACE}; border-bottom:1px solid {BORDER};")
-        hl  = QHBoxLayout(hdr)
-        hl.setContentsMargins(16, 0, 12, 0)
-        self._title_lbl = QLabel("AERY — CONFIGURE")
-        self._title_lbl.setStyleSheet(
-            f"font-size:{_fs(F_M)}; font-weight:800; color:{DIM};"
-            f" letter-spacing:0.1em; border:none; background:transparent;")
-        hl.addWidget(self._title_lbl)
-        hl.addStretch()
-        self._back_btn = _btn("← BACK", DIM)
-        self._back_btn.setVisible(False)
-        self._back_btn.clicked.connect(self._go_back)
-        hl.addWidget(self._back_btn)
-        self._root.addWidget(hdr)
-
-        # Content area
-        self._content = QWidget()
-        self._clay    = QVBoxLayout(self._content)
-        self._clay.setContentsMargins(12, 10, 12, 10)
-        self._clay.setSpacing(0)
-        self._root.addWidget(self._content, 1)
-
-        # Footer
-        ftr = QFrame()
-        ftr.setFixedHeight(38)
-        ftr.setStyleSheet(f"background:{SURFACE}; border-top:1px solid {BORDER};")
-        fl  = QHBoxLayout(ftr)
-        fl.setContentsMargins(16, 0, 12, 0)
-        fl.addStretch()
-        self._action_btn = _btn("", DIM)
-        self._action_btn.setVisible(False)
-        fl.addWidget(self._action_btn)
-        self._root.addWidget(ftr)
-
-    # ── Page switching ─────────────────────────────────────────────────────────
-
-    def _set_page(self, widget: QWidget, title: str = "",
-                  show_back: bool = False,
-                  action_text: str = "", action_cb=None) -> None:
-        # Clear previous
-        w = self._content
-        while self._clay.count():
-            it = self._clay.takeAt(0)
-            if it.widget():
-                it.widget().setParent(None)
-        self._current_screen = widget
-        self._clay.addWidget(widget, 1)
-
-        self._title_lbl.setText(title or getattr(widget, "_screen_title", "AERY — CONFIGURE"))
-        self._back_btn.setVisible(show_back)
-
-        if action_text and action_cb:
-            self._action_btn.setText(action_text)
-            self._action_btn.setVisible(True)
-            try:
-                self._action_btn.clicked.disconnect()
-            except TypeError:
-                pass
-            self._action_btn.clicked.connect(action_cb)
-        else:
-            self._action_btn.setVisible(False)
-
-    def _go_back(self) -> None:
-        self._show_auth_method()
-
-    # ── Screen 1: auth method list ─────────────────────────────────────────────
-
-    def _show_auth_method(self) -> None:
-        self._auth_list = AuthMethodList()
-        self._auth_list.method_selected.connect(self._on_method_selected)
-        self._set_page(self._auth_list, "AERY — CONFIGURE", show_back=False)
-        # Also populate provider list for API key screen lazily
-        self._api_list: Optional[ProviderApiKeyList] = None
-
-    def _on_method_selected(self, method: str) -> None:
-        if method == AUTH_OAUTH:
-            self._show_oauth()
-        elif method == AUTH_APIKEY:
-            self._show_apikey()
-        elif method == AUTH_GATEWAY:
-            self._show_gateway()
-
-    # ── Screen 2a: OAuth providers ─────────────────────────────────────────────
-
-    def _show_oauth(self) -> None:
-        self._oauth_list = ProviderOAuthList()
-        self._oauth_list.provider_selected.connect(self._on_oauth_click)
-        self._oauth_list.logout_requested.connect(self._on_oauth_logout)
-        self._oauth_list.status_changed.connect(self._on_oauth_status)
-        self._set_page(self._oauth_list, "SELECT OAUTH PROVIDER", show_back=True)
-
-    def _on_oauth_click(self, pid: str) -> None:
-        cfg = oauth_helper.OAUTH_CONFIGS.get(pid, {})
-        if cfg.get("device_flow"):
-            dlg = _DeviceFlowDialog(pid, self)
-            dlg.exec()
-            self._oauth_list._refresh()
-        else:
-            self._set_busy(f"Opening browser for {pid}…")
-            def done(err):
-                self._set_busy("")
-                if err:
-                    QMessageBox.warning(self, "Login Failed", err)
-                else:
-                    msg = f"{oauth_helper.OAUTH_CONFIGS[pid]['name']} connected."
-                    if pid in ("google-antigravity", "google-gemini-cli"):
-                        msg += ("\n\nGoogle may require account verification before "
-                                "you can use Cloud Code Assist. If you get a 403 error, "
-                                "visit: https://developers.google.com/gemini-code-assist/auth/auth_success_gemini")
-                    QMessageBox.information(self, "Login Success", msg)
-                # Refresh AFTER dialog is dismissed so widgets are fully processed
-                self._oauth_list._refresh()
-            threading.Thread(target=_run_login, args=(pid, done), daemon=True).start()
-
-    def _on_oauth_logout(self, pid: str) -> None:
-        oauth_helper.logout_provider(pid)
-        self._oauth_list._refresh()
-
-    def _on_oauth_status(self, pid: str) -> None:
-        self._oauth_list._refresh()
-
-    # ── Screen 2b: API-key providers ───────────────────────────────────────────
-
-    def _show_apikey(self) -> None:
-        if self._api_list is None:
-            self._api_list = ProviderApiKeyList()
-            self._api_list.provider_clicked.connect(self._on_apikey_click)
-        self._set_page(self._api_list, "SELECT PROVIDER", show_back=True)
-
-    def _on_apikey_click(self, pid: str) -> None:
-        if pid == "__add_custom__":
-            dlg = CustomProviderDialog(self)
-            if dlg.exec():
-                if self._api_list:
-                    self._api_list._refresh()
-                self._show_auth_method()
-        elif pid == "__refresh__":
-            if self._api_list:
-                self._api_list._refresh()
-        else:
-            self._show_apikey_dialog(pid)
-
-    def _show_apikey_dialog(self, pid: str) -> None:
-        hint = _dialog_auth_hint(pid)
-        if hint == "aws":
-            # Banner-only: show OK/cancel
-            dlg = ApiKeyDialog(pid, self)
-            dlg.exec()
-            if self._api_list:
-                self._api_list._refresh()
-            return
-        dlg = ApiKeyDialog(pid, self)
-        if dlg.exec():
-            if self._api_list:
-                self._api_list._refresh()
-            # Return to auth method screen on save (matches Aery: flow ends on save)
-            self._show_auth_method()
-
-    # ── Screen 2c: Aery Gateway ────────────────────────────────────────────────
-
-    def _show_gateway(self) -> None:
-        self._gateway_page = GatewayPage()
-        self._gateway_page.saved.connect(self._on_gateway_saved)
-        self._set_page(self._gateway_page, "AERY GATEWAY", show_back=True)
-
-    def _on_gateway_saved(self) -> None:
-        QMessageBox.information(self, "Gateway Key Saved",
-                                "Aery Gateway key saved. Restart Aery to pick up the new credentials.")
-        self._show_auth_method()
-
-    # ── Busy indicator ─────────────────────────────────────────────────────────
-
-    def _set_busy(self, msg: str) -> None:
-        self._action_btn.setText(msg)
-        self._action_btn.setVisible(bool(msg))
-        self._action_btn.setEnabled(not msg)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Gateway key page
-# ══════════════════════════════════════════════════════════════════════════════
-
-class GatewayPage(QWidget):
-    """Simple Aery gateway key entry."""
-
-    _FONT_SIZE = "14px"
-    saved = pyqtSignal()
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
-
-        sub = QLabel(
-            "Get a key at aery-web.pages.dev\n"
-            "Paste it below to enable all providers through the gateway."
+        self._copy_btn = QPushButton("Copy")
+        self._copy_btn.setFixedSize(60, 38)
+        self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_CARD}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER};"
+            f" border-radius: 6px; font-size: 11px; font-weight: 600; }}"
+            f" QPushButton:hover {{ background: {BORDER}; color: {ACCENT}; }}"
         )
-        sub.setWordWrap(True)
-        sub.setStyleSheet(
-            f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        root.addWidget(sub)
+        self._copy_btn.clicked.connect(self._copy_code)
+        code_box.addWidget(self._copy_btn)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        lbl = QLabel("Aery Key")
-        lbl.setFixedWidth(70)
-        lbl.setStyleSheet(f"font-size:{self._FONT_SIZE}; color:{DIM}; border:none; background:transparent;")
-        row.addWidget(lbl)
-        self._key_inp = _input("Paste key…", 260)
-        self._key_inp.setStyleSheet(
-            self._key_inp.styleSheet().replace(_fs(F_M), self._FONT_SIZE))
-        row.addWidget(self._key_inp, 1)
-        root.addLayout(row)
+        status_lay.addLayout(code_box)
 
-        link = QLabel(
-            '<a href="https://aery-web.pages.dev" style="color:#8abeb7;">'
-            'Open aery-web.pages.dev →</a>')
-        link.setOpenExternalLinks(True)
-        link.setStyleSheet(f"font-size:13px; color:{ACCENT}; border:none; background:transparent;")
-        root.addWidget(link)
-        root.addSpacing(12)
+        self._poll_status = QLabel("⏳ Waiting for confirmation in browser...")
+        self._poll_status.setStyleSheet(f"font-size: 10px; color: {TEXT_DIM};")
+        status_lay.addWidget(self._poll_status)
+
+        root.addWidget(self._status_box)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self._open_browser_btn = QPushButton("Open Browser")
+        self._open_browser_btn.setFixedHeight(30)
+        self._open_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_browser_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {TEXT_MUTED}; border: 1px solid {BORDER};"
+            f" border-radius: 6px; font-size: 11px; font-weight: 600; padding: 0 10px;"
+            f" text-align: center; }}"
+            f" QPushButton:hover {{ background: {BG_CARD}; color: {TEXT_PRIMARY}; border-color: {TEXT_DIM}; }}"
+        )
+        self._open_browser_btn.clicked.connect(self._open_browser)
+        btn_row.addWidget(self._open_browser_btn)
+
         btn_row.addStretch()
-        cancel = _btn("CANCEL", DIM)
-        cancel.clicked.connect(lambda: self.saved.emit())
-        btn_row.addWidget(cancel)
-        save = _btn("SAVE", ACCENT, ACCENT)
-        save.setStyleSheet(save.styleSheet().replace(f"color:{ACCENT}", f"color:{BG}"))
-        save.clicked.connect(self._save)
-        btn_row.addWidget(save)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(30)
+        cancel_btn.setFixedWidth(70)
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {TEXT_MUTED}; border: 1px solid {BORDER};"
+            f" border-radius: 6px; font-size: 11px; font-weight: 600; }}"
+            f" QPushButton:hover {{ background: {BG_CARD}; color: {DANGER}; border-color: {DANGER}; }}"
+        )
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
         root.addLayout(btn_row)
 
-    def _save(self) -> None:
-        key = self._key_inp.text().strip()
-        if not key:
+    def _copy_code(self) -> None:
+        if self._user_code:
+            cb = QGuiApplication.clipboard()
+            if cb:
+                cb.setText(self._user_code)
+                self._copy_btn.setText("Copied!")
+                self._copy_btn.setStyleSheet(
+                    f"QPushButton {{ background: {SUCCESS}; color: {BG_DARK}; border: none;"
+                    f" border-radius: 6px; font-size: 11px; font-weight: 700; }}"
+                )
+                QTimer.singleShot(1800, lambda: self._copy_btn.setText("Copy"))
+
+    def _open_browser(self) -> None:
+        if self._verification_url:
+            _open_url(self._verification_url)
+
+    def reject(self) -> None:
+        self._cancelled = True
+        super().reject()
+
+    def _start_flow(self) -> None:
+        cfg = oauth_helper.OAUTH_CONFIGS.get(self._pid, {})
+        auth_url = cfg.get("auth_url", "https://api.kilo.ai/api/device-auth/codes")
+        token_url = cfg.get("token_url", "https://api.kilo.ai/api/device-auth/codes")
+
+        try:
+            req = urllib.request.Request(
+                auth_url,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            if not self._cancelled:
+                QTimer.singleShot(0, lambda: self._on_error(f"Failed to request device code: {e}"))
             return
-        oauth_helper.save_gateway_key(key)
-        self.saved.emit()
+
+        self._user_code = data.get("code", "")
+        self._verification_url = data.get("verificationUrl", "https://app.kilo.ai/device-auth")
+
+        def update_ui():
+            self._code_display.setText(self._user_code)
+            self._copy_code()
+            self._open_browser()
+
+        QTimer.singleShot(0, update_ui)
+
+        poll_endpoint = f"{token_url}/{urllib.parse.quote(self._user_code)}"
+        deadline = time.time() + 180
+
+        while time.time() < deadline and not self._cancelled:
+            time.sleep(1.5)
+            if self._cancelled:
+                break
+
+            poll_req = urllib.request.Request(
+                poll_endpoint,
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(poll_req, timeout=8) as resp:
+                    if resp.status == 202:
+                        continue
+                    token_data = json.loads(resp.read().decode())
+                    if token_data.get("status") == "approved" and token_data.get("token"):
+                        from aery_plugin.vault import get_vault
+                        vault = get_vault("auth")
+                        vault.set_oauth_tokens(
+                            self._pid,
+                            token_data["token"],
+                            "",
+                            int(time.time() * 1000) + 31536000 * 1000,
+                        )
+                        if not oauth_helper.get_active_provider():
+                            models = oauth_helper._oauth_models(self._pid)
+                            oauth_helper.set_active_provider(self._pid, models[0][0] if models else "")
+                        
+                        if not self._cancelled:
+                            QTimer.singleShot(0, self.accept)
+                        return
+                    elif token_data.get("status") == "rejected":
+                        if not self._cancelled:
+                            QTimer.singleShot(0, lambda: self._on_error("Authorization declined by user."))
+                        return
+                    elif token_data.get("status") == "expired":
+                        if not self._cancelled:
+                            QTimer.singleShot(0, lambda: self._on_error("Code expired. Please try again."))
+                        return
+            except urllib.error.HTTPError as e:
+                if e.code == 202:
+                    continue
+            except Exception:
+                pass
+
+        if not self._cancelled:
+            QTimer.singleShot(0, lambda: self._on_error("Authorization timed out. Please try again."))
+
+    def _on_error(self, msg: str) -> None:
+        QMessageBox.critical(self, "Authorization Error", msg)
+        self.reject()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Public shortcuts used by chat_panel.py settings menu
-# ══════════════════════════════════════════════════════════════════════════════
+class SessionSwitcherDialog(QDialog):
+    """Compact dialog to switch between conversation sessions or create a new session."""
 
-def show_model_switcher(parent: Optional[QWidget] = None) -> None:
-    dlg = ModelSwitcherDialog(parent)
-    dlg.exec()
+    session_switched = pyqtSignal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Conversation Sessions")
+        self.setFixedSize(380, 400)
+        self.setModal(True)
+        self.setStyleSheet(_dialog_stylesheet())
+
+        self._build_ui()
+        self._populate_sessions()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        hdr = QHBoxLayout()
+        icon_lbl = QLabel("💬")
+        icon_lbl.setFixedSize(28, 28)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setStyleSheet(f"background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 6px; font-size: 14px;")
+        hdr.addWidget(icon_lbl)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        t = QLabel("Conversation Sessions")
+        t.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {TEXT_PRIMARY};")
+        s = QLabel("Switch between active workspaces")
+        s.setStyleSheet(f"font-size: 10px; color: {TEXT_MUTED};")
+        title_col.addWidget(t)
+        title_col.addWidget(s)
+        hdr.addLayout(title_col)
+        hdr.addStretch()
+
+        root.addLayout(hdr)
+
+        new_btn = QPushButton("+ Start New Session")
+        new_btn.setFixedHeight(30)
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: {BG_DARK}; border: none;"
+            f" border-radius: 6px; font-size: 11px; font-weight: 700; }}"
+            f" QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+        )
+        new_btn.clicked.connect(self._create_new_session)
+        root.addWidget(new_btn)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ background: transparent; border: 1px solid {BORDER}; border-radius: 6px; }}")
+
+        self._list_container = QWidget()
+        self._list_lay = QVBoxLayout(self._list_container)
+        self._list_lay.setContentsMargins(6, 6, 6, 6)
+        self._list_lay.setSpacing(4)
+        scroll.setWidget(self._list_container)
+
+        root.addWidget(scroll, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedHeight(26)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {TEXT_MUTED}; border: 1px solid {BORDER};"
+            f" border-radius: 4px; font-size: 11px; }}"
+            f" QPushButton:hover {{ background: {BG_CARD}; color: {TEXT_PRIMARY}; }}"
+        )
+        close_btn.clicked.connect(self.accept)
+        root.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignRight)
+
+    def _populate_sessions(self) -> None:
+        while self._list_lay.count():
+            item = self._list_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        try:
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            sessions = mgr.list_sessions()
+            active_sess = mgr.get_active_session()
+            active_id = active_sess.session_id if active_sess else None
+
+            if not sessions:
+                lbl = QLabel("No active sessions.")
+                lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px; padding: 8px;")
+                self._list_lay.addWidget(lbl)
+            else:
+                for idx, s in enumerate(sessions):
+                    s_id = s.session_id
+                    is_active = (s_id == active_id)
+                    
+                    row = QFrame()
+                    row.setObjectName("innerCard" if is_active else "card")
+                    row_lay = QHBoxLayout(row)
+                    row_lay.setContentsMargins(8, 6, 8, 6)
+                    row_lay.setSpacing(6)
+
+                    dot = QLabel("●" if is_active else "○")
+                    dot.setStyleSheet(f"color: {SUCCESS if is_active else TEXT_DIM}; font-size: 11px;")
+                    row_lay.addWidget(dot)
+
+                    info_col = QVBoxLayout()
+                    info_col.setSpacing(1)
+                    created_str = time.strftime("%b %d, %H:%M", time.localtime(s.created_at)) if s.created_at else ""
+                    name = QLabel(f"Session {idx + 1} {'(Active)' if is_active else ''}")
+                    name.setStyleSheet(f"font-size: 11px; font-weight: {700 if is_active else 500}; color: {ACCENT if is_active else TEXT_PRIMARY};")
+                    meta = QLabel(f"{s_id[:8]} • {created_str}")
+                    meta.setStyleSheet(f"font-size: 9px; color: {TEXT_DIM};")
+                    info_col.addWidget(name)
+                    info_col.addWidget(meta)
+                    row_lay.addLayout(info_col, 1)
+
+                    if not is_active:
+                        switch_btn = QPushButton("Switch")
+                        switch_btn.setFixedHeight(22)
+                        switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                        switch_btn.setStyleSheet(
+                            f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER};"
+                            f" border-radius: 4px; font-size: 10px; font-weight: 600; padding: 0 6px; }}"
+                            f" QPushButton:hover {{ background: {ACCENT}; color: {BG_DARK}; border: none; }}"
+                        )
+                        switch_btn.clicked.connect(lambda _, sid=s_id: self._switch_to_session(sid))
+                        row_lay.addWidget(switch_btn)
+
+                    self._list_lay.addWidget(row)
+        except Exception:
+            pass
+
+        self._list_lay.addStretch()
+
+    def _switch_to_session(self, session_id: str) -> None:
+        try:
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            mgr.set_active_session(session_id)
+            self._populate_sessions()
+            self.session_switched.emit(session_id)
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not switch session: {e}")
+
+    def _create_new_session(self) -> None:
+        try:
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            new_id = mgr.create_session()
+            mgr.set_active_session(new_id)
+            self._populate_sessions()
+            self.session_switched.emit(new_id)
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not create session: {e}")
 
 
-def show_scopes_dialog(parent: Optional[QWidget] = None) -> None:
-    dlg = ScopesDialog(parent)
-    dlg.exec()
+class AerySettingsDialog(QDialog):
+    """Enterprise-grade, modern AI settings panel for Provider and Models."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Aerynel AI Configuration")
+        self.setFixedSize(460, 440)
+        self.setModal(True)
+        self.setStyleSheet(_dialog_stylesheet())
+
+        self._build_ui()
+        self._refresh()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 20)
+        root.setSpacing(14)
+
+        # Header with Logo
+        header = QHBoxLayout()
+        header.setSpacing(12)
+
+        icon_lbl = QLabel()
+        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons", "aery.svg")
+        icon_lbl.setPixmap(_svg_pixmap(svg_path, 34))
+        icon_lbl.setFixedSize(34, 34)
+        icon_lbl.setStyleSheet(f"background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 6px; padding: 1px;")
+        header.addWidget(icon_lbl)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        h_title = QLabel("AI Configuration")
+        h_title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {TEXT_PRIMARY}; letter-spacing: -0.01em;")
+        h_sub = QLabel("Model provider and active intelligence model")
+        h_sub.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+        title_col.addWidget(h_title)
+        title_col.addWidget(h_sub)
+        header.addLayout(title_col)
+        header.addStretch()
+
+        root.addLayout(header)
+
+        # Provider Card
+        prov_card = QFrame()
+        prov_card.setObjectName("card")
+        prov_lay = QVBoxLayout(prov_card)
+        prov_lay.setContentsMargins(14, 14, 14, 14)
+        prov_lay.setSpacing(12)
+
+        c1_hdr = QHBoxLayout()
+        c1_title = QLabel("PROVIDER & CREDENTIALS")
+        c1_title.setStyleSheet(f"font-size: 10px; font-weight: 700; color: {TEXT_MUTED}; letter-spacing: 0.08em;")
+        c1_hdr.addWidget(c1_title)
+        c1_hdr.addStretch()
+
+        self._status_badge = QLabel("Not Connected")
+        self._status_badge.setFixedHeight(22)
+        self._status_badge.setStyleSheet(
+            f"background: rgba(248, 81, 73, 0.12); color: {DANGER}; border: 1px solid rgba(248, 81, 73, 0.3);"
+            f" border-radius: 11px; font-size: 10px; font-weight: 600; padding: 0 8px;"
+        )
+        c1_hdr.addWidget(self._status_badge)
+        prov_lay.addLayout(c1_hdr)
+
+        self._prov_combo = QComboBox()
+        self._prov_combo.addItem("Kilo Gateway (free active models)", "kilo")
+        self._prov_combo.setFixedHeight(32)
+        prov_lay.addWidget(self._prov_combo)
+
+        # Enterprise Auth Container
+        auth_inner = QFrame()
+        auth_inner.setObjectName("innerCard")
+        auth_lay = QHBoxLayout(auth_inner)
+        auth_lay.setContentsMargins(12, 10, 12, 10)
+        auth_lay.setSpacing(10)
+
+        auth_text = QVBoxLayout()
+        auth_text.setSpacing(2)
+        self._auth_status_title = QLabel("Device Flow Authentication")
+        self._auth_status_title.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {TEXT_PRIMARY};")
+        self._auth_status_sub = QLabel("One-click sign in via browser")
+        self._auth_status_sub.setStyleSheet(f"font-size: 10px; color: {TEXT_MUTED};")
+        auth_text.addWidget(self._auth_status_title)
+        auth_text.addWidget(self._auth_status_sub)
+        auth_lay.addLayout(auth_text, 1)
+
+        self._auth_btn = QPushButton("Sign in with Kilo")
+        self._auth_btn.setFixedHeight(30)
+        self._auth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._auth_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: {BG_DARK}; border: none;"
+            f" border-radius: 6px; font-size: 11px; font-weight: 700; padding: 0 12px; }}"
+            f" QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+        )
+        self._auth_btn.clicked.connect(self._on_auth_clicked)
+        auth_lay.addWidget(self._auth_btn)
+
+        prov_lay.addWidget(auth_inner)
+        root.addWidget(prov_card)
+
+        # Model Selection Card
+        model_card = QFrame()
+        model_card.setObjectName("card")
+        model_lay = QVBoxLayout(model_card)
+        model_lay.setContentsMargins(14, 14, 14, 14)
+        model_lay.setSpacing(10)
+
+        c2_title = QLabel("ACTIVE MODEL")
+        c2_title.setStyleSheet(f"font-size: 10px; font-weight: 700; color: {TEXT_MUTED}; letter-spacing: 0.08em;")
+        model_lay.addWidget(c2_title)
+
+        self._model_combo = QComboBox()
+        self._model_combo.setFixedHeight(32)
+        self._populate_models()
+        self._model_combo.currentIndexChanged.connect(self._on_model_changed)
+        model_lay.addWidget(self._model_combo)
+
+        root.addWidget(model_card)
+
+        root.addStretch()
+
+        # Footer Actions
+        footer = QHBoxLayout()
+        footer.addStretch()
+
+        done_btn = QPushButton("Done")
+        done_btn.setFixedHeight(32)
+        done_btn.setFixedWidth(85)
+        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        done_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: {BG_DARK}; border: none;"
+            f" border-radius: 6px; font-size: 11px; font-weight: 700; }}"
+            f" QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+        )
+        done_btn.clicked.connect(self.accept)
+        footer.addWidget(done_btn)
+
+        root.addLayout(footer)
+
+    def _populate_models(self) -> None:
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        models = oauth_helper._oauth_models("kilo")
+        for mid, mname in models:
+            self._model_combo.addItem(f"{mname}  ({mid})", mid)
+        self._model_combo.blockSignals(False)
+
+    def _refresh(self) -> None:
+        auth = oauth_helper._load_auth()
+        kilo_entry = auth.get("kilo", {})
+        has_creds = bool(
+            kilo_entry.get("access") or kilo_entry.get("accessToken")
+            or kilo_entry.get("access_token")
+        )
+
+        if has_creds:
+            self._status_badge.setText("● Connected")
+            self._status_badge.setStyleSheet(
+                f"background: rgba(63, 185, 80, 0.15); color: {SUCCESS}; border: 1px solid rgba(63, 185, 80, 0.3);"
+                f" border-radius: 11px; font-size: 10px; font-weight: 600; padding: 0 8px;"
+            )
+            self._auth_status_title.setText("Authenticated Session")
+            self._auth_status_sub.setText("Kilo OAuth credentials verified & active in Vault")
+            self._auth_btn.setText("Disconnect Account")
+            self._auth_btn.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {TEXT_MUTED}; border: 1px solid {BORDER_LIGHT};"
+                f" border-radius: 6px; font-size: 11px; font-weight: 600; padding: 0 12px; }}"
+                f" QPushButton:hover {{ background: rgba(248, 81, 73, 0.15); color: {DANGER}; border-color: {DANGER}; }}"
+            )
+        else:
+            self._status_badge.setText("● Not Connected")
+            self._status_badge.setStyleSheet(
+                f"background: rgba(248, 81, 73, 0.12); color: {DANGER}; border: 1px solid rgba(248, 81, 73, 0.3);"
+                f" border-radius: 11px; font-size: 10px; font-weight: 600; padding: 0 8px;"
+            )
+            self._auth_status_title.setText("Device Flow Authentication")
+            self._auth_status_sub.setText("One-click sign in via browser")
+            self._auth_btn.setText("Sign in with Kilo")
+            self._auth_btn.setStyleSheet(
+                f"QPushButton {{ background: {ACCENT}; color: {BG_DARK}; border: none;"
+                f" border-radius: 6px; font-size: 11px; font-weight: 700; padding: 0 12px; }}"
+                f" QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+            )
+
+        active = oauth_helper.get_active_provider()
+        current_model = active.get("model", "") if active else ""
+        if current_model:
+            idx = self._model_combo.findData(current_model)
+            if idx >= 0:
+                self._model_combo.blockSignals(True)
+                self._model_combo.setCurrentIndex(idx)
+                self._model_combo.blockSignals(False)
+
+    def _on_auth_clicked(self) -> None:
+        auth = oauth_helper._load_auth()
+        kilo_entry = auth.get("kilo", {})
+        has_creds = bool(
+            kilo_entry.get("access") or kilo_entry.get("accessToken")
+            or kilo_entry.get("access_token")
+        )
+        if has_creds:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Disconnect Account")
+            msg_box.setText("Are you sure you want to disconnect Kilo Gateway?")
+            msg_box.setInformativeText("Your stored credentials will be removed from the local vault.")
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg_box.setDefaultButton(QMessageBox.StandardButton.No)
+            msg_box.setStyleSheet(_dialog_stylesheet())
+            if msg_box.exec() == QMessageBox.StandardButton.Yes:
+                oauth_helper.logout_provider("kilo")
+                self._refresh()
+        else:
+            dlg = _DeviceFlowDialog("kilo", self)
+            if dlg.exec():
+                self._refresh()
+
+    def _on_model_changed(self, index: int) -> None:
+        model_id = self._model_combo.itemData(index)
+        if model_id:
+            oauth_helper.set_active_provider("kilo", model_id)
 
 
-ModelSwitcherDialog_public = ModelSwitcherDialog
-ScopesDialog_public        = ScopesDialog
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Backward-compat aliases
-# ══════════════════════════════════════════════════════════════════════════════
-
-AeryConfigDialog    = AuthMethodWizard
-ProviderSetupWizard = AuthMethodWizard
+# Backward-compatibility aliases
+AeryConfigDialog = AerySettingsDialog
+AuthMethodWizard = AerySettingsDialog
+ModelSwitcherDialog = AerySettingsDialog

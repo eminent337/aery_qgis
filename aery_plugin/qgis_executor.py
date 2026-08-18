@@ -11,9 +11,16 @@ import time
 import traceback
 import uuid
 from collections import deque
-from datetime import datetime, timezone
 from typing import Any, Optional
-
+# Import sandbox proxies for export and use in exec globals
+from aery_plugin.sandbox import (
+    _make_os_proxy,
+    _make_subprocess_proxy,
+    _make_shutil_proxy,
+    _make_urllib_proxy,
+    _make_builtins_proxy,
+    _make_sandbox_exec_globals,
+)
 from PyQt6.QtCore import QObject, QTimer
 # Cached globals — built once on first execution, reused for all subsequent calls
 _GLOBALS_CACHE: Optional[dict[str, Any]] = None
@@ -1047,22 +1054,31 @@ class QGISCodeExecutor(QObject):
             except ImportError:
                 pass  # not in QGIS context (tests)
 
-    def execute(self, code: str, timeout: int = 300, on_progress=None) -> dict[str, Any]:
+    def execute(self, code: str, timeout: int = 300, on_progress=None, priority: Optional[bool] = None) -> dict[str, Any]:
         """Execute code on the main GUI thread via the QTimer queue.
         This ensures Qt widget access (canvas, layers) happens on the correct thread.
-
-        Progress notifications raised by _run_processing_async (type == "progress")
-        are forwarded to on_progress(progress_dict) instead of being dropped.
+        Interactive tools (capture_canvas, zoom_to_place, get_project_context) are
+        automatically prioritized in _priority_queue for zero-lag responsiveness.
         """
+        if priority is None:
+            priority = (
+                code in ("__capture_canvas__", "__get_project_context__")
+                or code.startswith("__tool__:capture_canvas")
+                or code.startswith("__tool__:zoom_to_")
+                or code.startswith("__tool__:set_layer_visibility")
+            )
         result_queue: queue.Queue = queue.Queue()
-        self._normal_queue.put(("direct", code, result_queue, {
+        entry = ("direct", code, result_queue, {
             "method": "run_code",
             "tool_name": "run_qgis_code",
             "source": "plugin",
+            "priority": priority,
             "started_at": time.perf_counter(),
-        }))
-        # DO NOT call _process_queue() here — it must run on the main thread via QTimer
-        # Clear any stale cancellation state so this run starts fresh.
+        })
+        if priority:
+            self._priority_queue.append(entry)
+        else:
+            self._normal_queue.put(entry)
         self._cancel_event.clear()
         deadline_exec = time.monotonic() + timeout
         while time.monotonic() < deadline_exec:

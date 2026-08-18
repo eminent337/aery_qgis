@@ -717,6 +717,7 @@ GEOSPATIAL_TOOLS = [
             "properties": {},
         },
         "execute": list_map_themes,
+        "execute": list_map_themes,
     },
     {
         "name": "refresh_canvas",
@@ -732,3 +733,216 @@ GEOSPATIAL_TOOLS = [
         "execute": refresh_canvas,
     },
 ]
+# ---------------------------------------------------------------------------
+# Layer helpers (GeoLibre-style convenience helpers)
+# ---------------------------------------------------------------------------
+iface = None  # Set by plugin at runtime via set_iface()
+def set_iface(qgis_iface):
+    """Set the global QGIS interface handle."""
+    global iface
+    iface = qgis_iface
+_GEOM_TYPE_MAP = {
+    "point": "Point",
+    "linestring": "LineString",
+    "line": "LineString",
+    "polygon": "Polygon",
+    "multipoint": "MultiPoint",
+    "multilinestring": "MultiLineString",
+    "multipolygon": "MultiPolygon",
+}
+_QGIS_VARIANT_TYPES = {
+    "int": "int",
+    "integer": "int",
+    "double": "double",
+    "float": "double",
+    "string": "string",
+    "bool": "bool",
+    "boolean": "bool",
+    "date": "date",
+    "datetime": "datetime",
+}
+def create_scratch_layer(
+    geom_type: str,
+    name: str = "",
+    fields: list[tuple] | None = None,
+    crs: str = "EPSG:4326",
+) -> "QgsVectorLayer":
+    """Create an in-memory scratch vector layer and add it to the project.
+    Returns:
+        The newly created (and project-added) QgsVectorLayer.
+    Raises:
+        RuntimeError: If the geometry type is invalid.
+    """
+    from qgis.core import QgsProject, QgsVectorLayer, QgsFields, QgsField
+    from PyQt6.QtCore import QVariant
+    gt = _GEOM_TYPE_MAP.get(geom_type.lower())
+    if gt is None:
+        raise RuntimeError(f"Invalid geometry type: {geom_type}")
+    layer_name = name or gt.lower()
+    layer = QgsVectorLayer(f"{gt}?crs={crs}", layer_name, "memory")
+    if not layer.isValid():
+        raise RuntimeError(f"Failed to create scratch layer: {gt}")
+    prov = layer.dataProvider()
+    field_defs = []
+    # Always include a 'name' field by default
+    if fields is None:
+        field_defs.append(QgsField("name", QVariant.String))
+    else:
+        for fname, ftype in fields:
+            qt_type_name = _QGIS_VARIANT_TYPES.get(str(ftype).lower(), "string")
+            variant_type = getattr(QVariant, qt_type_name.capitalize(), QVariant.String)
+            field_defs.append(QgsField(fname, variant_type))
+    prov.addAttributes(field_defs)
+    layer.updateFields()
+    QgsProject.instance().addMapLayer(layer)
+    return layer
+def resolve_layer(layer_ref) -> "QgsVectorLayer | None":
+    """Resolve a layer reference (object, id, or name) to a layer.
+    Returns None if not found.
+    """
+    from qgis.core import QgsProject
+    if layer_ref is None:
+        return None
+    # Already a layer object
+    if hasattr(layer_ref, "id"):
+        return layer_ref
+    if isinstance(layer_ref, str):
+        project = QgsProject.instance()
+        # Try layer id first (most reliable)
+        layer = project.mapLayer(layer_ref)
+        if layer is not None:
+            return layer
+        # Try by name (layer name is user-visible, ids are internal)
+        for lyr in project.mapLayers().values():
+            if lyr.name() == layer_ref:
+                return lyr
+    return None
+def load_layer(path: str) -> "QgsVectorLayer | None":
+    """Load a vector layer from a file path (GeoJSON, Shapefile, GPKG, etc.).
+    Returns the layer if valid, None otherwise.
+    """
+    from qgis.core import QgsProject, QgsVectorLayer
+    layer = QgsVectorLayer(path, os.path.basename(path), "ogr")
+    if layer.isValid():
+        QgsProject.instance().addMapLayer(layer)
+        return layer
+    return None
+def get_active_layer() -> "QgsVectorLayer | None":
+    """Get the currently active layer from the QGIS interface.
+    Returns None if no interface is available or no layer is active.
+    """
+    if iface is None:
+        return None
+    try:
+        return iface.activeLayer()
+    except Exception:
+        return None
+def reproject_layer(layer, crs: str, output_path: str | None = None) -> "QgsVectorLayer | str | None":
+    """Reproject a layer to a different CRS.
+    Uses native:reprojectlayer for vector layers and gdal:warpreproject for
+    raster layers.
+    Returns:
+        Reprojected layer (vector) or output path (raster), or None on failure.
+    """
+    from qgis.core import QgsProject
+    import processing
+    params: dict = {}
+    if layer.type() == 0:  # Vector
+        params = {
+            "INPUT": layer,
+            "TARGET_CRS": crs,
+            "OUTPUT": output_path or "memory:",
+        }
+        result = processing.run("native:reprojectlayer", params)
+        output = result.get("OUTPUT")
+        if isinstance(output, str):
+            return output
+        if hasattr(output, "isValid"):
+            QgsProject.instance().addMapLayer(output)
+        return output
+    elif layer.type() == 1:  # Raster
+        params = {
+            "INPUT": layer,
+            "TARGET_CRS": crs,
+            "OUTPUT": output_path or "TEMPORARY_OUTPUT",
+        }
+        result = processing.run("gdal:warpreproject", params)
+        output = result.get("OUTPUT")
+        if isinstance(output, str):
+            return output
+        if hasattr(output, "isValid"):
+            QgsProject.instance().addMapLayer(output)
+        return output
+    return None
+def set_layer_style_simple(
+    layer,
+    style: str = "single",
+    color_or_ramp: str | list = "#ff0000",
+    **kwargs,
+) -> bool:
+    """Apply a simple style to a layer.
+    Args:
+        layer: QgsVectorLayer or QgsRasterLayer.
+        style: "single", "categorized", "graduated", "rule", "heatmap".
+        color_or_ramp: Single color hex for "single", or field name(s) for
+                       categorized/graduated.
+        **kwargs: Additional style parameters (e.g., field, classes, opacity).
+    Returns:
+        True if styling was applied successfully.
+    """
+    from qgis.core import (
+        QgsFillSymbol,
+        QgsLineSymbol,
+        QgsMarkerSymbol,
+        QgsSingleSymbolRenderer,
+        QgsCategorizedSymbolRenderer,
+        QgsGraduatedSymbolRenderer,
+        QgsRendererCategory,
+        QgsStyle,
+    )
+    try:
+        if style == "single":
+            if hasattr(layer, "geometryType"):
+                gt = layer.geometryType()
+                if gt == 0:  # Point
+                    symbol = QgsMarkerSymbol.createSimple({"color": color_or_ramp, "size": "3"})
+                elif gt == 1:  # Line
+                    symbol = QgsLineSymbol.createSimple({"color": color_or_ramp, "width": "1"})
+                elif gt == 2:  # Polygon
+                    symbol = QgsFillSymbol.createSimple({"color": color_or_ramp, "outline_color": "#000000"})
+                else:
+                    symbol = QgsFillSymbol.createSimple({"color": color_or_ramp})
+            else:
+                symbol = QgsFillSymbol.createSimple({"color": color_or_ramp})
+            renderer = QgsSingleSymbolRenderer(symbol)
+            layer.setRenderer(renderer)
+        elif style == "categorized":
+            field = kwargs.get("field", "")
+            if not field:
+                return False
+            categories = []
+            if isinstance(color_or_ramp, list):
+                values = color_or_ramp
+            else:
+                values = [layer.uniqueValues(layer.fields().lookupField(field))]
+            if isinstance(values, list) and len(values) > 0 and isinstance(values[0], list):
+                values = values[0]
+            symbol = QgsFillSymbol.createSimple({"color": "#ff0000"})
+            for i, val in enumerate(values):
+                category = QgsRendererCategory(val, symbol, str(val))
+                categories.append(category)
+            renderer = QgsCategorizedSymbolRenderer(categories, layer.fields().lookupField(field))
+            layer.setRenderer(renderer)
+        elif style == "graduated":
+            field = kwargs.get("field", "")
+            classes = kwargs.get("classes", 5)
+            if not field:
+                return False
+            renderer = QgsGraduatedSymbolRenderer.createRenderer(
+                layer, field, classes, QgsGraduatedSymbolRenderer.Mode(0),
+            )
+            layer.setRenderer(renderer)
+        layer.triggerRepaint()
+        return True
+    except Exception:
+        return False

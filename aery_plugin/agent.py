@@ -113,10 +113,11 @@ class Agent(QObject):
     _step_approved = pyqtSignal(str) if _HAS_PYQT6 else None   # emits tool_name when user approves a destructive step
     _step_cancelled = pyqtSignal(str) if _HAS_PYQT6 else None  # emits reason when user cancels
 
-    def __init__(self, executor, iface=None):
+    def __init__(self, executor, iface=None, session_context=None):
         super().__init__()
         self.executor = executor
         self.iface = iface
+        self.session_context = session_context
         self.tools = ToolRegistry(executor, iface, agent=self)
         from aery_plugin.knowledge_base import KnowledgeBase
         self._knowledge = KnowledgeBase()
@@ -124,7 +125,9 @@ class Agent(QObject):
         self._client = None
         self._model = ""
         self._provider_id = ""
-        self._system_prompt = build_system_prompt()
+        addendum = getattr(self, "_active_profile", None)
+        addendum_text = addendum.system_prompt_addendum if addendum else ""
+        self._system_prompt = build_system_prompt("", addendum_text)
         self._session_id: Optional[str] = None
         self._project_dir: Optional[str] = None
         self.permissions = PermissionManager()
@@ -516,21 +519,35 @@ class Agent(QObject):
         return None
 
     def _load_credentials(self) -> tuple[str, dict, str]:
-        """Load provider credentials from oauth_helper.
+        """Load provider credentials from oauth_helper using active profile.
 
         Returns (provider_id, auth_entry, model).
         """
         from aery_plugin import oauth_helper
+        from aery_plugin.profiles import (
+            list_profiles, get_default_profile_id, select_active_profile
+        )
 
-        active = oauth_helper.get_active_provider()
-        if not active:
-            raise RuntimeError("No LLM provider configured. Open Settings to configure a provider.")
+        # Get profiles and select active one
+        profiles = list_profiles()
+        default_id = get_default_profile_id()
+        active_profile = select_active_profile(
+            profiles=profiles,
+            default_profile_id=default_id,
+            selected_profile_id=getattr(self, "_selected_profile_id", None),
+            user_explicitly_chose=bool(getattr(self, "_selected_profile_id", None)),
+        )
 
-        provider_id = active["id"]
-        model = active.get("model", "")
+        if not active_profile:
+            raise RuntimeError("No LLM profile configured. Open Settings to create a profile.")
+
+        provider_id = active_profile.provider
+        model = active_profile.model
 
         auth_entry = oauth_helper.get_auth_entry(provider_id)
 
+        # Store profile for use in prompt building and tool filtering
+        self._active_profile = active_profile
         self._provider_id = provider_id
         return provider_id, auth_entry, model
 
@@ -544,6 +561,7 @@ class Agent(QObject):
 
         Closes the previous client's HTTP connections first to prevent
         resource leaks over long-running QGIS sessions.
+        Also re-selects the active profile to pick up any profile changes.
         """
         import asyncio
         if self._client is not None and hasattr(self._client, "close"):
@@ -553,6 +571,11 @@ class Agent(QObject):
                 logger.debug("Client connection close failed during reinitialize")
         self._client = None
         self._model = ""
+        # Clear cached profile to force re-selection
+        if hasattr(self, "_active_profile"):
+            delattr(self, "_active_profile")
+        if hasattr(self, "_selected_profile_id"):
+            delattr(self, "_selected_profile_id")
         self.initialize()
 
 
@@ -645,7 +668,9 @@ class Agent(QObject):
             if on_event:
                 on_event({"type": "text_chunk", "text": reply})
             return reply
-        self._system_prompt = build_system_prompt(user_message)
+        addendum = getattr(self, "_active_profile", None)
+        addendum_text = addendum.system_prompt_addendum if addendum else ""
+        self._system_prompt = build_system_prompt(user_message, addendum_text)
         with self._client_lock:
             if not self._client:
                 try:
@@ -725,7 +750,9 @@ class Agent(QObject):
                 if _last_assistant:
                     _query_parts.append(_last_assistant)
                 _query = " | ".join(_query_parts)
-                tools = self.tools.retrieve_tools(query=_query)
+                prof = getattr(self, "_active_profile", None)
+                allowlist = prof.tool_allowlist if prof and prof.tool_allowlist else None
+                tools = self.tools.retrieve_tools(query=_query, tool_allowlist=allowlist)
                 full_content = ""
                 tool_calls = []
                 # Use the model's actual max_tokens from the provider registry
@@ -734,10 +761,17 @@ class Agent(QObject):
                 chunk_count = 0
 
                 # Stream the response
+                # Get model params from active profile
+                profile = getattr(self, "_active_profile", None)
+                model_params = profile.model_params if profile else {}
+                temperature = model_params.get("temperature", 0.0)
+                max_tokens_override = model_params.get("max_tokens", _max_tokens)
+
                 async for chunk in self._client.chat_stream(
                     messages=api_messages,
                     model=self._model,
-                    max_tokens=_max_tokens,
+                    max_tokens=max_tokens_override,
+                    temperature=temperature,
                     tools=tools if tools else None,
                     provider=self._provider_id,
                     session_id=self._session_id or "",
@@ -800,10 +834,16 @@ class Agent(QObject):
                 if not full_content and not tool_calls:
                     # Fallback: non-streaming response (some providers don't stream tools well)
                     logger.info(f"[Aery Agent] trying non-streaming fallback chat()")
+                    profile = getattr(self, "_active_profile", None)
+                    model_params = profile.model_params if profile else {}
+                    temperature = model_params.get("temperature", 0.0)
+                    max_tokens_override = model_params.get("max_tokens", _max_tokens)
+
                     response = await self._client.chat(
                         messages=api_messages,
                         model=self._model,
-                        max_tokens=_max_tokens,
+                        max_tokens=max_tokens_override,
+                        temperature=temperature,
                         tools=tools if tools else None,
                         provider=self._provider_id,
                         session_id=self._session_id or "",

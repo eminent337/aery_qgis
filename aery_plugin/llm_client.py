@@ -1,6 +1,25 @@
-"""Direct LLM API client for the Aery QGIS plugin.
+# Strands streaming agent integration
+try:
+    from strands import Agent
+    from strands.models.openai import OpenAIModel
+    from strands.models.anthropic import AnthropicModel
+    from strands.models.gemini import GeminiModel
+    from strands.models.bedrock import BedrockModel
+    HAS_STRANDS = True
+except ImportError:
+    HAS_STRANDS = False
+    Agent = object
+    OpenAIModel = AnthropicModel = GeminiModel = BedrockModel = object
 
-Supports OpenAI-compatible, Anthropic, and Google Gemini APIs.
+# AI Proxy integration
+try:
+    from aery_plugin.ai_proxy import get_proxy_worker
+    HAS_AI_PROXY = True
+except ImportError:
+    HAS_AI_PROXY = False
+    get_proxy_worker = None
+
+"""Direct LLM API client for the Aery QGIS plugin.
 Uses the existing oauth_helper.py for credential resolution.
 """
 
@@ -52,22 +71,16 @@ class LLMClientBase(abc.ABC):
 
     def format_message_pair(self, tool_call: dict, tool_result: str) -> list[dict]:
         """Return the messages to append to conversation history after a tool execution.
-
-        Returns messages: assistant (with tool_calls) + tool (with string result) + optional user (with image).
+        Returns messages: assistant (with tool_calls) + tool (with string result).
         """
+        # If tool returned a base64 image, keep tool response as clean confirmation text
+        # to avoid payload errors on text-only LLM models.
+        content = tool_result
         if isinstance(tool_result, str) and tool_result.startswith("data:image/"):
-            return [
-                {"role": "assistant", "tool_calls": [tool_call]},
-                {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": "Screenshot captured successfully."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Here is the live map canvas you requested:"},
-                    {"type": "image_url", "image_url": {"url": tool_result}}
-                ]}
-            ]
-            
+            content = "Map canvas captured successfully (image rendered on user screen)."
         return [
             {"role": "assistant", "tool_calls": [tool_call]},
-            {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": tool_result},
+            {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": content},
         ]
 
 
@@ -264,14 +277,12 @@ class OpenAIClient(LLMClientBase):
         except httpx.HTTPStatusError as e:
             raw_body = e.response.text or ""
             error_msg = _extract_error_message(raw_body)
-            raise APIError(f"HTTP {e.response.status_code}: {error_msg}\nRAW_BODY: {raw_body[:1000]}", e.response.status_code, retryable=_is_retryable(e.response.status_code))
+            raise APIError(error_msg, e.response.status_code, retryable=_is_retryable(e.response.status_code))
         except httpx.HTTPError as e:
             raise APIError(str(e), retryable=False)
-
     async def _do_stream_request(self, url: str, payload: dict) -> Any:
         max_retries = 3
         delay = 2.0
-
         for attempt in range(max_retries + 1):
             headers = {
                 "Content-Type": "application/json",
@@ -337,10 +348,9 @@ class OpenAIClient(LLMClientBase):
                     server_delay = _extract_retry_delay(body)
                     actual_delay = max(server_delay, delay)
                     await asyncio.sleep(actual_delay)
-                    delay *= 2
+                if attempt < max_retries and retryable:
                     continue
-                raise APIError(f"HTTP {e.response.status_code}: {error_msg}\nRAW_BODY: {body[:1000]}", e.response.status_code, retryable=retryable)
-
+                raise APIError(error_msg, e.response.status_code, retryable=retryable)
     async def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
         """Send a chat completion request with retry. Returns the parsed JSON response."""
         payload = self._build_payload(messages, model, max_tokens, **kwargs)
@@ -1078,7 +1088,8 @@ async def _timeout_aiter(ait, timeout: float = 30):
 
 def _resolve_google_credentials(auth_entry: dict) -> tuple[str, str]:
     """Resolve Google OAuth credentials. Returns (access_token, project_id)."""
-    access = auth_entry.get("access", "")
+    # Handle both old format (access) and new format (access_token)
+    access = auth_entry.get("access_token", "") or auth_entry.get("access", "")
     if not access:
         return "", ""
     
@@ -1095,24 +1106,20 @@ def _resolve_google_credentials(auth_entry: dict) -> tuple[str, str]:
 def _resolve_api_key(provider_id: str, auth_entry: dict) -> str:
     """Resolve the API key from an auth entry, handling both API key and OAuth types."""
     from aery_plugin import oauth_helper
+    from aery_plugin.core.ai.auth import get_auth_entry
+
+    # First, get the latest auth entry from Vault (auth_entry param is deprecated)
+    entry = get_auth_entry(provider_id)
 
     # Direct API key
-    key = auth_entry.get("key", "")
+    key = entry.get("key", "")
     if key:
         return key
-
-    # If entry type is api_key but key is empty, raise error
-    if auth_entry.get("type") == "api_key":
-        raise APIError(
-            f"API key for {provider_id} is empty. Please configure it in Settings.",
-            status_code=401,
-            retryable=False,
-        )
 
     # Google OAuth: access token may be wrapped in JSON with projectId
     if provider_id in ("google-antigravity", "google-gemini-cli"):
         # Check expiry
-        expires = auth_entry.get("expires", 0)
+        expires = entry.get("expires_at", 0)
         if expires and int(time.time() * 1000) >= expires:
             # Token expired, try to refresh
             try:
@@ -1126,21 +1133,23 @@ def _resolve_api_key(provider_id: str, auth_entry: dict) -> str:
                     status_code=401,
                     retryable=False,
                 )
-            # Use the refreshed token (auth.json was saved by refresh_google_token)
+            # Use the refreshed token
             token, _ = _resolve_google_credentials(refreshed)
             return token
         # Token still valid (or no expiry)
-        token, _ = _resolve_google_credentials(auth_entry)
+        token, _ = _resolve_google_credentials(entry)
         return token
 
     # OAuth access token (non-Google providers)
-    access = auth_entry.get("access") or auth_entry.get("accessToken", "")
+    access = entry.get("access_token", "")
     if access:
         # Check expiry (stored as ms timestamp)
-        expires = auth_entry.get("expires", 0)
+        expires = entry.get("expires_at", 0)
         if expires:
+            # If expires is in seconds (< 1e11), convert to milliseconds
+            exp_ms = expires * 1000 if expires < 1e11 else expires
             now_ms = int(time.time() * 1000)
-            if now_ms < expires:
+            if now_ms < exp_ms:
                 return access
             # Token expired — try refresh (Google and non-Google OAuth)
             try:
@@ -1154,7 +1163,7 @@ def _resolve_api_key(provider_id: str, auth_entry: dict) -> str:
                     status_code=401,
                     retryable=False,
                 )
-            return refreshed.get("access") or refreshed.get("accessToken", "")
+            return refreshed.get("access_token", "")
         # No expiry field — use access token as-is (some providers don't track expiry)
         return access
     return ""
@@ -1470,3 +1479,114 @@ def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, 
 
     # Default: OpenAI-compatible
     return OpenAIClient(base_url=base_url, api_key=key), model
+
+
+def create_streaming_agent(
+    provider_id: str,
+    auth_entry: dict,
+    model: str,
+    system_prompt: str = "",
+    tools: list = None,
+) -> "Agent":
+    """Create a Strands streaming Agent for the given provider.
+    
+    Returns an Agent configured with the appropriate model provider.
+    The agent supports token-by-token streaming and reasoning traces.
+    """
+    if not HAS_STRANDS:
+        raise RuntimeError("Strands SDK not installed. Run: pip install strands-agents")
+    
+    key = _resolve_api_key(provider_id, auth_entry)
+    
+    # Map provider to Strands model
+    if provider_id in ("openai", "groq", "openrouter", "together", "fireworks", "perplexity", "deepinfra", "mistral", "xai", "cerebras"):
+        model_obj = OpenAIModel(
+            model_id=model,
+            api_key=key,
+            # Map base URLs for compatible providers
+            **({"base_url": _OPENAI_COMPATIBLE_DISPATCH.get(provider_id, ("", ""))[0]} if provider_id in _OPENAI_COMPATIBLE_DISPATCH else {})
+        )
+    elif provider_id in ("anthropic", "minimax", "kimi-coding", "xiaomi"):
+        model_obj = AnthropicModel(
+            model_id=model,
+            api_key=key,
+        )
+    elif provider_id in ("google", "google-vertex", "gemini"):
+        model_obj = GeminiModel(
+            model_id=model,
+            api_key=key,
+        )
+    elif provider_id in ("bedrock", "aws-bedrock"):
+        model_obj = BedrockModel(model_id=model)
+    else:
+        # Default to OpenAI-compatible
+        base_url = _OPENAI_COMPATIBLE_DISPATCH.get(provider_id, ("", ""))[0]
+        model_obj = OpenAIModel(
+            model_id=model,
+            api_key=key,
+            base_url=base_url,
+        )
+    
+    agent = Agent(
+        model=model_obj,
+        system_prompt=system_prompt,
+        tools=tools or [],
+    )
+    return agent
+
+
+async def create_client_with_proxy(
+    provider_id: str,
+    auth_entry: dict,
+    model: str,
+    messages: list[dict],
+    tools: Optional[list] = None,
+    max_tokens: int = 8192,
+    temperature: float = 0.0,
+    stream: bool = False,
+) -> tuple[str, list, dict]:
+    """Create client and execute request with AI Proxy fallback.
+    
+    Uses AIProxyWorker for automatic provider fallback on failure.
+    Returns (content, tool_calls, usage).
+    """
+    if not HAS_AI_PROXY:
+        # Fall back to direct client
+        client, resolved_model = create_client(provider_id, auth_entry, model)
+        response = await client.chat(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            tools=tools,
+            provider=provider_id,
+        )
+        choice = response.get("choices", [{}])[0]
+        return (
+            choice.get("message", {}).get("content", ""),
+            choice.get("message", {}).get("tool_calls", []),
+            response.get("usage", {}),
+        )
+    
+    proxy = get_proxy_worker()
+    
+    # Get available fallback providers
+    fallback_providers = proxy.get_available_providers()
+    if provider_id in fallback_providers:
+        fallback_providers.remove(provider_id)
+    
+    response = await proxy.submit_request(
+        provider_id=provider_id,
+        model=model,
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        stream=stream,
+        fallback_providers=fallback_providers,
+    )
+    
+    return (
+        response.content,
+        response.tool_calls,
+        response.usage,
+    )

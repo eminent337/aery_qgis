@@ -132,8 +132,20 @@ class ToolDispatcher:
             res = await _exec_one(tc)
             exec_results.append(res)
 
-        # Single canvas capture per batch (not per tool)
-        # Note: Do not automatically capture or inject raster snapshots into the live canvas after tools
-        # to ensure the interactive QGIS map canvas remains live, panning and vector streaming at all zoom levels.
-        _any_visual_success = False
+        # Capture canvas for visual tools so agent can see the result
+        # This runs after each batch to provide visual confirmation
+        visual_tools_run = [tc for tc in tool_calls if tc.get("function", {}).get("name", "") in self._visual_tools]
+        if visual_tools_run and on_event:
+            try:
+                # Capture canvas for the last visual tool that ran
+                last_visual = visual_tools_run[-1]
+                name = last_visual.get("function", {}).get("name", "")
+                args = json.loads(last_visual.get("function", {}).get("arguments", "{}"))
+                # Execute capture_canvas directly on main thread via executor
+                capture_result = await self.agent.tools.execute("capture_canvas", {"max_dim": 1200})
+                if on_event:
+                    on_event({"type": "canvas_capture", "tool": name, "result": capture_result})
+            except Exception as e:
+                logger.debug(f"Canvas capture after visual tool failed: {e}")
+
         return exec_results, turn_snapshots

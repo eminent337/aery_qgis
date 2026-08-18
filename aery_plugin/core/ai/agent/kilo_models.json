@@ -28,10 +28,6 @@
     "Cohere: North Mini Code (free)"
   ],
   [
-    "z-ai/glm-5.2:free",
-    "Z.ai: GLM 5.2 (free)"
-  ],
-  [
     "nvidia/nemotron-3.5-content-safety:free",
     "NVIDIA: Nemotron 3.5 Content Safety (free)"
   ],

@@ -8,6 +8,12 @@ import uuid
 from typing import Optional
 from aery_plugin.logger import logger
 
+try:
+    from aery_plugin.vault import get_vault
+    HAS_VAULT = True
+except ImportError:
+    HAS_VAULT = False
+
 
 class SocketServer:
     """Runs a local TCP socket server to accept execution requests.
@@ -122,6 +128,10 @@ class SocketServer:
                 self.executor._priority_queue.append((req_id, "__ask_user__", result_queue, metadata))
             elif method == "capture_canvas":
                 self.executor._priority_queue.append((req_id, "__capture_canvas__", result_queue, metadata))
+            elif method == "vault_health":
+                # Health check endpoint for Vault
+                health = self._vault_health_check()
+                result_queue.put({"id": req_id, "success": True, "result": health})
             else:
                 self.executor._normal_queue.put((req_id, code, result_queue, metadata))
 
@@ -151,6 +161,54 @@ class SocketServer:
                 logger.debug("executor_socket: close connection failed: %s", e)
             if _req_id is not None:
                 self.executor._result_queues.pop(_req_id, None)
+
+    def _vault_health_check(self) -> dict:
+        """Health check for the Vault system."""
+        health = {
+            "vault_available": HAS_VAULT,
+            "keyring_available": False,
+            "fallback_available": False,
+            "namespaces": [],
+            "errors": []
+        }
+        
+        if not HAS_VAULT:
+            health["errors"].append("Vault module not available")
+            return health
+        
+        try:
+            vault = get_vault("health")
+            # Use vault's own health_check method
+            vault_health = vault.health_check()
+            health["keyring_available"] = vault_health.get("keyring_available", False)
+            health["fallback_available"] = vault_health.get("fallback_available", True)
+            health["keyring_backend"] = vault_health.get("keyring_backend", "unknown")
+            
+            # Test basic operations
+            test_key = "__health_check__"
+            vault.set(test_key, "ok")
+            retrieved = vault.get(test_key)
+            vault.delete(test_key)
+            
+            if retrieved == "ok":
+                health["fallback_available"] = True
+            else:
+                health["errors"].append("Vault read/write test failed")
+            
+            # List namespaces by checking known ones
+            known_namespaces = ["auth", "profiles", "health"]
+            for ns in known_namespaces:
+                try:
+                    v = get_vault(ns)
+                    keys = v.list_keys()
+                    health["namespaces"].append({"name": ns, "key_count": len(keys)})
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            health["errors"].append(f"Health check failed: {str(e)}")
+        
+        return health
 
     def shutdown(self):
         self._running = False

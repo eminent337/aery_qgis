@@ -251,4 +251,22 @@ def delete_session(project_dir: str, session_id: str) -> bool:
 def get_latest_session(project_dir: str) -> Optional[str]:
     """Get the most recent session ID, or None if no sessions exist."""
     sessions = list_sessions(project_dir)
+    sessions = list_sessions(project_dir)
     return sessions[0]["session_id"] if sessions else None
+def rotate_sessions(project_dir: str, max_sessions: int = 50) -> int:
+    """Remove oldest sessions beyond the maximum limit.
+    Sorts sessions by timestamp (oldest first) and deletes excess.
+    Returns:
+        Number of sessions deleted.
+    """
+    sessions = list_sessions(project_dir)
+    if len(sessions) <= max_sessions:
+        return 0
+    # Delete oldest sessions (sessions are sorted most-recent-first by list_sessions)
+    to_delete = sessions[max_sessions:]
+    deleted = 0
+    for session in to_delete:
+        session_id = session["session_id"]
+        if delete_session(project_dir, session_id):
+            deleted += 1
+    return deleted

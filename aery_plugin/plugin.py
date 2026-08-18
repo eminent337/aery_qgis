@@ -1,37 +1,35 @@
 """Main plugin class for Aery QGIS Plugin."""
-
 from aery_plugin.logger import logger
+import asyncio
 import os
+import threading
 from typing import Optional
-
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 from qgis.core import QgsProject
-
 from aery_plugin.chat_panel import ChatPanel
 from aery_plugin.provider_settings import AeryConfigDialog
 from aery_plugin.qgis_executor import QGISCodeExecutor
 from aery_plugin.agent import Agent
-
 class AeryPlugin:
     """Main plugin class.
-
     Starts the QGIS code executor and creates the chat panel with a direct LLM agent.
     """
-
     def __init__(self, iface):
         self.iface = iface
         self.executor: Optional[QGISCodeExecutor] = None
         self.agent: Optional[Agent] = None
         self.panel: Optional[ChatPanel] = None
         self.action: Optional[QAction] = None
-
+        self._mcp_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._mcp_thread: Optional[threading.Thread] = None
     def initGui(self):
         """Initialize the plugin GUI."""
         # Start QGIS code executor (TCP socket)
         self.executor = QGISCodeExecutor(iface=self.iface)
         self.executor.start_socket_server()
-
+        # Start MCP server in background thread
+        self._start_mcp_server()
         self.agent = Agent(executor=self.executor, iface=self.iface)
         # Create chat panel
         self.panel = ChatPanel(
@@ -44,7 +42,6 @@ class AeryPlugin:
             self.panel,
         )
         # Schedule dock resize after QGIS completes window restore & layout pass
-        from PyQt6.QtCore import QTimer
         def _apply_compact_dock():
             try:
                 main_win = self.iface.mainWindow()
@@ -59,20 +56,32 @@ class AeryPlugin:
         self.action.setChecked(True)
         self.action.triggered.connect(self._toggle_panel)
         self.iface.addPluginToMenu("Aery", self.action)
-
         # Fetch active free models from Kilo in background to auto-update
-        import threading
         threading.Thread(target=self._fetch_kilo_models_bg, daemon=True).start()
-
         # Mark panel as ready
         self.panel.set_ready()
-
         # ── Project & layer change signals ──
         QgsProject.instance().readProject.connect(self._on_project_changed)
         QgsProject.instance().projectSaved.connect(self._on_project_changed)
         QgsProject.instance().layersAdded.connect(self._on_layers_added)
         QgsProject.instance().layersRemoved.connect(self._on_layers_removed)
-
+    def _start_mcp_server(self):
+        """Start the MCP background server (SSE transport or dispatcher)."""
+        try:
+            from aery_plugin.mcp.server import get_dispatcher
+            dispatcher = get_dispatcher()
+            dispatcher.start()
+        except Exception as e:
+            logger.debug(f"Aery: MCP dispatcher startup skipped/failed: {e}")
+    def _stop_mcp_server(self):
+        """Stop background MCP server/loop if running."""
+        try:
+            if self._mcp_loop and self._mcp_loop.is_running():
+                self._mcp_loop.call_soon_threadsafe(self._mcp_loop.stop)
+            self._mcp_thread = None
+            self._mcp_loop = None
+        except Exception as e:
+            logger.debug(f"Aery: MCP shutdown failed: {e}")
     def _on_project_changed(self) -> None:
         """Reset env context injection so agent gets fresh snapshot on next prompt."""
         if self.panel:
@@ -113,10 +122,10 @@ class AeryPlugin:
             self.panel.close()
             self.panel = None
 
+        self._stop_mcp_server()
         if self.executor:
             self.executor.shutdown()
             self.executor = None
-
         if self.action:
             self.iface.removePluginMenu("Aery", self.action)
             self.action = None

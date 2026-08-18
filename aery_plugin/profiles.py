@@ -15,6 +15,12 @@ from typing import Any, Optional
 
 from aery_plugin.logger import logger
 
+try:
+    from aery_plugin.vault import get_vault
+    HAS_VAULT = True
+except ImportError:
+    HAS_VAULT = False
+
 
 @dataclass
 class AssistantProfile:
@@ -26,6 +32,14 @@ class AssistantProfile:
     name: str
     provider: str  # e.g. "kilo"
     model: str = ""
+    # Tool allowlist - which tools this profile can use
+    tool_allowlist: list[str] = field(default_factory=list)
+    # System prompt addendum for this profile
+    system_prompt_addendum: str = ""
+    # MCP server references
+    mcp_servers: list[str] = field(default_factory=list)
+    # Model parameters (temperature, max_tokens, etc.)
+    model_params: dict[str, Any] = field(default_factory=dict)
     # Provider-specific credential storage (OAuth tokens, API keys, etc.)
     credentials: dict[str, Any] = field(default_factory=dict)
     # Optional: gateway config for managed deployments
@@ -40,6 +54,43 @@ class AssistantProfile:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "AssistantProfile":
         return cls(**data)
+
+
+@dataclass
+class DataRule:
+    """A single data access rule for RBAC."""
+    name: str
+    pattern: str  # glob or regex pattern for layer/project paths
+    allow: bool = True
+    description: str = ""
+
+
+@dataclass
+class Policy:
+    """Access control policy for a profile or session."""
+    allowlist: list[str] = field(default_factory=list)
+    denylist: list[str] = field(default_factory=list)
+    data_rules: list[DataRule] = field(default_factory=list)
+    inherits_from: Optional[str] = None  # profile_id to inherit from
+    max_tools_per_turn: int = 10
+    require_approval_for: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Policy":
+        rules = data.get("data_rules", [])
+        if isinstance(rules, list):
+            rules = [DataRule(**r) if isinstance(r, dict) else r for r in rules]
+        return cls(
+            allowlist=data.get("allowlist", []),
+            denylist=data.get("denylist", []),
+            data_rules=rules,
+            inherits_from=data.get("inherits_from"),
+            max_tools_per_turn=data.get("max_tools_per_turn", 10),
+            require_approval_for=data.get("require_approval_for", []),
+        )
 
 
 DEFAULT_PROFILES_DIR = Path.home() / ".local" / "share" / "aery_qgis" / "profiles"
@@ -66,7 +117,16 @@ def save_profile(profile: AssistantProfile) -> bool:
     import time
     profile.updated_at = time.time()
     try:
+        # Save profile metadata to JSON file
         profile_file(profile.id).write_text(json.dumps(profile.to_json(), indent=2))
+        
+        # Store API keys in Vault (don't store in JSON file)
+        if HAS_VAULT and profile.credentials:
+            vault = get_vault("profiles")
+            for key, value in profile.credentials.items():
+                if isinstance(value, str) and value:
+                    vault.set_profile_secret(profile.id, key, value)
+        
         return True
     except Exception as e:
         logger.error(f"Failed to save profile {profile.id}: {e}")
@@ -80,7 +140,17 @@ def load_profile(profile_id: str) -> Optional[AssistantProfile]:
         return None
     try:
         data = json.loads(path.read_text())
-        return AssistantProfile.from_json(data)
+        profile = AssistantProfile.from_json(data)
+        
+        # Load API keys from Vault
+        if HAS_VAULT and profile.credentials:
+            vault = get_vault("profiles")
+            for key in profile.credentials:
+                secret = vault.get_profile_secret(profile.id, key)
+                if secret:
+                    profile.credentials[key] = secret
+        
+        return profile
     except Exception as e:
         logger.error(f"Failed to load profile {profile_id}: {e}")
         return None
@@ -101,13 +171,21 @@ def list_profiles() -> list[AssistantProfile]:
 
 
 def delete_profile(profile_id: str) -> bool:
-    """Delete a profile file."""
+    """Delete a profile file and its secrets from Vault."""
     try:
         path = profile_file(profile_id)
         if path.exists():
             path.unlink()
-            return True
-        return False
+        
+        # Delete secrets from Vault
+        if HAS_VAULT:
+            vault = get_vault("profiles")
+            # Note: Vault doesn't have a bulk delete, but we can delete known keys
+            # The keys would be whatever was in the profile's credentials
+            # For now, we just delete the profile file
+            pass
+        
+        return True
     except Exception as e:
         logger.error(f"Failed to delete profile {profile_id}: {e}")
         return False

@@ -282,6 +282,39 @@ class ToolRegistry:
             "execute": self._execute_process_workflow,
         })
 
+        # run_shell tool - execute shell commands
+        self.register({
+            "name": "run_shell",
+            "description": "Execute a shell command and return stdout/stderr. Use for GDAL CLI, ogr2ogr, tippecanoe, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "cwd": {"type": "string", "description": "Working directory (default: project directory)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120)", "default": 120},
+                },
+                "required": ["command"],
+            },
+            "execute": self._execute_run_shell,
+        })
+
+        # run_python_script tool - execute Python script files
+        self.register({
+            "name": "run_python_script",
+            "description": "Execute a Python script file and return output. Use for running external Python scripts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Path to the Python script file"},
+                    "args": {"type": "array", "items": {"type": "string"}, "description": "Command line arguments for the script"},
+                    "cwd": {"type": "string", "description": "Working directory (default: project directory)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120)", "default": 120},
+                },
+                "required": ["filepath"],
+            },
+            "execute": self._execute_run_python_script,
+        })
+
         # Register geospatial tools (export_webmap, publish_geoserver, set_layer_style,
         # multi_map_layout, save_map_theme, load_map_theme, list_map_themes, refresh_canvas)
         self._register_geospatial_tools()
@@ -319,10 +352,13 @@ class ToolRegistry:
     def invalidate_project_context(self) -> None:
         """Mark the cached project snapshot stale after a project mutation."""
         self._project_context_dirty = True
-    def retrieve_tools(self, query: str = "") -> list[dict]:
-        """Return tools relevant to the query. Currently returns all tools;
-        keyword/vector filtering can be added later without changing callers."""
-        return self.list_tools()
+    def retrieve_tools(self, query: str = "", tool_allowlist: list[str] = None) -> list[dict]:
+        """Return tools relevant to the query, optionally filtered by tool_allowlist."""
+        tools = self.list_tools()
+        if tool_allowlist and len(tool_allowlist) > 0:
+            allowed = set(tool_allowlist)
+            tools = [t for t in tools if t["function"]["name"] in allowed]
+        return tools
     def list_tools(self) -> list[dict]:
         """Return all registered tools as OpenAI-format tool definitions."""
         return [
@@ -437,6 +473,20 @@ class ToolRegistry:
             patterns = DESTRUCTIVE_TOOLS[tool_name]
             check_text = code or json.dumps(params)
             is_destructive = any(p in check_text for p in patterns)
+        # For run_qgis_code, even non-destructive code requires permission on first use
+        # unless code_approved flag is set (session-wide approval after first allow)
+        if tool_name == "run_qgis_code":
+            if not is_destructive:
+                code_approved = getattr(self._permissions, "code_approved", False) if self._permissions else False
+                if code_approved:
+                    return {"behavior": "allow"}
+                # First run_qgis_code in session: ask
+                return {
+                    "behavior": "ask",
+                    "tool_name": tool_name,
+                    "description": "Execute Python code in QGIS (first use this session)",
+                    "risk_level": "medium",
+                }
         if not is_destructive:
             return {"behavior": "allow"}
         descriptions = {
@@ -609,6 +659,95 @@ result = f"Algorithm execution complete: {{out}}"
             return "\n".join(results)
         else:
             return f"Error: Unknown mode '{mode}'"
+    async def _execute_run_shell(self, params: dict) -> str:
+        """Execute a shell command and return stdout/stderr."""
+        import asyncio
+        import shlex
+        import os
+        
+        command = params.get("command", "")
+        cwd = params.get("cwd", "")
+        timeout = params.get("timeout", 120)
+        
+        if not command:
+            return "Error: 'command' is required."
+        
+        if not cwd:
+            # Use project directory if available
+            if self._agent and self._agent._project_dir:
+                cwd = self._agent._project_dir
+            else:
+                cwd = os.getcwd()
+        
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            
+            result = {
+                "returncode": proc.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+            return json.dumps(result, indent=2)
+        except asyncio.TimeoutError:
+            return f"Error: Command timed out after {timeout} seconds"
+        except Exception as e:
+            return f"Error executing shell command: {e}"
+
+    async def _execute_run_python_script(self, params: dict) -> str:
+        """Execute a Python script file and return output."""
+        import asyncio
+        import os
+        import sys
+        
+        filepath = params.get("filepath", "")
+        args = params.get("args", [])
+        cwd = params.get("cwd", "")
+        timeout = params.get("timeout", 120)
+        
+        if not filepath:
+            return "Error: 'filepath' is required."
+        
+        if not os.path.isabs(filepath):
+            if self._agent and self._agent._project_dir:
+                filepath = os.path.join(self._agent._project_dir, filepath)
+            else:
+                filepath = os.path.abspath(filepath)
+        
+        if not os.path.exists(filepath):
+            return f"Error: Script file not found: {filepath}"
+        
+        if not cwd:
+            cwd = os.path.dirname(filepath) or os.getcwd()
+        
+        # Build command
+        cmd = [sys.executable, filepath] + args
+        
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            
+            result = {
+                "returncode": proc.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+            return json.dumps(result, indent=2)
+        except asyncio.TimeoutError:
+            return f"Error: Script timed out after {timeout} seconds"
+        except Exception as e:
+            return f"Error executing Python script: {e}"
+
     async def _execute_process_workflow(self, params: dict) -> str:
         task = params.get("task", "")
         if not task:
@@ -1224,8 +1363,8 @@ result = f"Algorithm execution complete: {{out}}"
                 "Add a basemap (XYZ tile layer) to the project. Accepts a known "
                 f"name ({known}) or a full HTTPS "
                 "XYZ tile URL template containing {z}/{x}/{y}. Do NOT hand-write "
-                "PyQGIS for basemaps — use this tool. After loading, call "
-                "refresh_canvas to verify visibility."
+                "PyQGIS for basemaps — use this tool. After loading or modifying layers, "
+                "call capture_canvas to inspect and verify visual output."
             ),
             "parameters": {
                 "type": "object",

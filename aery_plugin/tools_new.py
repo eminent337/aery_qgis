@@ -54,6 +54,14 @@ class Tool:
                 },
             },
         }
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        """MCP-compatible input schema."""
+        return {
+            "type": "object",
+            "properties": self.parameters,
+            "required": self.required,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -446,12 +454,259 @@ def _ramp_color(index: int, total: int) -> str:
     hue = index / max(total, 1)
     r, g, b = colorsys.hls_to_rgb(hue, 0.55, 0.75)
     return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-
-
+# ---------------------------------------------------------------------------
+# New typed tool handlers (GeoLibre parity)
+# ---------------------------------------------------------------------------
+def _h_add_vector_layer(params: dict, on_progress=None) -> dict[str, Any]:
+    """Load a vector layer (GeoJSON, Shapefile, GPKG, etc.) from a file path or URL."""
+    from qgis.core import QgsProject, QgsVectorLayer
+    path = params.get("path", "").strip()
+    name = params.get("name", "").strip() or "Vector Layer"
+    if not path:
+        return {"error": "'path' is required."}
+    layer = QgsVectorLayer(path, name, "ogr")
+    if not layer.isValid():
+        return {"error": f"Could not load vector layer from '{path}'."}
+    QgsProject.instance().addMapLayer(layer)
+    return {
+        "addedLayer": layer.id(),
+        "name": layer.name(),
+        "path": path,
+        "featureCount": layer.featureCount(),
+        "geometryType": layer.geometryType().name if hasattr(layer, "geometryType") else "unknown",
+        "crs": layer.crs().authid(),
+    }
+def _h_add_raster_layer(params: dict, on_progress=None) -> dict[str, Any]:
+    """Load a raster layer (GeoTIFF, COG, etc.) from a file path or URL."""
+    from qgis.core import QgsProject, QgsRasterLayer
+    path = params.get("path", "").strip()
+    name = params.get("name", "").strip() or "Raster Layer"
+    if not path:
+        return {"error": "'path' is required."}
+    layer = QgsRasterLayer(path, name)
+    if not layer.isValid():
+        return {"error": f"Could not load raster layer from '{path}'."}
+    QgsProject.instance().addMapLayer(layer)
+    return {
+        "addedLayer": layer.id(),
+        "name": layer.name(),
+        "path": path,
+        "width": layer.width(),
+        "height": layer.height(),
+        "bandCount": layer.bandCount(),
+        "crs": layer.crs().authid(),
+    }
+def _h_create_layer(params: dict, on_progress=None) -> dict[str, Any]:
+    """Create a new memory layer (point, line, polygon) with optional fields."""
+    from qgis.core import QgsProject, QgsVectorLayer, QgsFields, QgsField
+    from PyQt6.QtCore import QVariant
+    geometry_type = params.get("geometry_type", "Point").capitalize()
+    name = params.get("name", "New Layer").strip()
+    crs = params.get("crs", "EPSG:4326")
+    fields_def = params.get("fields", [])
+    type_map = {
+        "Point": "Point",
+        "Linestring": "LineString",
+        "Line": "LineString",
+        "Polygon": "Polygon",
+        "Multipoint": "MultiPoint",
+        "Multilinestring": "MultiLineString",
+        "Multipolygon": "MultiPolygon",
+    }
+    wkt_type = type_map.get(geometry_type, "Point")
+    uri = f"{wkt_type}?crs={crs}"
+    layer = QgsVectorLayer(uri, name, "memory")
+    if not layer.isValid():
+        return {"error": f"Could not create {geometry_type} layer."}
+    if fields_def:
+        fields = QgsFields()
+        for f in fields_def:
+            fname = f.get("name")
+            ftype = f.get("type", "string").lower()
+            type_map_qt = {
+                "string": QVariant.Type.String,
+                "integer": QVariant.Type.Int,
+                "int": QVariant.Type.Int,
+                "double": QVariant.Type.Double,
+                "float": QVariant.Type.Double,
+                "boolean": QVariant.Type.Bool,
+                "bool": QVariant.Type.Bool,
+                "date": QVariant.Type.Date,
+                "datetime": QVariant.Type.DateTime,
+            }
+            qt_type = type_map_qt.get(ftype, QVariant.Type.String)
+            fields.append(QgsField(fname, qt_type))
+        layer.dataProvider().addAttributes(fields)
+        layer.updateFields()
+    QgsProject.instance().addMapLayer(layer)
+    return {
+        "addedLayer": layer.id(),
+        "name": layer.name(),
+        "geometryType": geometry_type,
+        "crs": crs,
+        "fields": [{"name": f.name(), "type": f.typeName()} for f in layer.fields()],
+    }
+def _h_add_feature(params: dict, on_progress=None) -> dict[str, Any]:
+    """Add a feature (geometry + attributes) to an existing editable layer."""
+    from qgis.core import QgsFeature, QgsGeometry
+    from qgis.core import QgsProject
+    layer_ref = params.get("layer", "").strip()
+    geometry = params.get("geometry")
+    attributes = params.get("attributes", {})
+    if not layer_ref:
+        return {"error": "'layer' is required."}
+    if geometry is None:
+        return {"error": "'geometry' is required (GeoJSON-like dict)."}
+    layer = _resolve_layer(layer_ref)
+    if layer is None:
+        return {"error": f"Layer '{layer_ref}' not found."}
+    if not layer.isEditable():
+        if not layer.startEditing():
+            return {"error": f"Could not start editing on layer '{layer.name()}'."}
+    feat = QgsFeature(layer.fields())
+    geom = QgsGeometry.fromGeoJson(json.dumps(geometry))
+    if geom.isNull():
+        return {"error": "Invalid geometry."}
+    feat.setGeometry(geom)
+    for key, value in attributes.items():
+        idx = layer.fields().indexFromName(key)
+        if idx >= 0:
+            feat.setAttribute(idx, value)
+    if not layer.addFeature(feat):
+        layer.rollBack()
+        return {"error": "Failed to add feature."}
+    if not layer.commitChanges():
+        return {"error": "Failed to commit changes."}
+    return {
+        "layer": layer.name(),
+        "featureId": feat.id(),
+        "geometryType": layer.geometryType().name,
+    }
+def _h_run_expression(params: dict, on_progress=None) -> dict[str, Any]:
+    """Evaluate a QGIS expression on features of a layer."""
+    from qgis.core import QgsExpression, QgsExpressionContext, QgsExpressionContextUtils, QgsFeatureRequest
+    layer_ref = params.get("layer", "").strip()
+    expression_text = params.get("expression", "").strip()
+    limit = params.get("limit", 100)
+    if not layer_ref:
+        return {"error": "'layer' is required."}
+    if not expression_text:
+        return {"error": "'expression' is required."}
+    layer = _resolve_layer(layer_ref)
+    if layer is None:
+        return {"error": f"Layer '{layer_ref}' not found."}
+    exp = QgsExpression(expression_text)
+    if exp.hasParserError():
+        return {"error": f"Expression parse error: {exp.parserErrorString()}"}
+    context = QgsExpressionContext()
+    context.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+    results = []
+    for feat in layer.getFeatures(QgsFeatureRequest().setLimit(limit)):
+        context.setFeature(feat)
+        value = exp.evaluate(context)
+        if exp.hasEvalError():
+            return {"error": f"Expression eval error: {exp.evalErrorString()}"}
+        results.append({
+            "featureId": feat.id(),
+            "value": value,
+        })
+    return {
+        "layer": layer.name(),
+        "expression": expression_text,
+        "results": results,
+        "count": len(results),
+    }
+def _h_calculate_field(params: dict, on_progress=None) -> dict[str, Any]:
+    """Run the native field calculator algorithm on a layer."""
+    algorithm = "native:fieldcalculator"
+    raw_params = {
+        "INPUT": params["layer"],
+        "FIELD_NAME": params.get("field_name", "calculated"),
+        "FIELD_TYPE": params.get("field_type", 0),  # 0=Float, 1=Integer, 2=String, 3=Date
+        "FIELD_LENGTH": params.get("field_length", 10),
+        "FIELD_PRECISION": params.get("field_precision", 3),
+        "NEW_FIELD": params.get("new_field", True),
+        "FORMULA": params.get("formula", ""),
+        "OUTPUT": "TEMPORARY_OUTPUT",
+    }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
+def _h_join_attributes(params: dict, on_progress=None) -> dict[str, Any]:
+    """Join attributes by location (spatial) or field (attribute)."""
+    join_type = params.get("join_type", "location")  # "location" or "field"
+    if join_type == "location":
+        algorithm = "native:joinattributesbylocation"
+        raw_params = {
+            "INPUT": params["input_layer"],
+            "JOIN": params["join_layer"],
+            "PREDICATE": params.get("predicate", [0]),  # 0=intersects
+            "JOIN_FIELDS": params.get("join_fields", []),
+            "METHOD": params.get("method", 0),  # 0=take first, 1=summarize
+            "DISCARD_NONMATCHING": params.get("discard_nonmatching", False),
+            "OUTPUT": "TEMPORARY_OUTPUT",
+        }
+    else:
+        algorithm = "native:joinattributestable"
+        raw_params = {
+            "INPUT": params["input_layer"],
+            "FIELD": params["input_field"],
+            "INPUT_2": params["join_layer"],
+            "FIELD_2": params["join_field"],
+            "FIELDS_TO_COPY": params.get("fields_to_copy", []),
+            "METHOD": params.get("method", 0),
+            "DISCARD_NONMATCHING": params.get("discard_nonmatching", False),
+            "OUTPUT": "TEMPORARY_OUTPUT",
+        }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
+def _h_extract_by_attribute(params: dict, on_progress=None) -> dict[str, Any]:
+    """Filter features by attribute value (native:extractbyattribute)."""
+    algorithm = "native:extractbyattribute"
+    raw_params = {
+        "INPUT": params["layer"],
+        "FIELD": params["field"],
+        "OPERATOR": params.get("operator", 0),  # 0=equals, 1=not equals, 2=greater, 3=less, etc.
+        "VALUE": params["value"],
+        "OUTPUT": "TEMPORARY_OUTPUT",
+    }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
+def _h_dissolve(params: dict, on_progress=None) -> dict[str, Any]:
+    """Aggregate/dissolve geometries (native:dissolve)."""
+    algorithm = "native:dissolve"
+    raw_params = {
+        "INPUT": params["layer"],
+        "FIELD": params.get("field", []),
+        "SEPARATE_DISJOINT": params.get("separate_disjoint", False),
+        "OUTPUT": "TEMPORARY_OUTPUT",
+    }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
+def _h_buffer(params: dict, on_progress=None) -> dict[str, Any]:
+    """Buffer geometries (native:buffer)."""
+    algorithm = "native:buffer"
+    raw_params = {
+        "INPUT": params["layer"],
+        "DISTANCE": params.get("distance", 100.0),
+        "SEGMENTS": params.get("segments", 5),
+        "END_CAP_STYLE": params.get("end_cap_style", 0),  # 0=round, 1=flat, 2=square
+        "JOIN_STYLE": params.get("join_style", 0),  # 0=round, 1=miter, 2=bevel
+        "MITER_LIMIT": params.get("miter_limit", 2.0),
+        "DISSOLVE": params.get("dissolve", False),
+        "OUTPUT": "TEMPORARY_OUTPUT",
+    }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
+def _h_intersection(params: dict, on_progress=None) -> dict[str, Any]:
+    """Spatial intersection of two layers (native:intersection)."""
+    algorithm = "native:intersection"
+    raw_params = {
+        "INPUT": params["input_layer"],
+        "OVERLAY": params["overlay_layer"],
+        "INPUT_FIELDS": params.get("input_fields", []),
+        "OVERLAY_FIELDS": params.get("overlay_fields", []),
+        "OVERLAY_FIELDS_PREFIX": params.get("overlay_fields_prefix", ""),
+        "OUTPUT": "TEMPORARY_OUTPUT",
+    }
+    return _h_run_processing({"algorithm": algorithm, "parameters": raw_params}, on_progress)
 # ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
-
 
 def create_tools() -> list[Tool]:
     """Build the complete GeoLibre-style typed tool list."""
@@ -588,14 +843,236 @@ def create_tools() -> list[Tool]:
                 },
                 "color": {"type": "string", "description": "Base color hex (single mode).", "default": "#ff0000"},
             },
-            required=["layer"],
             handler=_h_apply_symbology,
         ),
+        Tool(
+            name="add_vector_layer",
+            description=(
+                "Load a vector layer (GeoJSON, Shapefile, GPKG, etc.) from a file path or URL. "
+                "Returns layer ID, name, feature count, geometry type, and CRS."
+            ),
+            parameters={
+                "path": {"type": "string", "description": "File path or URL to the vector data."},
+                "name": {"type": "string", "description": "Layer name (optional).", "default": ""},
+            },
+            required=["path"],
+            handler=_h_add_vector_layer,
+            destructive=False,
+        ),
+        Tool(
+            name="add_raster_layer",
+            description=(
+                "Load a raster layer (GeoTIFF, COG, etc.) from a file path or URL. "
+                "Returns layer ID, name, dimensions, band count, and CRS."
+            ),
+            parameters={
+                "path": {"type": "string", "description": "File path or URL to the raster data."},
+                "name": {"type": "string", "description": "Layer name (optional).", "default": ""},
+            },
+            required=["path"],
+            handler=_h_add_raster_layer,
+            destructive=False,
+        ),
+        Tool(
+            name="create_layer",
+            description=(
+                "Create a new memory layer (Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon) "
+                "with optional attribute fields. Returns layer ID and schema."
+            ),
+            parameters={
+                "geometry_type": {
+                    "type": "string",
+                    "description": "Geometry type: Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon.",
+                    "default": "Point",
+                },
+                "name": {"type": "string", "description": "Layer name.", "default": "New Layer"},
+                "crs": {"type": "string", "description": "CRS (e.g. 'EPSG:4326').", "default": "EPSG:4326"},
+                "fields": {
+                    "type": "array",
+                    "description": "List of field definitions: [{name: 'field_name', type: 'string|integer|double|boolean|date|datetime'}]",
+                    "items": {"type": "object", "properties": {"name": {"type": "string"}, "type": {"type": "string"}}},
+                    "default": [],
+                },
+            },
+            required=[],
+            handler=_h_create_layer,
+            destructive=False,
+        ),
+        Tool(
+            name="add_feature",
+            description=(
+                "Add a feature (geometry + attributes) to an existing editable layer. "
+                "Geometry must be a GeoJSON-like dict. Attributes are key-value pairs matching layer fields."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Target layer name or id."},
+                "geometry": {"type": "object", "description": "GeoJSON geometry object (Point, LineString, Polygon, etc.)."},
+                "attributes": {
+                    "type": "object",
+                    "description": "Attribute key-value pairs matching layer fields.",
+                    "default": {},
+                },
+            },
+            required=["layer", "geometry"],
+            handler=_h_add_feature,
+            destructive=True,
+        ),
+        Tool(
+            name="run_expression",
+            description=(
+                "Evaluate a QGIS expression on features of a layer. Returns value per feature (up to limit). "
+                "Use for computed fields, filtering logic, or spatial predicates without modifying data."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Layer name or id."},
+                "expression": {"type": "string", "description": "QGIS expression string (e.g. \"$area > 1000\", \"name LIKE 'A%'\")."},
+                "limit": {"type": "integer", "description": "Maximum features to evaluate (default 100).", "default": 100},
+            },
+            required=["layer", "expression"],
+            handler=_h_run_expression,
+            destructive=False,
+        ),
+        Tool(
+            name="calculate_field",
+            description=(
+                "Run the native field calculator algorithm on a layer. Creates or updates a field with an expression."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Layer name or id."},
+                "field_name": {"type": "string", "description": "Output field name.", "default": "calculated"},
+                "field_type": {"type": "integer", "description": "0=Float, 1=Integer, 2=String, 3=Date.", "default": 0},
+                "field_length": {"type": "integer", "description": "Field length (default 10).", "default": 10},
+                "field_precision": {"type": "integer", "description": "Decimal precision (default 3).", "default": 3},
+                "new_field": {"type": "boolean", "description": "Create new field (true) or update existing (false).", "default": True},
+                "formula": {"type": "string", "description": "QGIS expression for field values."},
+            },
+            required=["layer", "formula"],
+            handler=_h_calculate_field,
+            destructive=True,
+        ),
+        Tool(
+            name="join_attributes",
+            description=(
+                "Join attributes by location (spatial) or field (attribute). "
+                "join_type='location' uses native:joinattributesbylocation; 'field' uses native:joinattributestable."
+            ),
+            parameters={
+                "join_type": {
+                    "type": "string",
+                    "description": "Join type: 'location' (spatial) or 'field' (attribute).",
+                    "enum": ["location", "field"],
+                    "default": "location",
+                },
+                "input_layer": {"type": "string", "description": "Input layer name or id."},
+                "join_layer": {"type": "string", "description": "Join layer name or id."},
+                "predicate": {
+                    "type": "array",
+                    "description": "Spatial predicates (location join): 0=intersects, 1=contains, 2=within, etc.",
+                    "items": {"type": "integer"},
+                    "default": [0],
+                },
+                "join_fields": {
+                    "type": "array",
+                    "description": "Fields to copy from join layer (location join).",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "input_field": {"type": "string", "description": "Input layer field (field join)."},
+                "join_field": {"type": "string", "description": "Join layer field (field join)."},
+                "fields_to_copy": {
+                    "type": "array",
+                    "description": "Fields to copy from join layer (field join).",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "method": {"type": "integer", "description": "Join method: 0=take first, 1=summarize.", "default": 0},
+                "discard_nonmatching": {"type": "boolean", "description": "Discard non-matching features.", "default": False},
+            },
+            required=["join_type", "input_layer", "join_layer"],
+            handler=_h_join_attributes,
+            destructive=False,
+        ),
+        Tool(
+            name="extract_by_attribute",
+            description=(
+                "Filter features by attribute value using native:extractbyattribute. "
+                "Operators: 0=equals, 1=not equals, 2=greater, 3=less, 4=greater or equal, 5=less or equal, 6=contains, 7=not contains, 8=starts with, 9=ends with."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Layer name or id."},
+                "field": {"type": "string", "description": "Field to filter on."},
+                "operator": {"type": "integer", "description": "Comparison operator (0-9).", "default": 0},
+                "value": {"type": "string", "description": "Value to compare against."},
+            },
+            required=["layer", "field", "value"],
+            handler=_h_extract_by_attribute,
+            destructive=False,
+        ),
+        Tool(
+            name="dissolve",
+            description=(
+                "Aggregate/dissolve geometries using native:dissolve. Optionally dissolve by field values."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Layer name or id."},
+                "field": {
+                    "type": "array",
+                    "description": "Field(s) to dissolve by (empty = dissolve all).",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "separate_disjoint": {"type": "boolean", "description": "Output separate parts for disjoint geometries.", "default": False},
+            },
+            required=["layer"],
+            handler=_h_dissolve,
+            destructive=False,
+        ),
+        Tool(
+            name="buffer",
+            description=(
+                "Buffer geometries using native:buffer. Supports distance, segments, end cap/join styles, and optional dissolve."
+            ),
+            parameters={
+                "layer": {"type": "string", "description": "Layer name or id."},
+                "distance": {"type": "number", "description": "Buffer distance (default 100.0).", "default": 100.0},
+                "segments": {"type": "integer", "description": "Segments per quadrant (default 5).", "default": 5},
+                "end_cap_style": {"type": "integer", "description": "0=round, 1=flat, 2=square.", "default": 0},
+                "join_style": {"type": "integer", "description": "0=round, 1=miter, 2=bevel.", "default": 0},
+                "miter_limit": {"type": "number", "description": "Miter limit (default 2.0).", "default": 2.0},
+                "dissolve": {"type": "boolean", "description": "Dissolve result (default false).", "default": False},
+            },
+            required=["layer"],
+            handler=_h_buffer,
+            destructive=False,
+        ),
+        Tool(
+            name="intersection",
+            description=(
+                "Spatial intersection of two layers using native:intersection. "
+                "Returns features from input layer that intersect overlay layer."
+            ),
+            parameters={
+                "input_layer": {"type": "string", "description": "Input layer name or id."},
+                "overlay_layer": {"type": "string", "description": "Overlay layer name or id."},
+                "input_fields": {
+                    "type": "array",
+                    "description": "Fields to keep from input layer (empty = all).",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "overlay_fields": {
+                    "type": "array",
+                    "description": "Fields to keep from overlay layer (empty = all).",
+                    "items": {"type": "string"},
+                    "default": [],
+                },
+                "overlay_fields_prefix": {"type": "string", "description": "Prefix for overlay fields (default '').", "default": ""},
+            },
+            required=["input_layer", "overlay_layer"],
+            handler=_h_intersection,
+            destructive=False,
+        ),
     ]
-
-
-def tool_schemas() -> list[dict[str, Any]]:
-    return [t.to_openai_schema() for t in create_tools()]
 
 # ---------------------------------------------------------------------------
 # Bridge: expose typed tools through the legacy ToolRegistry.execute() interface
@@ -667,13 +1144,11 @@ class TypedToolBridge:
                 res = ex.execute(code, 300, on_progress)
                 if not res.get("success"):
                     raise RuntimeError(res.get("error", f"Tool '{name}' failed"))
-                result = res.get("result")
         return json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
-
-
+def tool_schemas() -> list[dict[str, Any]]:
+    return [t.to_openai_schema() for t in create_tools()]
 def _marshal_tool_call(name: str, params: dict) -> str:
     """Build a main-thread task string for mutating typed tools.
-
     The QGISCodeExecutor accepts special `__tool__:<name>` task strings with
     the params JSON-encoded; qgis_executor._process_queue dispatches them to
     the corresponding handler on the main thread. This keeps typed tools on

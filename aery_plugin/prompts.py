@@ -109,13 +109,16 @@ def classify_task_profile(task_description: str) -> str:
     if len(task) <= 240 and any(term in low for term in _DIRECT_ACTION_TERMS):
         return "direct"
     return "complex"
-def prompt_chat(env_version: str) -> str:
-    return (
+def prompt_chat(env_version: str, system_prompt_addendum: str = "") -> str:
+    prompt = (
         "You are Aery, a QGIS assistant. Reply briefly and helpfully. "
         "Do not call tools for greetings, thanks, or a request for help.\n"
         f"Runtime: {env_version}\n"
     )
-def prompt_direct_action(env_version: str, task_description: str) -> str:
+    if system_prompt_addendum:
+        prompt += f"\n\n=== PROFILE INSTRUCTIONS ===\n{system_prompt_addendum}\n"
+    return prompt
+def prompt_direct_action(env_version: str, task_description: str, system_prompt_addendum: str = "") -> str:
     """Compact action-first prompt for short, non-destructive GIS requests."""
     task = task_description.lower()
     prompt = (
@@ -127,24 +130,28 @@ def prompt_direct_action(env_version: str, task_description: str) -> str:
         "RESOLVE FIRST: If a request names a layer or object, confirm it exists with get_project_context "
         "or resolve_layer. Reuse a prior project-context result unless the project changed or the target is unknown. "
         "If it does not exist, ask the user — never fabricate data.\n"
-        "ESCALATION: Prefer using dedicated narrow tools (zoom_to_layer, set_map_extent, pan_to, refresh_canvas, toggle_layer_visibility, set_layer_style) over run_qgis_code.\n"
-        f"Runtime: {env_version}\n"
+        "ESCALATION: Prefer using dedicated narrow tools (load_basemap, zoom_to_place, zoom_to_layer, set_map_extent, pan_to, toggle_layer_visibility, set_layer_style, capture_canvas) over run_qgis_code.\n"
+        "VISUAL VERIFICATION: After loading/modifying spatial layers or basemaps, call `capture_canvas` to inspect and confirm the result on screen.\n"
     )
     if any(term in task for term in ("load layer", "add layer", "add a layer")):
         prompt += "For a layer request, call add_layer or load_layer directly when its source is known.\n"
+    if system_prompt_addendum:
+        prompt += f"\n\n=== PROFILE INSTRUCTIONS ===\n{system_prompt_addendum}\n"
     return prompt
 
 
-def build_system_prompt(task_description: str = "") -> str:
+def build_system_prompt(task_description: str = "", system_prompt_addendum: str = "") -> str:
     """Build the expert geospatial system prompt (Mega-Prompt pattern).
     Conditionally includes advanced sections based on task description keywords.
     """
+    global _system_prompt_addendum
+    _system_prompt_addendum = system_prompt_addendum or ""
     env_version = _detect_env_version()
     profile = classify_task_profile(task_description)
     if profile == "chat":
-        return prompt_chat(env_version)
+        return prompt_chat(env_version, system_prompt_addendum)
     if profile == "direct":
-        return prompt_direct_action(env_version, task_description)
+        return prompt_direct_action(env_version, task_description, system_prompt_addendum)
     prompt = prompt_preamble(env_version) + prompt_core()
     task_lower = task_description.lower()
     
@@ -225,6 +232,9 @@ def build_system_prompt(task_description: str = "") -> str:
     if snippets:
         prompt += f"\n\n=== RELEVANT PYQGIS CODE SNIPPETS ===\n{snippets}\n"
     prompt += prompt_tools()
+    if _system_prompt_addendum:
+        prompt += f"\n\n=== PROFILE INSTRUCTIONS ===\n{_system_prompt_addendum}\n"
+        _system_prompt_addendum = ""
     return prompt
 
 def prompt_preamble(env_version: str = "QGIS 3.x or 4.x with PyQt6") -> str:
@@ -240,10 +250,11 @@ def prompt_preamble(env_version: str = "QGIS 3.x or 4.x with PyQt6") -> str:
         "If it does not exist, ask the user — do not fabricate it.\n"
         "4. If a task is simple (zoom, pan, refresh, toggle visibility), perform exactly that action and reply. "
         "Do not create visual artifacts or run analysis just to verify.\n\n"
-        "=== TOOL ESCALATION POLICY ===\n"
-        "1. PREFER DEDICATED TOOLS: Always prefer dedicated narrow tools (e.g. zoom_to_layer, set_map_extent, pan_to, zoom_to_place, refresh_canvas, toggle_layer_visibility, set_layer_style, export_layer, remove_layer, run_processing_algorithm) over run_qgis_code for common view and layer operations.\n"
-        "2. NAMED PLACES: For any request to zoom or pan to a named place (country, city, region, landmark), ALWAYS use the zoom_to_place tool with the place name. NEVER hand-write PyQGIS (e.g. canvas.setExtent / QgsMapCanvas.instance()) or guess bounding-box coordinates to zoom to a named place — that path is fragile on QGIS 4.x and frequently crashes. zoom_to_place geocodes the name and zooms safely for any location.\n"
-        "3. ESCALATION FALLBACK: Use run_qgis_code ONLY for custom scripting, advanced styling, or operations not supported by any dedicated tool.\n\n"
+        "=== TOOL ESCALATION & VISUAL VERIFICATION POLICY ===\n"
+        "1. PREFER DEDICATED TOOLS: Always prefer dedicated narrow tools (e.g. load_basemap, zoom_to_place, zoom_to_layer, set_map_extent, pan_to, toggle_layer_visibility, set_layer_style, export_layer, remove_layer, run_processing_algorithm) over run_qgis_code.\n"
+        "2. VISUAL VERIFICATION (CAPTURE CANVAS): Whenever you perform spatial modifications on the canvas (adding/removing layers, loading basemaps, applying styling, running buffers/clips/analyses), ALWAYS call `capture_canvas` to inspect and visually verify that the changes rendered properly on the map.\n"
+        "3. DO NOT call `refresh_canvas` as a substitute for visual verification. `capture_canvas` captures and verifies the map state.\n"
+        "4. NAMED PLACES: For any request to zoom or pan to a named place, ALWAYS use `zoom_to_place`.\n"
         f"Runtime: {env_version}\n\n"
         "=== RUNTIME NOTES ===\n"
         "- Do not write 'import os', 'import sys', 'import pathlib', 'import json', 'import re', 'import math'. They are already pre-loaded as globals.\n"
