@@ -530,9 +530,14 @@ class TranscriptView(QScrollArea):
         self._feed_layout.setContentsMargins(12, 12, 12, 12)
         self._feed_layout.setSpacing(10)
         self._feed_layout.addStretch()
-
+        # Constrain content width so the dock never auto-expands
+        # ChatPanel sets max-width 420; keep content ~20px narrower for margins
+        self._feed_container.setMaximumWidth(400)
+        self._feed_container.setMinimumWidth(260)
         self.setWidget(self._feed_container)
-        self.setWidgetResizable(True)
+        # Do NOT let the scroll area grow with its content — keep viewport fixed
+        # and scroll only when content overflows vertically
+        self.setWidgetResizable(False)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFrameShape(QFrame.Shape.NoFrame)
