@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import queue
+import secrets
 import socket
 import threading
 import time
@@ -306,108 +307,60 @@ class QGISCodeExecutor(QObject):
         self._server_thread: Optional[threading.Thread] = None
         self._timer: Optional[QTimer] = None
         self._child_pids: set[int] = set()  # track subprocess children for abort
+        self._cancel_event = threading.Event()  # cooperative cancellation (user abort)
+        # Lazily generated per-instance secret for socket auth (see auth_token).
+        self._auth_token: Optional[str] = None
+
+    @property
+    def auth_token(self) -> str:
+        """Per-instance random secret for socket auth (lazily generated).
+
+        Exposed on the executor so the legitimate runner can retrieve it via
+        the same out-of-band channel used for the port number.
+        """
+        if self._auth_token is None:
+            self._auth_token = secrets.token_urlsafe(32)
+        return self._auth_token
+
+    @auth_token.setter
+    def auth_token(self, value: str) -> None:
+        self._auth_token = value
 
     def start_socket_server(self):
-        """Start TCP socket server in background thread + main-thread QTimer."""
-        self._running = True
+        """Start TCP socket server via SocketServer (canonical handler).
+
+        The SocketServer shares this executor's auth_token and drives the
+        same queue priority system (_priority_queue / _normal_queue).
+        """
+        from aery_plugin.executor_socket import SocketServer
+
         self._write_run_start_marker()
 
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.bind(("127.0.0.1", 0))
-        self.port = self.server.getsockname()[1]
-        self.server.listen(5)
-        self.server.settimeout(1.0)
+        # Reuse this executor's auth_token so client and server share the
+        # same secret without additional coordination.
+        self._socket_server = SocketServer(self, auth_token=self.auth_token)
+        self._socket_server.start()
 
-        self._server_thread = threading.Thread(target=self._serve, daemon=True)
-        self._server_thread.start()
+        # Keep local references for shutdown / port access
+        self.port = self._socket_server.port
+        self.server = self._socket_server.server
+        self._server_thread = self._socket_server._server_thread
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._process_queue)
         self._timer.start(100)  # 100ms — less CPU waste when idle
 
-    def _serve(self):
-        while self._running:
-            try:
-                conn, _ = self.server.accept()
-                threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-
-    def _handle_connection(self, conn: socket.socket):
-        _req_id: Optional[str] = None
-        try:
-            # Read until newline; hard cap at 1 MB to prevent memory exhaustion
-            MAX_BODY = 1_048_576
-            data = b""
-            conn.settimeout(30.0)
-            while True:
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-                if len(data) >= MAX_BODY:
-                    break
-                if b"\n" in data:
-                    break
-
-            request = json.loads(data.decode().strip())
-            req_id = request.get("id") or str(__import__("uuid").uuid4())
-            _req_id = req_id
-            method = request.get("method", "run_code")
-            code = request.get("code", "")
-
-            result_queue: queue.Queue = queue.Queue()
-            self._result_queues[req_id] = result_queue
-            metadata = {
-                "method": method,
-                "tool_name": request.get("tool_name") or method,
-                "source": request.get("source", "plugin"),
-                "started_at": time.perf_counter(),
-                "run_id": request.get("run_id") or self.run_id,
-            }
-
-            if method == "get_project_context":
-                ctx = self._get_project_context()
-                result_queue.put({"id": req_id, "success": True, "result": ctx})
-                # Record all layers in graph
-                try:
-                    from aery_plugin.graph_engine import record_layer, build_tool_capability_graph
-                    project_path = ctx.get("project_path", "")
-                    pdir = ctx.get("project_dir", os.path.expanduser("~"))
-                    build_tool_capability_graph(pdir)
-                    for lyr in ctx.get("layers", []):
-                        record_layer(pdir, lyr["name"], lyr.get("type",""), lyr.get("crs",""))
-                except Exception:
-                    pass
-            elif method == "question":
-                self._priority_queue.append((req_id, "__ask_user__", result_queue, metadata))
-            elif method == "capture_canvas":
-                self._priority_queue.append((req_id, "__capture_canvas__", result_queue, metadata))
-            else:
-                self._normal_queue.put((req_id, code, result_queue, metadata))
-
-            result = result_queue.get(timeout=300)
-            conn.sendall((json.dumps(result) + "\n").encode())
-        except queue.Empty:
-            conn.sendall((json.dumps({"success": False, "error": "Execution timed out after 300s"}) + "\n").encode())
-        except Exception as e:
-            conn.sendall((json.dumps({"success": False, "error": str(e)}) + "\n").encode())
-        finally:
-            # Close the socket unconditionally
-            try:
-                conn.close()
-            except Exception:
-                pass
-            # Only pop from _result_queues if we successfully registered one
-            if _req_id is not None:
-                self._result_queues.pop(_req_id, None)  # prevent stale queue leak
-
     def _process_queue(self):
         from qgis.core import QgsProject
         processed = 0
+
+        # Let Qt repaint/process signals before we execute — keeps the UI
+        # responsive between queued runs (hybrid responsiveness).
+        try:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+        except Exception:
+            pass
 
         # Pull a queued item from either source, preferring priority (O(1) deque.popleft)
         def _dequeue():
@@ -458,6 +411,27 @@ class QGISCodeExecutor(QObject):
                         else:
                             # Return as data URL so LLM can see it as image (multimodal) not confusing raw base64 text
                             response = {"id": req_id, "success": True, "result": f"data:image/png;base64,{b64}"}
+                    elif code.startswith("__tool__:"):
+                        # Typed tool dispatch (GeoLibre-style main-thread tools).
+                        # Format: __tool__:<name>:<json params>
+                        try:
+                            _rest = code[len("__tool__:"):]
+                            _name, _params_json = _rest.split(":", 1)
+                            _params = json.loads(_params_json)
+                            from aery_plugin.tools_new import create_tools
+                            _tool_map = {t.name: t for t in create_tools()}
+                            _tool = _tool_map.get(_name)
+                            if _tool is None:
+                                response = {"id": req_id, "success": False, "error": f"Unknown typed tool: {_name}"}
+                            else:
+                                _result = _tool.handler(_params, None)
+                                response = {"id": req_id, "success": True, "result": _result}
+                        except Exception as _te:
+                            import traceback as _tb2
+                            response = {
+                                "id": req_id, "success": False,
+                                "error": f"Typed tool failed: {_te}\n{_tb2.format_exc()}",
+                            }
                     elif code == "__ask_user__":
                         # Forward run_id so the answer can be tied back to the triggering turn
                         qp = {**metadata.get("params", {}), "run_id": metadata.get("run_id")}
@@ -487,6 +461,15 @@ class QGISCodeExecutor(QObject):
                         _sub_mod.Popen = _TrackedPopen
                         _sys_mod.modules["subprocess"] = _sub_mod
                         g["subprocess"] = _sub_mod
+                        # Patch processing.run → QGIS native async (QgsProcessingAlgRunnerTask
+                        # in the thread pool + event pumping) so heavy algorithms don't
+                        # freeze the UI or block the event loop. Restored in the finally.
+                        _orig_processing_run = None
+                        if g.get("processing") is not None:
+                            _orig_processing_run = g["processing"].run
+                            g["processing"].run = lambda alg, params, fb=None, ctx=None: self._run_processing_async(
+                                alg, params, fb, ctx, req_id=req_id, result_queue=result_queue
+                            )
                         try:
                             # DEFENSIVE: Clear any stale canvas background on GUI thread before executing tool code
                             # This prevents "magic static image" from previous runs persisting
@@ -521,10 +504,14 @@ class QGISCodeExecutor(QObject):
                                 "project_dir": project_dir,
                                 "result": None,
                             }
+                            # NOTE: watchdog removed; cancellation uses QgsProcessingFeedback.cancel()
+                            # which is cooperative and checked inside processing algorithms.
                             exec(code, g, local_vars)
                         finally:
                             _sub_mod.Popen = _orig_popen
                             _sys_mod.modules["subprocess"] = _sub_mod
+                            if _orig_processing_run is not None:
+                                g["processing"].run = _orig_processing_run
                         # Auto-refresh canvas after any code execution
                         try:
                             if self.iface:
@@ -553,6 +540,100 @@ class QGISCodeExecutor(QObject):
                     self._record_graph_hooks(project_dir, code, response, metadata)
         except queue.Empty:
             pass
+
+    def _run_processing_async(self, algorithm, parameters, feedback=None, context=None, req_id=None, result_queue=None):
+        """Run a processing algorithm via QgsProcessingAlgRunnerTask in the
+        background thread pool while pumping the Qt event loop so the UI
+        stays responsive. Falls back to synchronous processing.run() if the
+        task infrastructure is unavailable.
+
+        The QTimer is stopped during the wait to prevent re-entering
+        _process_queue while we're processing events.
+        """
+        import time as _time
+        from qgis.core import (
+            QgsApplication, QgsProcessingAlgRunnerTask,
+            QgsProcessingContext, QgsProcessingFeedback,
+            QgsProcessingException,
+        )
+        from PyQt6.QtWidgets import QApplication
+        import processing as _processing
+
+        alg = QgsApplication.processingRegistry().algorithmById(algorithm)
+        if alg is None:
+            return _processing.run(algorithm, parameters, feedback, context)
+
+        ctx = context or QgsProcessingContext()
+        fb = feedback or QgsProcessingFeedback()
+
+        result_holder = []
+        progress_start = _time.monotonic()
+        last_progress = -1
+        last_stage = ""
+
+        def _on_finished(successful, results):
+            result_holder.append((successful, dict(results) if results else {}))
+
+        def _on_progress(progress):
+            nonlocal last_progress, last_stage
+            if result_queue and req_id:
+                now = _time.monotonic()
+                elapsed = now - progress_start
+                # Estimate ETA: if we're at progress% after elapsed, 100% takes elapsed*100/progress
+                eta = None
+                if progress > 0:
+                    eta = elapsed * 100.0 / progress - elapsed
+                # Get stage name from feedback if available
+                stage = ""
+                try:
+                    stage = fb.progressText() or ""
+                except Exception:
+                    pass
+                if progress != last_progress or stage != last_stage:
+                    result_queue.put({
+                        "id": req_id,
+                        "type": "progress",
+                        "progress": progress,
+                        "algorithm": algorithm,
+                        "stage": stage,
+                        "elapsed_sec": round(elapsed, 1),
+                        "eta_sec": round(eta, 1) if eta is not None else None,
+                    })
+                    last_progress = progress
+                    last_stage = stage
+
+        task = QgsProcessingAlgRunnerTask(alg, parameters, ctx, fb)
+        task.executed.connect(_on_finished)
+        task.progressChanged.connect(_on_progress)
+
+        was_running = self._timer is not None and self._timer.isActive()
+        if was_running:
+            self._timer.stop()
+        try:
+            QgsApplication.taskManager().addTask(task)
+            deadline = _time.monotonic() + 300
+            while not result_holder and _time.monotonic() < deadline:
+                QApplication.processEvents()
+                if self._cancel_requested():
+                    fb.cancel()  # Use QgsProcessingFeedback's native cancel
+                if task.isCanceled():
+                    break
+                # Sleep between polls — the algorithm runs in QGIS's thread pool
+                # so sleeping here doesn't slow it down, it just prevents us
+                # from pegging a CPU core with a busy-spin.
+                _time.sleep(0.05)
+            if not result_holder:
+                raise QgsProcessingException(
+                    f"Algorithm '{algorithm}' timed out or was cancelled"
+                )
+            successful, results = result_holder[0]
+            if not successful:
+                raise QgsProcessingException(f"Algorithm '{algorithm}' failed")
+            return results
+        finally:
+            if was_running and self._timer is not None:
+                self._timer.start(100)
+
 
     def _capture_canvas(self) -> str:
         """Capture the QGIS map canvas as a base64 PNG string.
@@ -966,9 +1047,12 @@ class QGISCodeExecutor(QObject):
             except ImportError:
                 pass  # not in QGIS context (tests)
 
-    def execute(self, code: str, timeout: int = 300) -> dict[str, Any]:
+    def execute(self, code: str, timeout: int = 300, on_progress=None) -> dict[str, Any]:
         """Execute code on the main GUI thread via the QTimer queue.
         This ensures Qt widget access (canvas, layers) happens on the correct thread.
+
+        Progress notifications raised by _run_processing_async (type == "progress")
+        are forwarded to on_progress(progress_dict) instead of being dropped.
         """
         result_queue: queue.Queue = queue.Queue()
         self._normal_queue.put(("direct", code, result_queue, {
@@ -978,8 +1062,36 @@ class QGISCodeExecutor(QObject):
             "started_at": time.perf_counter(),
         }))
         # DO NOT call _process_queue() here — it must run on the main thread via QTimer
-        # Just wait for the result; QTimer will process the queue on the GUI thread
-        return result_queue.get(timeout=timeout)
+        # Clear any stale cancellation state so this run starts fresh.
+        self._cancel_event.clear()
+        deadline_exec = time.monotonic() + timeout
+        while time.monotonic() < deadline_exec:
+            try:
+                item = result_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if item.get("type") == "progress":
+                if on_progress is not None:
+                    try:
+                        on_progress(item)
+                    except Exception:
+                        pass  # progress listeners are best-effort
+                continue
+            return item
+        raise TimeoutError(f"execute() timed out after {timeout}s waiting for main-thread QTimer")
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation of the current in-flight execution.
+
+        Thread-safe: callable from any thread (e.g. agent.cancel() from the
+        GUI). Sets a flag checked by _run_processing_async, which calls
+        QgsProcessingFeedback.cancel() on the main thread. Native QGIS
+        algorithms check feedback.isCanceled() cooperatively.
+        """
+        self._cancel_event.set()
+
+    def _cancel_requested(self) -> bool:
+        return self._cancel_event.is_set()
 
     def shutdown(self):
         self._running = False
@@ -989,15 +1101,11 @@ class QGISCodeExecutor(QObject):
         self._result_queues.clear()
         if self._timer:
             self._timer.stop()
-        if self.server:
-            try:
-                self.server.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                self.server.close()
-            except OSError:
-                pass
-            self.server = None
-        if self._server_thread and self._server_thread.is_alive():
-            self._server_thread.join(timeout=1.0)
+        # Delegate socket shutdown to SocketServer
+        if getattr(self, "_socket_server", None):
+            self._socket_server.shutdown()
+            self._socket_server = None
+        # Clear local refs
+        self.port = None
+        self.server = None
+        self._server_thread = None

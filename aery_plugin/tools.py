@@ -481,14 +481,15 @@ class ToolRegistry:
         except TypeError:
             return await fn(params)
 
-    async def _execute_qgis_code(self, params: dict) -> str:
+    async def _execute_qgis_code(self, params: dict, on_progress=None) -> str:
         code = params["code"]
         if params.get("dry_run"):
             preview = self._build_dry_run_preview(code)
             return json.dumps(preview)
         code = self._normalize_qgis4_code(code)
-        # Run sync executor in thread pool to avoid blocking the event loop
-        result = await asyncio.to_thread(self.executor.execute, code, 300)
+        # Run sync executor in thread pool to avoid blocking the event loop.
+        # Forward on_progress so processing progress reaches the UI/agent loop.
+        result = await asyncio.to_thread(self.executor.execute, code, 300, on_progress)
         if result.get("success"):
             r = result.get("result")
             return json.dumps(r, indent=2) if isinstance(r, dict) else str(r)

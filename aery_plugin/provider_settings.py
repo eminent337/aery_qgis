@@ -252,17 +252,26 @@ class ProviderOAuthList(QWidget):
         self._pid_map.clear()
         auth = oauth_helper._load_auth()
 
-        for pid, cfg in oauth_helper.OAUTH_CONFIGS.items():
-            if pid not in ('google-antigravity', 'kilo'): continue
+        # Show profiles instead of raw providers
+        profiles = list_profiles()
+        default_pid = get_default_profile_id()
+
+        for profile in profiles:
+            pid = profile.provider
+            cfg = oauth_helper.OAUTH_CONFIGS.get(pid, {})
+            if not cfg:
+                continue
             creds = auth.get(pid, {})
             connected = bool(creds.get("access") or creds.get("accessToken")
                              or creds.get("refresh") or creds.get("refreshToken"))
+            is_default = (pid == default_pid)
             self._pid_map[pid] = cfg["name"]
 
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(8)
 
+            # Connection status dot
             dot = QLabel("●" if connected else "○")
             dot.setFixedSize(16, 16)
             dc = GREEN if connected else DIM
@@ -270,7 +279,11 @@ class ProviderOAuthList(QWidget):
                 f"color:{dc}; font-size:{_fs(F_H)}; border:none; background:transparent;")
             row.addWidget(dot)
 
-            nm = QLabel(cfg["name"])
+            # Profile name + provider name
+            name_text = f"{profile.name} ({cfg['name']})"
+            if is_default:
+                name_text += " ★"
+            nm = QLabel(name_text)
             nm.setStyleSheet(
                 f"font-size:{_fs(F_H)}; font-weight:600; color:{TEXT};"
                 f" border:none; background:transparent;")
@@ -294,6 +307,20 @@ class ProviderOAuthList(QWidget):
                 f" QWidget:hover {{ border-color:{ACCENT}; }}"
             )
             self._blay.addWidget(wrap)
+
+        # Add "Create Profile" button
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setSpacing(8)
+        add_btn = _btn("+ CREATE PROFILE", ACCENT)
+        add_btn.clicked.connect(self._create_profile)
+        add_row.addWidget(add_btn, 1)
+        wrap = QWidget()
+        wrap.setLayout(add_row)
+        wrap.setStyleSheet(
+            f"QWidget {{ background:{SURFACE}; border:2px dashed {ACCENT}; border-radius:3px; padding:4px 8px; }}"
+        )
+        self._blay.addWidget(wrap)
 
         self._blay.addStretch()
 

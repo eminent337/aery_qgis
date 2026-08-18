@@ -3,23 +3,40 @@ import secrets
 import socket
 import threading
 import time
-import uuid
 import queue
+import uuid
 from typing import Optional
 from aery_plugin.logger import logger
+
+
 class SocketServer:
-    """Runs a local TCP socket server to accept execution requests from Node.js.
+    """Runs a local TCP socket server to accept execution requests.
+
     Every connection must include the per-instance auth_token in its JSON
-    request. The token is generated at server startup and exposed through the
-    executor so the legitimate runner can retrieve it via the same out-of-band
-    channel used for the port number (e.g. argv or a runner config file).
+    request. The token is generated at server startup (or provided) and exposed
+    through the executor so the legitimate runner can retrieve it via the same
+    out-of-band channel used for the port number (e.g. argv or a runner config
+    file).
+
+    Improvements over legacy inline handler:
+    - Single canonical handler (no duplication between SocketServer and
+      QGISCodeExecutor)
+    - Auth token shared with executor (per-instance, not per-server)
+    - 300s deadline with progress-event skipping (keeps UI responsive)
+    - `default=str` in JSON dump for non-serializable objects
     """
-    def __init__(self, executor):
+
+    def __init__(
+        self,
+        executor,
+        auth_token: Optional[str] = None,
+    ):
         self.executor = executor
         self.server: Optional[socket.socket] = None
         self.port: Optional[int] = None
-        # Per-instance random secret. 32 bytes => ~43 chars urlsafe base64.
-        self.auth_token: str = secrets.token_urlsafe(32)
+        # Per-instance random secret (32 bytes => ~43 chars urlsafe base64).
+        # Can be provided externally so executor and server share the same token.
+        self.auth_token: str = auth_token or secrets.token_urlsafe(32)
         self._server_thread: Optional[threading.Thread] = None
         self._running = False
 
@@ -39,8 +56,6 @@ class SocketServer:
     def _serve(self):
         while self._running:
             try:
-                if self.server is None:
-                    break
                 conn, _ = self.server.accept()
                 threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
             except socket.timeout:
@@ -110,11 +125,21 @@ class SocketServer:
             else:
                 self.executor._normal_queue.put((req_id, code, result_queue, metadata))
 
-            while True:
-                result = result_queue.get(timeout=300)
-                conn.sendall((json.dumps(result, default=str) + "\n").encode())
-                if result.get("type") != "progress":
-                    break
+            # Wait for final result, skipping progress events (300s deadline)
+            deadline_prog = time.monotonic() + 300
+            result = None
+            while time.monotonic() < deadline_prog:
+                try:
+                    item = result_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                if item.get("type") == "progress":
+                    continue
+                result = item
+                break
+            if result is None:
+                raise queue.Empty
+            conn.sendall((json.dumps(result, default=str) + "\n").encode())
         except queue.Empty:
             conn.sendall((json.dumps({"success": False, "error": "Execution timed out after 300s"}, default=str) + "\n").encode())
         except Exception as e:

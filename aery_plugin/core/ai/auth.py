@@ -45,20 +45,6 @@ OAUTH_CONFIGS: dict[str, dict] = {
         "scopes": [],
         "device_flow": True,
     },
-    "google-antigravity": {
-        "name": "Google Antigravity",
-        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
-        "token_url": "https://oauth2.googleapis.com/token",
-        "client_id": _decode("***REMOVED***"),
-        "client_secret": _decode("***REMOVED***"),
-        "redirect_port": 51121,
-        "redirect_path": "/oauth-callback",
-        "scopes": [
-            "https://www.googleapis.com/auth/cloud-platform",
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile",
-        ],
-    },
 }
 
 # ── Import from Aery provider registry ───────────────────────────────────────
@@ -906,8 +892,60 @@ def get_model_changelog() -> str:
         )
 
 
-def _device_flow_login(provider_id: str, cfg: dict) -> bool:
-    """GitHub Copilot device flow."""
+def _device_flow_login(provider_id: str, cfg: dict, code_callback=None) -> bool:
+    if provider_id == "kilo":
+        req = urllib.request.Request(
+            cfg["auth_url"],
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            raise RuntimeError(f"Device code request failed: {e}")
+
+        user_code = data.get("code", "")
+        verification_uri = data.get("verificationUrl", "https://api.kilo.ai/auth")
+
+        if code_callback:
+            code_callback(user_code, verification_uri)
+        else:
+            print(f"Kilo Gateway: go to {verification_uri} and enter code: {user_code}")
+            import webbrowser
+            webbrowser.open(verification_uri)
+
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(5)
+            poll_req = urllib.request.Request(
+                f"{cfg['token_url']}/{urllib.parse.quote(user_code)}",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                    if resp.status == 202:
+                        continue
+                    token_data = json.loads(resp.read().decode())
+                    if token_data.get("status") == "approved" and token_data.get("token"):
+                        auth = _load_auth()
+                        auth[provider_id] = {
+                            "access": token_data["token"],
+                            "expires_at": time.time() + 31536000
+                        }
+                        _save_auth(auth)
+                        return True
+            except urllib.error.HTTPError as e:
+                if e.code == 202:
+                    pass
+                else:
+                    print(f"Poll error: {e}")
+            except Exception:
+                pass
+        return False
+
+    # Standard device flow (GitHub Copilot etc.)
     req = urllib.request.Request(
         cfg["auth_url"],
         data=urllib.parse.urlencode({
@@ -928,9 +966,11 @@ def _device_flow_login(provider_id: str, cfg: dict) -> bool:
     device_code = data.get("device_code", "")
     interval = data.get("interval", 5)
 
-    # Show user code in a simple way — caller should display this
-    print(f"GitHub Copilot: go to {verification_uri} and enter code: {user_code}")
-    webbrowser.open(verification_uri)
+    if code_callback:
+        code_callback(user_code, verification_uri)
+    else:
+        print(f"GitHub Copilot: go to {verification_uri} and enter code: {user_code}")
+        webbrowser.open(verification_uri)
 
     # Poll for token
     deadline = time.time() + 120

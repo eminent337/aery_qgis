@@ -1039,16 +1039,34 @@ class ChatPanel(QDockWidget):
             self._set_activity("thinking...", active=True)
 
     def _handle_permission_request(self, event: dict) -> None:
+        """Show an inline, non-modal permission card in the chat feed.
+
+        GeoLibre AssistantPanel pattern: each pending approval becomes a card
+        in the transcript that the user resolves independently (Allow Once /
+        Always Allow / Deny). This never blocks the QGIS event loop, so the
+        map stays interactive and multiple queued tool approvals in one turn
+        are each surfaced rather than dropped behind a modal.
+        """
+        try:
+            from aery_plugin.ui_dialogs import _PermissionWidget
+            card = _PermissionWidget(event, self._transcript.feed_container, self)
+            card._resolve_callback = self._resolve_permission_card
+            self._transcript.feed_layout.insertWidget(
+                self._transcript.feed_layout.count() - 1, card
+            )
+            QTimer.singleShot(50, self._transcript.scroll_to_bottom)
+        except Exception as e:
+            logger.error(f"Aery: permission card error: {e}")
+            # Fall back to the synchronous modal so the request is never lost.
+            self._show_modal_permission(event)
+
+    def _show_modal_permission(self, event: dict) -> None:
+        """Legacy modal fallback used if the inline card cannot be built."""
         tool_name = event.get("tool_name", "")
         description = event.get("description", "")
         risk_level = event.get("risk_level", "medium")
         request_id = event.get("request_id", "")
         tool_use_id = event.get("tool_use_id", "")
-        risk_color = {
-            "high": ERROR_COLOR,
-            "medium": WARNING_COLOR,
-            "low": SUCCESS_COLOR,
-        }.get(risk_level, TEXT_MUTED)
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Permission Request")
         dialog.setText(f"Tool: {tool_name}")
@@ -1068,8 +1086,27 @@ class ChatPanel(QDockWidget):
         if result == QMessageBox.ButtonRole.AcceptRole or dialog.clickedButton() == allow_btn:
             self._permission_granted(request_id, tool_use_id, False)
         elif dialog.clickedButton() == always_btn:
-            self.agent.tools.set_permission_mode("bypassPermissions")
             self._permission_granted(request_id, tool_use_id, True)
+        else:
+            self._permission_denied(request_id, tool_use_id)
+
+    def _resolve_permission_card(self, request_id: str, tool_use_id: str, approved: bool, always: bool) -> None:
+        """Callback from the inline _PermissionWidget."""
+        if approved:
+            if always:
+                # Always Allow: bypass further prompts this session (both
+                # registries so typed and legacy tools honor it).
+                try:
+                    self.agent.tools.set_permission_mode("bypassPermissions")
+                except Exception:
+                    pass
+                try:
+                    typed = getattr(self.agent, "_typed_tools", None)
+                    if typed is not None:
+                        typed.set_permission_mode("bypassPermissions")
+                except Exception:
+                    pass
+            self._permission_granted(request_id, tool_use_id, always)
         else:
             self._permission_denied(request_id, tool_use_id)
 

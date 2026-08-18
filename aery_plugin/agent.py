@@ -262,6 +262,12 @@ class Agent(QObject):
     def cancel(self) -> None:
         """Cancel the current agent turn if running."""
         self.cancel_permission()
+        # Ask the executor to cancel any in-flight QGIS processing task
+        # (e.g. a QgsProcessingAlgRunnerTask) cooperatively.
+        try:
+            self.executor.cancel()
+        except Exception:
+            pass
         with self._lock:
             self._cancelled = True
         # Signal the asyncio loop in the worker thread

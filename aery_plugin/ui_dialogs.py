@@ -269,3 +269,126 @@ class _QuestionWidget(QFrame):
             self.deleteLater()
         except Exception:
             pass
+
+class _PermissionWidget(QFrame):
+    """Inline, non-modal permission card embedded in the chat feed.
+
+    Mirrors _QuestionWidget: the card is inserted into the transcript and the
+    user resolves it with Allow Once / Always Allow / Deny without freezing
+    the QGIS UI. Multiple queued permission requests each get their own card,
+    so the agent can dispatch several tools in one turn and the user resolves
+    them independently (GeoLibre AssistantPanel codeQueueRef pattern).
+    """
+
+    BG        = "#0D0E15"
+    SURFACE   = "#12131A"
+    ACCENT    = "#57F1DB"
+    BORDER    = "#3C4A46"
+    TEXT_MAIN = "#E3E1EC"
+    TEXT_DIM  = "#BACAC5"
+    TEXT_MUTED = "#859490"
+    WARN      = "#FFD1AA"
+    DANGER    = "#FF7B72"
+
+    def __init__(
+        self,
+        event: dict,
+        parent: Optional[QWidget] = None,
+        feed_container: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._event = event
+        self._request_id = event.get("request_id", "")
+        self._tool_name = event.get("tool_name", "")
+        self._description = event.get("description", "")
+        self._risk_level = event.get("risk_level", "medium")
+        self._tool_use_id = event.get("tool_use_id", "")
+        self._feed = feed_container
+        self._resolve_callback = None
+
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            f"QFrame {{ background:{self.SURFACE}; border:1px solid {self.BORDER}; "
+            f"border-radius:6px; padding:0; }}"
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(6)
+
+        hdr = QLabel("Permission Request")
+        hdr.setStyleSheet(
+            f"color:{self.WARN}; font-weight:700; font-size:13px; background:transparent;"
+        )
+        root.addWidget(hdr)
+
+        tool_lbl = QLabel(f"Tool: {self._tool_name}")
+        tool_lbl.setStyleSheet(
+            f"color:{self.ACCENT}; font-weight:600; font-size:12px; background:transparent;"
+        )
+        root.addWidget(tool_lbl)
+
+        if self._description:
+            desc_lbl = QLabel(self._description)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setStyleSheet(
+                f"color:{self.TEXT_DIM}; font-size:12px; background:transparent;"
+            )
+            root.addWidget(desc_lbl)
+
+        risk_color = {
+            "high": self.DANGER,
+            "medium": self.WARN,
+            "low": self.ACCENT,
+        }.get(self._risk_level, self.TEXT_MUTED)
+        risk_lbl = QLabel(f"Risk level: {self._risk_level.upper()}")
+        risk_lbl.setStyleSheet(
+            f"color:{risk_color}; font-size:10px; font-weight:600; background:transparent;"
+        )
+        root.addWidget(risk_lbl)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+
+        allow_btn = QPushButton("Allow Once")
+        allow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        allow_btn.setStyleSheet(
+            f"QPushButton {{ background:{self.ACCENT}; color:{self.BG}; border:none; "
+            f"border-radius:4px; font-weight:700; font-size:11px; padding:6px 14px; }}"
+            f"QPushButton:hover {{ background:#45D8C8; }}"
+        )
+        allow_btn.clicked.connect(lambda: self._resolve(True, False))
+        btns.addWidget(allow_btn)
+
+        always_btn = QPushButton("Always Allow")
+        always_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        always_btn.setStyleSheet(
+            f"QPushButton {{ background:{self.SURFACE}; color:{self.TEXT_MAIN}; "
+            f"border:1px solid {self.ACCENT}; border-radius:4px; "
+            f"font-weight:600; font-size:11px; padding:6px 14px; }}"
+            f"QPushButton:hover {{ border-color:#45D8C8; color:#45D8C8; }}"
+        )
+        always_btn.clicked.connect(lambda: self._resolve(True, True))
+        btns.addWidget(always_btn)
+
+        deny_btn = QPushButton("Deny")
+        deny_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        deny_btn.setStyleSheet(
+            f"QPushButton {{ background:{self.SURFACE}; color:{self.DANGER}; "
+            f"border:1px solid {self.DANGER}; border-radius:4px; "
+            f"font-weight:600; font-size:11px; padding:6px 14px; }}"
+            f"QPushButton:hover {{ background:{self.DANGER}; color:{self.BG}; }}"
+        )
+        deny_btn.clicked.connect(lambda: self._resolve(False, False))
+        btns.addWidget(deny_btn)
+
+        btns.addStretch(1)
+        root.addLayout(btns)
+
+    def _resolve(self, approved: bool, always: bool) -> None:
+        if self._resolve_callback:
+            self._resolve_callback(self._request_id, self._tool_use_id, approved, always)
+        try:
+            self.setParent(None)
+            self.deleteLater()
+        except Exception:
+            pass
