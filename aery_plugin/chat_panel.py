@@ -254,8 +254,7 @@ class ChatPanel(QDockWidget):
     def minimumSizeHint(self) -> QSize:
         return QSize(260, 400)
     def maximumSize(self) -> QSize:
-        return QSize(420, 16777215)
-    def _set_session_state(self, state: SessionState) -> None:
+        return QSize(420, 700)
         if self._session_state == state:
             return
         if state == SessionState.RUNNING:
