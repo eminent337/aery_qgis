@@ -135,6 +135,8 @@ class Agent(QObject):
         # Audit trail — initialized lazily on first session start
         self._audit_logger = None
         self._trace_id: Optional[str] = None
+        # Session isolation via SessionManager (vault namespaces per session)
+        self._session_manager = None
         self.dispatcher = ToolDispatcher(self)
 
         self._lock = threading.RLock()
@@ -1014,9 +1016,7 @@ class Agent(QObject):
                         self._messages.append({"role": "assistant", "content": full_content})
                     self._persist_message({"role": "assistant", "content": full_content})
                 return full_content
-
         return "Agent reached maximum turns."
-
     def reset(self):
         """Clear conversation history and start fresh session."""
         # Flush audit trail before resetting
@@ -1027,6 +1027,13 @@ class Agent(QObject):
                 pass
             self._audit_logger = None
         self._trace_id = None
+        # Unregister from SessionManager
+        if self._session_manager and self._session_id:
+            try:
+                self._session_manager.remove_session(self._session_id)
+            except Exception:
+                pass
+            self._session_manager = None
         with self._lock:
             # Stop worker thread if running
             if self._thread and self._thread.isRunning():
@@ -1062,6 +1069,18 @@ class Agent(QObject):
         with self._lock:
             self._project_dir = project_dir
             self._session_id = create_session(project_dir)
+        # Register with SessionManager for vault namespace isolation
+        try:
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            self._session_manager = mgr
+            mgr.create_session(
+                agent=self,
+                vault_namespace=f"aery:{self._session_id}",
+                metadata={"project_dir": project_dir},
+            )
+        except Exception as e:
+            logger.debug(f"SessionManager registration failed: {e}")
         # Lazy-init audit trail on first real session
         if self._audit_logger is None and self._session_id:
             try:
@@ -1145,6 +1164,24 @@ class Agent(QObject):
         """Return an ISO-format timestamp."""
         import datetime
         return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+    def get_session_vault(self):
+        """Get the isolated vault for this session's namespace."""
+        if self._session_manager and self._session_id:
+            try:
+                ctx = self._session_manager.get_session(self._session_id)
+                if ctx:
+                    return ctx.get_vault()
+            except Exception:
+                pass
+        return None
+    def get_session_list(self) -> list[dict]:
+        """List all registered sessions from SessionManager."""
+        if self._session_manager:
+            try:
+                return self._session_manager.list_sessions()
+            except Exception:
+                pass
+        return []
     def get_audit_log_path(self) -> Optional[str]:
         """Return path to the audit log file, or None if not available."""
         if not self._audit_logger or not self._project_dir:
