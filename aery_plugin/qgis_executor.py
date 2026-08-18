@@ -482,7 +482,7 @@ class QGISCodeExecutor(QObject):
                             # This prevents "magic static image" from previous runs persisting
                             # Must run on GUI thread like _capture_canvas does
                             try:
-                                from PyQt6.QtCore import QMetaObject, Qt
+                                from PyQt6.QtCore import QCoreApplication
                                 canvas = self.iface.mapCanvas()
                                 def _clear_bg():
                                     from PyQt6.QtGui import QBrush, QColor
@@ -495,11 +495,8 @@ class QGISCodeExecutor(QObject):
                                 except Exception:
                                     pass
                                 if app is not None and app.thread() is not None and app.thread() is not canvas.thread():
-                                    QMetaObject.invokeMethod(
-                                        canvas,
-                                        Qt.ConnectionType.BlockingQueuedConnection,
-                                        Qt.Callable(_clear_bg),
-                                    )
+                                    from PyQt6.QtCore import QTimer
+                                    QTimer.singleShot(0, _clear_bg)
                                 else:
                                     _clear_bg()
                             except Exception:
@@ -709,11 +706,14 @@ class QGISCodeExecutor(QObject):
                     result_holder["data"] = _do_render()
                 except Exception as e:  # noqa
                     result_holder["error"] = str(e)
-            QMetaObject.invokeMethod(
-                canvas,
-                Qt.ConnectionType.BlockingQueuedConnection,
-                Qt.Callable(_run),
-            )
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, _run)
+            # Wait for the main thread to process the event
+            loop = QEventLoop()
+            def _wake():
+                loop.quit()
+            QTimer.singleShot(0, _wake)
+            loop.exec()
             if "error" in result_holder:
                 raise RuntimeError(result_holder["error"])
             raw = result_holder["data"]
