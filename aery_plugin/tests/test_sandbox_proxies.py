@@ -183,10 +183,10 @@ def test_sandbox_globals_replaces_dangerous_modules():
     g = _make_sandbox_exec_globals(base, "/tmp")
 
     # Module references must be replaced with proxy objects
-    assert g["os"] is not "fake-os"
-    assert g["subprocess"] is not "fake-subprocess"
-    assert g["shutil"] is not "fake-shutil"
-    assert g["urllib"] is not "fake-urllib"
+    assert g["os"] != "fake-os"
+    assert g["subprocess"] != "fake-subprocess"
+    assert g["shutil"] != "fake-shutil"
+    assert g["urllib"] != "fake-urllib"
 
     # Stripped modules must be absent
     assert "ctypes" not in g
