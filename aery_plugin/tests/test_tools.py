@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from aery_plugin.tools import ToolRegistry
 
 
-class TestToolValidation(unittest.TestCase):
+class TestToolValidation(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         executor = MagicMock()
         agent = MagicMock()
