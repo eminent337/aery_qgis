@@ -568,7 +568,7 @@ class TranscriptView(QScrollArea):
         return QSize(0, 0)
 
     def sizeHint(self) -> QSize:
-        return QSize(300, 400)
+        return QSize(298, 400)
     @property
     def feed_layout(self):
         return self._feed_layout

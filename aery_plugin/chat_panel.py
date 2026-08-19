@@ -252,12 +252,12 @@ class ChatPanel(QDockWidget):
         try:
             parent = self.parent() or (self.iface.mainWindow() if hasattr(self, "iface") and self.iface else None)
             if parent and hasattr(parent, "resizeDocks"):
-                parent.resizeDocks([self], [300], Qt.Orientation.Horizontal)
+                parent.resizeDocks([self], [298], Qt.Orientation.Horizontal)
         except Exception:
             pass
 
     def sizeHint(self) -> QSize:
-        return QSize(300, 700)
+        return QSize(298, 700)
 
     def minimumSizeHint(self) -> QSize:
         return QSize(260, 300)
