@@ -190,6 +190,10 @@ class ChatPanel(QDockWidget):
     def session_state(self) -> SessionState:
         return self._session_state
 
+    def _set_session_state(self, state: SessionState) -> None:
+        self._session_state = state
+        if hasattr(self, "_input_area") and self._input_area:
+            self._update_send_btn(streaming=(state == SessionState.RUNNING))
     @property
     def _is_streaming(self) -> bool:
         """Backward-compat alias (ChatPanel refactored to session_state enum)."""
