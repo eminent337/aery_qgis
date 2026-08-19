@@ -169,8 +169,8 @@ class ChatPanel(QDockWidget):
         self._input_area.send_btn.clicked.connect(self._on_send_button)
 
         self._build_ui()
-        self.setMinimumWidth(260)
-        self.setMaximumWidth(420)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(520)
         self.topLevelChanged.connect(self._sync_dock_button)
         self._apply_global_styles()
         # Reset geometry on show event
@@ -249,15 +249,15 @@ class ChatPanel(QDockWidget):
         try:
             parent = self.parent() or (self.iface.mainWindow() if hasattr(self, "iface") and self.iface else None)
             if parent and hasattr(parent, "resizeDocks"):
-                parent.resizeDocks([self], [280], Qt.Orientation.Horizontal)
+                parent.resizeDocks([self], [340], Qt.Orientation.Horizontal)
         except Exception:
             pass
 
     def sizeHint(self) -> QSize:
-        return QSize(280, 700)
+        return QSize(340, 700)
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(260, 400)
+        return QSize(280, 300)
     def _build_ui(self) -> None:
         container = QWidget()
         root = QVBoxLayout(container)
