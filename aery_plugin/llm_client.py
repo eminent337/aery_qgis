@@ -1143,6 +1143,12 @@ def _resolve_api_key(provider_id: str, auth_entry: dict) -> str:
     # OAuth access token (non-Google providers)
     access = entry.get("access_token", "")
     if access:
+        from aery_plugin.core.ai.auth import OAUTH_CONFIGS
+        # Static-bearer providers (Kilo) issue a long-lived token with no
+        # refresh path — mirror the main Aery agent and return it as-is.
+        if OAUTH_CONFIGS.get(provider_id, {}).get("static_bearer"):
+            return access
+
         # Check expiry (stored as ms timestamp)
         expires = entry.get("expires_at", 0)
         if expires:
@@ -1166,7 +1172,6 @@ def _resolve_api_key(provider_id: str, auth_entry: dict) -> str:
             return refreshed.get("access_token", "")
         # No expiry field — use access token as-is (some providers don't track expiry)
         return access
-    return ""
 
 
 _OAUTH_API_CONFIGS: dict[str, dict] = {

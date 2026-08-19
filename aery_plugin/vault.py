@@ -130,16 +130,19 @@ class Vault:
         """Store a value using AES-256-GCM encryption."""
         fk = self._keyring_key(key)
 
-        # Try keyring first (if available)
+        # Always write to fallback first for list_keys() consistency
+        fallback_ok = self._set_fallback(key, value)
+
+        # Try keyring as well (if available)
         if self._use_keyring():
             try:
                 keyring.set_password(SERVICE_NAME, fk, value)
                 return True
             except Exception as e:
                 logger.debug(f"Vault: keyring set failed for {fk}: {e}")
+                return fallback_ok
 
-        # Fallback to encrypted file
-        return self._set_fallback(key, value)
+        return fallback_ok
 
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """Retrieve a value, checking keyring then fallback."""

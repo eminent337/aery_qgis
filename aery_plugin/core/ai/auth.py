@@ -42,6 +42,10 @@ OAUTH_CONFIGS: dict[str, dict] = {
         "redirect_path": "",
         "scopes": [],
         "device_flow": True,
+        # Kilo issues a long-lived device bearer token (1 year) with NO
+        # refresh token and NO refresh endpoint. Mirror the main Aery agent:
+        # treat it as a static bearer credential that never refreshes.
+        "static_bearer": True,
     },
 }
 
@@ -394,8 +398,8 @@ def save_api_key(provider_id: str, key: str, account_id: str = "", base_url: str
 def save_gateway_key(aery_key: str) -> None:
     vault = get_vault("auth")
     vault.set("gateway_key", aery_key)
-    if not get_active_provider():
-        set_active_provider("aery-gateway", "anthropic/claude-haiku-4-5-20251001")
+    # Kilo-only configuration - do not auto-switch provider
+    # User explicitly requested only Kilo provider support
 
 
 # ── OAuth login flow ──────────────────────────────────────────────────────────
@@ -474,17 +478,27 @@ def _device_flow_login(provider_id: str, cfg: dict, code_callback=None) -> bool:
 def refresh_oauth_token(provider_id: str) -> dict:
     """Refresh an expired OAuth access token using the stored refresh token.
     Works for any provider defined in OAUTH_CONFIGS (Kilo).
+
+    Static-bearer providers (Kilo) issue a long-lived device token with no
+    refresh token and no refresh endpoint. Mirroring the main Aery agent's
+    ``refreshOAuthToken`` (``case "kilo": ... return as-is``), those tokens
+    are returned unchanged instead of raising — the server rejects a truly
+    dead token with 401 and the user re-authenticates.
     """
     vault = get_vault("auth")
     tokens = vault.get_oauth_tokens(provider_id)
     if not tokens:
         raise RuntimeError(f"No OAuth credentials for {provider_id}. Re-authenticate via /login.")
 
+    cfg = OAUTH_CONFIGS.get(provider_id, {})
+    if cfg.get("static_bearer"):
+        # Static bearer (Kilo): no refresh token / endpoint. Return as-is.
+        return tokens
+
     refresh_token = tokens.get("refresh_token", "")
     if not refresh_token:
         raise RuntimeError(f"No refresh token for {provider_id}. Re-authenticate via /login.")
 
-    cfg = OAUTH_CONFIGS.get(provider_id, {})
     token_url = cfg.get("token_url", "")
     client_id = cfg.get("client_id", "")
     client_secret = cfg.get("client_secret", "")

@@ -88,6 +88,20 @@ from qgis.core import QgsVectorLayer, QgsField, QgsFeature, QgsGeometry, QgsPoin
 from PyQt6.QtCore import QVariant
 import urllib.request, urllib.parse, json
 
+# Hard byte cap on the Overpass response (ported from GeoLibre's readTextCapped)
+# so a huge OSM extract cannot OOM the plugin.
+def _read_capped(_resp, _max=10 * 1024 * 1024):
+    _chunks, _total = [], 0
+    while True:
+        _c = _resp.read(64 * 1024)
+        if not _c:
+            break
+        _total += len(_c)
+        if _total > _max:
+            raise ValueError("Overpass response exceeded 10 MB limit")
+        _chunks.append(_c)
+    return b"".join(_chunks)
+
 feature_type = {feature_type}
 bbox = {bbox}
 output_name = {output_name}
@@ -97,7 +111,7 @@ query = f'[out:json];({feature_type}({bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]});ou
 data = urllib.parse.urlencode({'data': query}).encode()
 req = urllib.request.Request('https://overpass-api.de/api/interpreter', data=data)
 with urllib.request.urlopen(req, timeout=60) as resp:
-    result_json = json.loads(resp.read().decode())
+    result_json = json.loads(_read_capped(resp).decode())
 
 uri = 'Point?crs=EPSG:4326'
 mem_layer = QgsVectorLayer(uri, output_name, 'memory')

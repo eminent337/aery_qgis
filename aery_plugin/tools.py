@@ -959,7 +959,8 @@ result = f"Algorithm execution complete: {{out}}"
         )
 
         with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            from aery_plugin.web_caps import read_capped_text
+            html = read_capped_text(resp)
 
         # Check for anti-bot detection (DuckDuckGo blocks automated requests)
         if "prove you are human" in html.lower() or "captcha" in html.lower():
@@ -1013,7 +1014,8 @@ result = f"Algorithm execution complete: {{out}}"
         )
 
         with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            from aery_plugin.web_caps import read_capped_text
+            html = read_capped_text(resp)
 
         results = []
         # Lite version uses simpler <a> tags
@@ -1076,7 +1078,8 @@ result = f"Algorithm execution complete: {{out}}"
 
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
+                from aery_plugin.web_caps import read_capped_text
+                raw = read_capped_text(resp)
         except urllib.error.HTTPError as e:
             return f"Fetch failed: HTTP {e.code} {e.reason}"
         except urllib.error.URLError as e:
@@ -1796,7 +1799,16 @@ url = ("https://nominatim.openstreetmap.org/search?format=json"
        "&limit=1&q=" + urllib.parse.quote(place))
 req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
 with urllib.request.urlopen(req, timeout=20) as resp:
-    data = json.loads(resp.read().decode("utf-8"))
+    _chunks, _total = [], 0
+    while True:
+        _c = resp.read(64 * 1024)
+        if not _c:
+            break
+        _total += len(_c)
+        if _total > 10 * 1024 * 1024:
+            raise RuntimeError("Geocoding response exceeded 10 MB limit")
+        _chunks.append(_c)
+    data = json.loads(b"".join(_chunks).decode("utf-8"))
 if not data:
     raise RuntimeError(f"Geocoding returned no results for place: '{{place}}'")
 bb = data[0]["boundingbox"]

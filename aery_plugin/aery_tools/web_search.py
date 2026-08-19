@@ -24,7 +24,8 @@ class WebSearchTool:
             )
             
             with urllib.request.urlopen(req, timeout=10) as response:
-                html = response.read().decode('utf-8')
+                from aery_plugin.web_caps import read_capped_text
+                html = read_capped_text(response)
                 
             # Extremely basic text extraction to avoid adding BeautifulSoup dependency
             import re

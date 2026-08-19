@@ -265,7 +265,8 @@ def _h_zoom_to_place(params: dict, on_progress=None) -> dict[str, Any]:
         headers={"User-Agent": "Aery-QGIS-Assistant/1.0"},
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        results = json.loads(resp.read().decode())
+        from aery_plugin.web_caps import read_capped
+        results = json.loads(read_capped(resp).decode())
     if not results:
         return {"error": f"No place found for '{place}'."}
     r = results[0]

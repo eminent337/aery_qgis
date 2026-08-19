@@ -119,10 +119,19 @@ try:
             url_to_fetch,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             # Re-check the FINAL url after redirects (anti-SSRF bypass).
             _aery_ssrf_guard(response.geturl())
-            html = response.read()
+            _chunks, _total = [], 0
+            while True:
+                _c = response.read(64 * 1024)
+                if not _c:
+                    break
+                _total += len(_c)
+                if _total > 10 * 1024 * 1024:
+                    raise RuntimeError("URL fetch response exceeded 10 MB limit")
+                _chunks.append(_c)
+            html = b"".join(_chunks)
 
             # Simple text extraction without bs4 dependency
             import re

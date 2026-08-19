@@ -1,8 +1,25 @@
 from aery_plugin.logger import logger
 import asyncio
 import json
+import time
 import uuid
 from typing import Optional, Callable
+
+# Cooperative yield gate (ported from the main Aery agent's `yieldIfDue`):
+# sleep for YIELD_SLEEP_MS at most once every YIELD_INTERVAL_MS, so tight
+# tool-call batches pump the event loop (cancellation, progress, Qt signals)
+# without thrashing it on every single iteration.
+YIELD_SLEEP_MS = 0.02
+YIELD_INTERVAL_MS = 0.05
+_last_yield_at = 0.0
+
+async def yield_if_due() -> None:
+    global _last_yield_at
+    now = time.monotonic()
+    if now - _last_yield_at < YIELD_INTERVAL_MS:
+        return
+    await asyncio.sleep(YIELD_SLEEP_MS)
+    _last_yield_at = time.monotonic()
 
 class ToolDispatcher:
     """Handles the parallel execution of tool calls and visual confirmation captures."""
@@ -129,6 +146,10 @@ class ToolDispatcher:
         # simultaneously via async threading can corrupt the project state or crash the kernel.
         exec_results = []
         for tc in tool_calls:
+            # Yield between tool executions (gated, max once per 50ms) so
+            # the event loop can service cancellation and Qt signals even
+            # during back-to-back tool batches.
+            await yield_if_due()
             res = await _exec_one(tc)
             exec_results.append(res)
 
