@@ -803,9 +803,20 @@ result = f"Algorithm execution complete: {{out}}"
         for t in self.list_tools():
             func = t.get("function", {})
             name = func.get("name", "")
-            if name != "subagent":
+            if name not in ("subagent", "execute_subagent", "run_spatial_subagent"):
                 tools.append(t)
+
         for turn in range(max_turns):
+            # Yield to event loop to keep UI completely responsive
+            try:
+                from PyQt6.QtCore import QCoreApplication
+                app = QCoreApplication.instance()
+                if app:
+                    app.processEvents()
+            except Exception:
+                pass
+            await asyncio.sleep(0.01)
+
             response = await self._agent._client.chat(
                 model=self._agent._model,
                 messages=messages,
@@ -819,18 +830,31 @@ result = f"Algorithm execution complete: {{out}}"
             tool_calls = message.get("tool_calls", [])
             if not tool_calls:
                 return message.get("content", "")
+
             for tool_call in tool_calls:
                 func_data = tool_call.get("function", {})
                 name = func_data.get("name", "")
                 args_str = func_data.get("arguments", "{}")
                 try:
                     args = json.loads(args_str) if isinstance(args_str, str) else args_str
-                except Exception as e:
+                except Exception:
                     args = {}
+
+                # Yield events to keep UI lively
+                try:
+                    from PyQt6.QtCore import QCoreApplication
+                    app = QCoreApplication.instance()
+                    if app:
+                        app.processEvents()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.01)
+
                 try:
                     result = await self.execute(name, args)
                 except Exception as e:
                     result = f"Error: {e}"
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.get("id", ""),

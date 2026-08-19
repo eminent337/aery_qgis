@@ -4,7 +4,7 @@ import base64
 import os
 import re
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from PyQt6.QtCore import Qt, QTimer, QSize, Q_ARG, QMetaObject
 from PyQt6.QtGui import QPixmap, QImage, QTextOption, QIcon, QPainter
@@ -615,31 +615,95 @@ class TranscriptView(QScrollArea):
         QTimer.singleShot(10, self.scroll_to_bottom)
         return block
 
-    def add_canvas_image(self, b64_data: str) -> None:
+    def add_image_card(
+        self,
+        source: Union[str, bytes],
+        title: str = "IMAGE PREVIEW",
+        caption: str = "",
+        details: str = "",
+    ) -> None:
+        """Render a rich image preview card in the chat transcript (Aery standard).
+        Accepts base64 strings, file paths (PNG/JPG/WEBP/TIF/SVG), or raw bytes.
+        """
         frame = QFrame()
-        frame.setStyleSheet(f"background:{BG_CARD}; border:1px solid {BORDER}; border-radius:6px;")
+        frame.setStyleSheet(
+            f"QFrame {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:6px; }}"
+        )
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(8, 8, 8, 8)
-        hdr = QLabel("CANVAS CAPTURE")
-        hdr.setStyleSheet(f"color:{ACCENT};font-family:{FONT_MONO};font-size:9px;font-weight:800;background:transparent;")
-        lay.addWidget(hdr)
-        img_lbl = QLabel()
-        img_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-        img_lbl.setScaledContents(True)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        hdr = QLabel(title.upper())
+        hdr.setStyleSheet(
+            f"color:{ACCENT};font-family:{FONT_MONO};font-size:10px;font-weight:800;background:transparent;"
+        )
+        header.addWidget(hdr)
+        header.addStretch()
+        time_lbl = QLabel(now_stamp())
+        time_lbl.setStyleSheet(
+            f"color:{TEXT_MUTED};font-family:{FONT_MONO};font-size:9px;background:transparent;"
+        )
+        header.addWidget(time_lbl)
+        lay.addLayout(header)
+
+        qimg = QImage()
+        file_path = ""
         try:
-            raw = base64.b64decode(b64_data)
-            qimg = QImage.fromData(raw)
-            # Constrain image width to fit compact panel (max 260px) without forcing dock expansion
-            pix = QPixmap.fromImage(qimg).scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+            if isinstance(source, bytes):
+                qimg.loadFromData(source)
+            elif isinstance(source, str):
+                if os.path.exists(source) and os.path.isfile(source):
+                    file_path = source
+                    qimg.load(source)
+                elif source.startswith("data:image/") and ";base64," in source:
+                    b64 = source.split(";base64,")[1]
+                    qimg.loadFromData(base64.b64decode(b64))
+                elif source.startswith("iVBORw0KGgo") or len(source) > 80:
+                    qimg.loadFromData(base64.b64decode(source))
+        except Exception as e:
+            logger.debug(f"[Aery Image] Failed to load image: {e}")
+
+        if not qimg.isNull():
+            w, h = qimg.width(), qimg.height()
+            pix = QPixmap.fromImage(qimg).scaledToWidth(
+                260, Qt.TransformationMode.SmoothTransformation
+            )
+            img_lbl = QLabel()
             img_lbl.setPixmap(pix)
             img_lbl.setMaximumWidth(260)
-        except Exception:
-            img_lbl.setText("[image render failed]")
-        img_lbl.setStyleSheet("background:transparent;")
-        lay.addWidget(img_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+            img_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+            img_lbl.setStyleSheet("background:transparent; border-radius:4px;")
+            lay.addWidget(img_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+
+            meta_info = f"{w}×{h} px"
+            if file_path:
+                meta_info += f" · {os.path.basename(file_path)}"
+            if details:
+                meta_info += f" · {details}"
+
+            meta_lbl = QLabel(meta_info)
+            meta_lbl.setStyleSheet(
+                f"color:{TEXT_MUTED};font-family:{FONT_MONO};font-size:9px;background:transparent;"
+            )
+            lay.addWidget(meta_lbl)
+        else:
+            err_lbl = QLabel(f"[Unable to display image: {caption or 'invalid format'}]")
+            err_lbl.setStyleSheet(f"color:{ERROR_COLOR};font-size:10px;background:transparent;")
+            lay.addWidget(err_lbl)
+
+        if caption:
+            cap_lbl = QLabel(escape_html(caption))
+            cap_lbl.setWordWrap(True)
+            cap_lbl.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;background:transparent;")
+            lay.addWidget(cap_lbl)
+
         self._feed_layout.insertWidget(self._feed_layout.count() - 1, frame)
         QTimer.singleShot(50, self.scroll_to_bottom)
 
+    def add_canvas_image(self, b64_data: str) -> None:
+        self.add_image_card(b64_data, title="CANVAS CAPTURE", caption="Live map canvas snapshot")
     def show_project_guard(self, queued_prompt: str, on_ready) -> None:
         guard = ProjectGuardWidget(queued_prompt, on_ready, self._feed_container)
         self._feed_layout.insertWidget(self._feed_layout.count() - 1, guard)

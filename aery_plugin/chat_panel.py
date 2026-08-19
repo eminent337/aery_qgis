@@ -675,11 +675,13 @@ class ChatPanel(QDockWidget):
                 tool = inner_event.get("tool", "")
                 result = inner_event.get("result", "")
                 if isinstance(result, str):
-                    if result.startswith("iVBORw0KGgo") and len(result) > 100:
-                        self._transcript.add_canvas_image(result)
-                    elif result.startswith("data:image/png;base64,"):
-                        self._transcript.add_canvas_image(result.split(",")[1])
-                
+                    res_clean = result.strip()
+                    if res_clean.startswith("iVBORw0KGgo") and len(res_clean) > 80:
+                        self._transcript.add_image_card(res_clean, title=f"{tool.upper()} SNAPSHOT")
+                    elif res_clean.startswith("data:image/"):
+                        self._transcript.add_image_card(res_clean, title=f"{tool.upper()} OUTPUT")
+                    elif any(res_clean.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".svg")) and os.path.exists(res_clean):
+                        self._transcript.add_image_card(res_clean, title=f"{tool.upper()} ARTIFACT", caption=os.path.basename(res_clean))
                 if self._streamlined_mode:
                     summary = self._agent.tools._summarize_tool_result(tool, result) if hasattr(self._agent.tools, "_summarize_tool_result") else f"{tool} completed"
                     if self._transcript.active_tool_block:
