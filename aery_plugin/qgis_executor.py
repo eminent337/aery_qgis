@@ -482,23 +482,12 @@ class QGISCodeExecutor(QObject):
                             # This prevents "magic static image" from previous runs persisting
                             # Must run on GUI thread like _capture_canvas does
                             try:
-                                from PyQt6.QtCore import QCoreApplication
                                 canvas = self.iface.mapCanvas()
                                 def _clear_bg():
                                     from PyQt6.QtGui import QBrush, QColor
                                     canvas.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
                                     canvas.setAutoFillBackground(True)
-                                app = None
-                                try:
-                                    from PyQt6.QtCore import QCoreApplication
-                                    app = QCoreApplication.instance()
-                                except Exception:
-                                    pass
-                                if app is not None and app.thread() is not None and app.thread() is not canvas.thread():
-                                    from PyQt6.QtCore import QTimer
-                                    QTimer.singleShot(0, _clear_bg)
-                                else:
-                                    _clear_bg()
+                                _clear_bg()
                             except Exception:
                                 pass
                             # Sanitize code to block canvas background manipulation
@@ -640,92 +629,14 @@ class QGISCodeExecutor(QObject):
 
 
     def _capture_canvas(self) -> str:
-        """Capture the QGIS map canvas as a base64 PNG string.
-
-        CRITICAL: QGIS/Qt widgets can ONLY be painted on the GUI
-        (main) thread. The executor runs tool code on a worker
-        thread (via asyncio.to_thread in agent_dispatcher), so calling
-        canvas.render() here would silently produce an empty image.
-        We marshal the actual render onto the main thread with
-        QMetaObject.invokeMethod(..., BlockingQueuedConnection) and
-        block until it returns, then encode.
-        """
-        from PyQt6.QtGui import QImage, QColor
-        from PyQt6.QtCore import QSize, QMetaObject, Qt, QCoreApplication, QByteArray, QBuffer, QEventLoop, QTimer
-        from qgis.core import QgsMapSettings, QgsMapRendererSequentialJob, QgsProject
-        import base64
-        canvas = self.iface.mapCanvas()
-        def _do_render() -> bytes:
-            sw = canvas.width()
-            sh = canvas.height()
-            if sw < 1 or sh < 1:
-                sw, sh = 800, 600
-            max_dim = max(sw, sh)
-            scale = 1024.0 / max_dim if max_dim > 1024 else 0.75
-            out_w = max(1, int(sw * scale))
-            out_h = max(1, int(sh * scale))
-            # Build official QgsMapSettings from canvas state and project layers
-            settings = QgsMapSettings()
-            layers = canvas.layers()
-            if not layers:
-                layers = list(QgsProject.instance().mapLayers().values())
-            settings.setLayers(layers)
-            settings.setDestinationCrs(canvas.mapSettings().destinationCrs())
-            settings.setExtent(canvas.extent())
-            settings.setOutputSize(QSize(out_w, out_h))
-            settings.setBackgroundColor(QColor(255, 255, 255))
-            # Run sequential map render job to properly fetch raster/vector tiles
-            job = QgsMapRendererSequentialJob(settings)
-            loop = QEventLoop()
-            job.finished.connect(loop.quit)
-            timer = QTimer()
-            timer.setSingleShot(True)
-            timer.timeout.connect(loop.quit)
-            timer.start(5000)
-            job.start()
-            loop.exec()
-            img = job.renderedImage()
-            if img.isNull():
-                raise RuntimeError("Map renderer produced a null image")
-            ba = QByteArray()
-            buf = QBuffer(ba)
-            buf.open(QBuffer.OpenModeFlag.WriteOnly)
-            img.save(buf, format="PNG")
-            buf.close()
-            raw = bytes(ba)
-            if not raw or len(raw) < 8:
-                raise RuntimeError("Canvas capture produced an empty image buffer")
-            return raw
-        app = QCoreApplication.instance()
-        if app is not None and app.thread() is not None and \
-                app.thread() is not canvas.thread():
-            # Off the GUI thread — marshal the render across.
-            result_holder = {}
-            def _run():
-                try:
-                    result_holder["data"] = _do_render()
-                except Exception as e:  # noqa
-                    result_holder["error"] = str(e)
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, _run)
-            # Wait for the main thread to process the event
-            loop = QEventLoop()
-            def _wake():
-                loop.quit()
-            QTimer.singleShot(0, _wake)
-            loop.exec()
-            if "error" in result_holder:
-                raise RuntimeError(result_holder["error"])
-            raw = result_holder["data"]
-        else:
-            # Already on the GUI thread — render directly.
-            raw = _do_render()
-
-        return base64.b64encode(raw).decode()
+        """Capture the QGIS map canvas as a base64 PNG string."""
+        from aery_plugin.executor_canvas import CanvasCapture
+        cap = CanvasCapture(self.iface)
+        return cap.capture()
 
     @staticmethod
     def classify_code_risk(code: str) -> list[dict[str, str]]:
-        """Return risk categories — only flag genuinely dangerous operations."""
+        """Return risk categories -- only flag genuinely dangerous operations."""
         checks = [
             (
                 "destructive_project_change",
@@ -767,15 +678,14 @@ class QGISCodeExecutor(QObject):
 
     @staticmethod
     def _safe_json_result(value: Any) -> Any:
-        """Coerce *value* to a JSON-serialisable form.
+        """Coerce value to a JSON-serializable form.
 
-        Called immediately before ``json.dumps`` is called to send a response
-        back to the socket caller so that bulky objects (numpy arrays,
-        non-resolved ``pathlib.Path`` s, generators, …) don't blow up OOM.
+        Called immediately before json.dumps to ensure bulky objects
+        do not cause memory issues.
         """
         if value is None:
             return None
-        # pathlib.Path – convert to string before json.dumps
+        # pathlib.Path - convert to string before json.dumps
         try:
             import pathlib as _pl
         except ImportError:
@@ -793,15 +703,15 @@ class QGISCodeExecutor(QObject):
         if not isinstance(str_rep, str):
             return str(str_rep)
         s = str_rep
-        # Guard: empty/invalid base64 — collapse before it can reach the runner
+        # Guard: empty/invalid base64 -- collapse before it can reach the runner
         # as {type:"image",data:""} which produces "empty base64-encoded bytes"
         # in the Anthropic/insertBlob API call
         if s.startswith("iVBORw0KGgo") and len(s) <= 16:
-            return {"_aery_summary": "[empty/invalid base64 image — collapsed]"}
+            return {"_aery_summary": "[empty/invalid base64 image - collapsed]"}
         if s.startswith("iVBORw0KGgo") and len(s) > 600_000:
-            return {"_aery_summary": f"[base64 image, {len(s)} chars — send to canvas instead]"}
+            return {"_aery_summary": f"[base64 image, {len(s)} chars - send to canvas instead]"}
         if len(s) > 1_000_000:
-            return {"_aery_summary": f"[large result, {len(s)} chars — too big to serialise]"}
+            return {"_aery_summary": f"[large result, {len(s)} chars - too big to serialise]"}
         return value  # small enough; let json.dumps handle it normally
 
     def _get_audit_dir(self, project_dir: str) -> str:

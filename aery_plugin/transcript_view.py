@@ -535,9 +535,7 @@ class TranscriptView(QScrollArea):
         self._feed_container.setMaximumWidth(400)
         self._feed_container.setMinimumWidth(260)
         self.setWidget(self._feed_container)
-        # Do NOT let the scroll area grow with its content — keep viewport fixed
-        # and scroll only when content overflows vertically
-        self.setWidgetResizable(False)
+        self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFrameShape(QFrame.Shape.NoFrame)
