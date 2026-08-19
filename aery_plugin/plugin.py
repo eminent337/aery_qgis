@@ -42,15 +42,17 @@ class AeryPlugin:
             self.panel,
         )
         # Schedule dock resize after QGIS completes window restore & layout pass
+        # Schedule dock resize after QGIS completes window restore & layout pass
         def _apply_compact_dock():
             try:
                 main_win = self.iface.mainWindow()
                 if main_win and self.panel:
-                    main_win.resizeDocks([self.panel], [280], Qt.Orientation.Horizontal)
+                    main_win.resizeDocks([self.panel], [340], Qt.Orientation.Horizontal)
             except Exception:
                 pass
         QTimer.singleShot(200, _apply_compact_dock)
-        QTimer.singleShot(1000, _apply_compact_dock)
+        QTimer.singleShot(800, _apply_compact_dock)
+        QTimer.singleShot(1500, _apply_compact_dock)
         self.action = QAction("Aery Agent")
         self.action.setCheckable(True)
         self.action.setChecked(True)

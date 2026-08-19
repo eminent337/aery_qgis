@@ -261,6 +261,11 @@ class ChatPanel(QDockWidget):
 
     def minimumSizeHint(self) -> QSize:
         return QSize(280, 300)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(100, self._apply_compact_width)
+        QTimer.singleShot(600, self._apply_compact_width)
     def _build_ui(self) -> None:
         container = QWidget()
         root = QVBoxLayout(container)
