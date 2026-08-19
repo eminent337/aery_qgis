@@ -194,6 +194,9 @@ class ChatPanel(QDockWidget):
         self._session_state = state
         if hasattr(self, "_input_area") and self._input_area:
             self._update_send_btn(streaming=(state == SessionState.RUNNING))
+        if hasattr(self, "_status_dot") and self._status_dot:
+            dot_color = ACCENT if state == SessionState.RUNNING else (WARNING_COLOR if state == SessionState.REQUIRES_ACTION else SUCCESS_COLOR)
+            self._status_dot.setStyleSheet(f"color:{dot_color};font-size:10px;background:transparent;")
     @property
     def _is_streaming(self) -> bool:
         """Backward-compat alias (ChatPanel refactored to session_state enum)."""

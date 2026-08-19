@@ -2,11 +2,10 @@
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget, QSizePolicy
 
-from aery_plugin.ui_constants import ACCENT, BG_SURFACE, BORDER, TEXT_DIM, TEXT_MUTED
+from aery_plugin.ui_constants import ACCENT, ACCENT_DIM, BG_PANEL, BG_SURFACE, BORDER, TEXT_MAIN, TEXT_DIM, TEXT_MUTED, FONT_MONO
 
 
 class ActivityStrip(QFrame):
@@ -14,36 +13,40 @@ class ActivityStrip(QFrame):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setFixedHeight(40)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(34)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setVisible(False)
-        self.setStyleSheet(
-            f"background:{BG_SURFACE};border-top:1px solid {BORDER};"
-        )
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {BG_SURFACE};
+                border-top: 1px solid {BORDER};
+            }}
+        """)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(8)
 
         self._star = QLabel("\u273b")
         self._star.setStyleSheet(
-            f"color:{ACCENT};font-size:20px;font-family:'JetBrains Mono', Consolas, monospace;background:transparent;"
+            f"color:{ACCENT};font-size:16px;font-family:{FONT_MONO};background:transparent;"
         )
+        self._star.setFixedSize(20, 20)
+        self._star.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._star)
 
-        self._label = QLabel("ready")
+        self._label = QLabel("thinking...")
         self._label.setStyleSheet(
-            f"color:{TEXT_DIM};font-family:'JetBrains Mono', Consolas, monospace;font-size:11px;"
+            f"color:{TEXT_MAIN};font-family:{FONT_MONO};font-size:11px;"
             "font-weight:700;background:transparent;"
         )
-        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._label)
         layout.addStretch()
-
         self._detail = QLabel("")
         self._detail.setStyleSheet(
-            f"color:{TEXT_MUTED};font-family:'JetBrains Mono', Consolas, monospace;font-size:10px;background:transparent;"
+            f"color:{ACCENT_DIM};font-family:{FONT_MONO};font-size:10px;font-weight:600;background:transparent;"
         )
-        self._detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._detail.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._detail)
         self._blink_on = True
         self._timer = QTimer(self)
@@ -51,7 +54,7 @@ class ActivityStrip(QFrame):
         # Timer only runs when visible
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(0, 40)
+        return QSize(100, 34)
     @property
     def star(self) -> QLabel:
         return self._star
