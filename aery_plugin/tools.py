@@ -837,6 +837,31 @@ result = f"Algorithm execution complete: {{out}}"
                     "content": result,
                 })
         return "Sub-agent reached maximum turns."
+    def _summarize_tool_result(self, tool_name: str, result: Any) -> str:
+        """Generate a concise one-line human-readable summary of a tool execution (GeoLibre standard)."""
+        if tool_name == "get_project_context":
+            try:
+                if isinstance(result, str):
+                    data = json.loads(result)
+                else:
+                    data = result
+                layers = data.get("layers", []) if isinstance(data, dict) else []
+                crs = data.get("crs", "") if isinstance(data, dict) else ""
+                return f"Project context loaded: {len(layers)} layer(s)" + (f" [{crs}]" if crs else "")
+            except Exception:
+                return "Project context loaded"
+        if tool_name == "load_basemap":
+            return f"Basemap loaded: {result}" if isinstance(result, str) and len(result) < 50 else "Basemap loaded"
+        if tool_name in ("zoom_to_place", "zoom_to_layer", "pan_to", "set_map_extent"):
+            return f"Map view updated: {tool_name}"
+        if tool_name == "capture_canvas":
+            return "Canvas captured and verified"
+        if isinstance(result, str):
+            if len(result) > 80:
+                return f"{tool_name} completed"
+            return result.strip()
+        return f"{tool_name} completed"
+
     def _format_tool_error(self, tool_name: str, error: Exception) -> str:
         from aery_plugin.error_classifier import format_for_agent
         return format_for_agent(error)

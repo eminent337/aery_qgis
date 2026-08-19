@@ -255,32 +255,9 @@ class ChatPanel(QDockWidget):
 
     def sizeHint(self) -> QSize:
         return QSize(280, 700)
+
     def minimumSizeHint(self) -> QSize:
         return QSize(260, 400)
-    def maximumSize(self) -> QSize:
-        return QSize(420, 700)
-        if self._session_state == state:
-            return
-        if state == SessionState.RUNNING:
-            self._activity.set_active("working...")
-            self._update_send_btn(streaming=True)
-            self._status_dot.setStyleSheet(
-                f"color:{ACCENT};font-size:9px;background:transparent;"
-            )
-        elif state == SessionState.IDLE:
-            self._activity.set_idle()
-            self._update_send_btn(streaming=False)
-            self._thinking_timer.stop()
-            self._status_dot.setStyleSheet(
-                f"color:{SUCCESS_COLOR};font-size:9px;background:transparent;"
-            )
-        elif state == SessionState.REQUIRES_ACTION:
-            self._activity.set_active("action required")
-            self._update_send_btn(streaming=False)
-            self._status_dot.setStyleSheet(
-                f"color:{WARNING_COLOR};font-size:9px;background:transparent;"
-            )
-
     def _build_ui(self) -> None:
         container = QWidget()
         root = QVBoxLayout(container)

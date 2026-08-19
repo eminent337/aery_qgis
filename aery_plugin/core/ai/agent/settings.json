@@ -1,6 +1,6 @@
 {
   "defaultProvider": "kilo",
-  "defaultModel": "stepfun/step-3.7-flash:free",
+  "defaultModel": "tencent/hy3:free",
   "quietStartup": true,
   "defaultThinkingLevel": "off"
 }

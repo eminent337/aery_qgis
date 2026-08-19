@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QKeyEvent, QTextOption
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QTextEdit, QWidget
 
@@ -141,3 +141,6 @@ class InputArea(QFrame):
 
     def set_history(self, history: list[str]) -> None:
         self._input.set_history(history)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 66)

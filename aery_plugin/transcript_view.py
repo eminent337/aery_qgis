@@ -145,7 +145,7 @@ class MessageBubble(QFrame):
             f"color:{TEXT_MAIN};font-family:{FONT_SANS};font-size:14px;"
             "line-height:1.6;background:transparent;"
         )
-        self._body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         layout.addWidget(self._body)
 
     def _split_thinking(self, text: str) -> tuple[str, str]:
@@ -185,6 +185,8 @@ class MessageBubble(QFrame):
         self.layout().activate()
         self.adjustSize()
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
 class ToolBlock(QFrame):
     """Collapsible tool execution trace card."""
@@ -239,7 +241,9 @@ class ToolBlock(QFrame):
             f"color:{TEXT_MAIN};font-family:{FONT_MONO};font-size:11px;"
             "font-weight:700;background:transparent;"
         )
-        header.addWidget(nm)
+        nm.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        nm.setWordWrap(True)
+        header.addWidget(nm, stretch=1)
         header.addStretch()
 
         self._status_lbl = QLabel(f"{status_icon} {status.upper()}")
@@ -395,7 +399,8 @@ class ToolBlock(QFrame):
         if status == "error" and not self._expanded:
             self.toggle()
 
-
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 class ProjectGuardWidget(QFrame):
     """Inline card shown when no QGIS project is saved."""
 
@@ -519,13 +524,20 @@ class ProjectGuardWidget(QFrame):
             self.setVisible(False)
             self.deleteLater()
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
 
 class TranscriptView(QScrollArea):
     """Scrollable transcript feed for messages, tool blocks, and interactive widgets."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._feed_container = QWidget()
+        class FeedContainer(QWidget):
+            def minimumSizeHint(self) -> QSize:
+                return QSize(0, 0)
+        self._feed_container = FeedContainer()
+        self._feed_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.MinimumExpanding)
         self._feed_layout = QVBoxLayout(self._feed_container)
         self._feed_layout.setContentsMargins(12, 12, 12, 12)
         self._feed_layout.setSpacing(10)
@@ -552,6 +564,11 @@ class TranscriptView(QScrollArea):
         self._save_timer = None
         self._save_callback: Optional[Callable] = None
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
+    def sizeHint(self) -> QSize:
+        return QSize(280, 400)
     @property
     def feed_layout(self):
         return self._feed_layout

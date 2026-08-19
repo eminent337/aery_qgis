@@ -3,7 +3,8 @@
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget, QSizePolicy
 
 from aery_plugin.ui_constants import ACCENT, BG_SURFACE, BORDER, TEXT_DIM, TEXT_MUTED
 
@@ -14,6 +15,7 @@ class ActivityStrip(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setFixedHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setVisible(False)
         self.setStyleSheet(
             f"background:{BG_SURFACE};border-top:1px solid {BORDER};"
@@ -33,6 +35,7 @@ class ActivityStrip(QFrame):
             f"color:{TEXT_DIM};font-family:'JetBrains Mono', Consolas, monospace;font-size:11px;"
             "font-weight:700;background:transparent;"
         )
+        self._label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._label)
         layout.addStretch()
 
@@ -40,13 +43,15 @@ class ActivityStrip(QFrame):
         self._detail.setStyleSheet(
             f"color:{TEXT_MUTED};font-family:'JetBrains Mono', Consolas, monospace;font-size:10px;background:transparent;"
         )
+        self._detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addWidget(self._detail)
-
         self._blink_on = True
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         # Timer only runs when visible
 
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 40)
     @property
     def star(self) -> QLabel:
         return self._star
