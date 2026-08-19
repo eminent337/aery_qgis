@@ -47,7 +47,7 @@ class AeryPlugin:
             try:
                 main_win = self.iface.mainWindow()
                 if main_win and self.panel:
-                    main_win.resizeDocks([self.panel], [340], Qt.Orientation.Horizontal)
+                    main_win.resizeDocks([self.panel], [300], Qt.Orientation.Horizontal)
             except Exception:
                 pass
         QTimer.singleShot(200, _apply_compact_dock)
