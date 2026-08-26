@@ -74,9 +74,16 @@ class LLMClientBase(abc.ABC):
         Returns messages: assistant (with tool_calls) + tool (with multimodal or string content).
         """
         if isinstance(tool_result, str) and tool_result.startswith("data:image/"):
-            # Pass base64 image block in OpenAI/OpenRouter vision format
+            # Pass base64 image block in OpenAI/OpenRouter vision format with context-specific label
+            tool_name = tool_call.get("function", {}).get("name", "") if isinstance(tool_call, dict) else ""
+            if tool_name == "read_image":
+                label = "Attached Image File (read from disk):"
+            elif tool_name == "capture_canvas":
+                label = "QGIS Map Canvas Viewport Snapshot:"
+            else:
+                label = "Image data:"
             tool_content = [
-                {"type": "text", "text": "Map canvas / image snapshot:"},
+                {"type": "text", "text": label},
                 {"type": "image_url", "image_url": {"url": tool_result}},
             ]
         else:
