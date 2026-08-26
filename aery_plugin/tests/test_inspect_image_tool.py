@@ -271,3 +271,16 @@ def test_system_prompt_instructs_inspect_image():
     prompt = build_system_prompt("look at the attached image")
     assert "inspect_image" in prompt
     assert "NEVER" in prompt and "base64" in prompt
+
+
+def test_system_prompt_forbids_polygon_drawing_via_run_qgis_code():
+    """Rule 10 must name the actual polygon escape hatch: generic QGIS code
+    execution. With no dedicated polygon tool in the registry, run_qgis_code
+    (QgsRubberBand / fromPolygonXY / memory-layer creation) is the ONLY way a
+    model could 'draw' a polygon to fake viewing an image."""
+    prompt = build_system_prompt("look at the attached image")
+    assert "never draw polygons/vector layers to 'view' an image" in prompt
+    assert "run_qgis_code" in prompt
+    assert "QgsRubberBand" in prompt
+    assert "fromPolygonXY" in prompt
+    assert "inspect_image" in prompt
