@@ -1330,9 +1330,14 @@ class ChatPanel(QDockWidget):
                 if rlayer.isValid():
                     QgsProject.instance().addMapLayer(rlayer)
                     loaded_layers.append(f"Raster Layer: '{base_name}' ({path})")
-                else:
-                    other_files.append(path)
+                # Also register in attached_images so multimodal vision models can inspect it directly
+                attached_images.append(path)
             elif ext in img_exts:
+                # Check if it has an accompanying world file (.wld, .pgw, .jgw) or georeferencing
+                rlayer = QgsRasterLayer(path, base_name, "gdal")
+                if rlayer.isValid() and rlayer.crs().isValid() and rlayer.crs().authid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    loaded_layers.append(f"Georeferenced Image: '{base_name}' ({path})")
                 attached_images.append(path)
             else:
                 other_files.append(path)
