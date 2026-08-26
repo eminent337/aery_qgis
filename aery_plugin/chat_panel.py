@@ -116,7 +116,9 @@ class ChatPanel(QDockWidget):
         on_config: Optional[callable] = None,
         parent: Optional[QWidget] = None,
     ):
-        super().__init__("Aery", parent)
+        from PyQt6.QtWidgets import QWidget
+        valid_parent = parent if isinstance(parent, QWidget) else None
+        super().__init__("Aery", valid_parent)
         self.setTitleBarWidget(QWidget())
 
 
@@ -1325,9 +1327,8 @@ class ChatPanel(QDockWidget):
             else:
                 self._input_area.input.setPlainText(f"[Attached files]:\n{file_refs}\n")
             self._input_area.input.setFocus()
-            if self.iface:
+            if self.iface and hasattr(self.iface, "mapCanvas") and self.iface.mapCanvas():
                 self.iface.mapCanvas().refresh()
-
     def _show_dialog(self, title: str, body: str) -> None:
         dialog = InfoDialog(title, body, self)
         self._dialogs.append(dialog)

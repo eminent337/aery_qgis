@@ -33,9 +33,10 @@ class AeryPlugin:
         self.agent = Agent(executor=self.executor, iface=self.iface)
         # Create chat panel
         self.panel = ChatPanel(
-            self.iface.mainWindow(),
+            self.iface,
             self.agent,
             on_config=self._open_config,
+            parent=self.iface.mainWindow() if self.iface else None,
         )
         self.iface.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
