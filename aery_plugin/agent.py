@@ -123,6 +123,31 @@ def _content_has_image_blocks(content) -> bool:
         return True
     return False
 
+def _image_paths_from_message(content) -> list[str]:
+    """Extract attached-image file paths from a multimodal user message's text blocks.
+
+    Picks up the path hints added by start_with_images / chat_panel:
+      "[Session attached files: Inspect the attached image file: /path; ...]"
+      "[Attached files:\\n- /path\\n]"
+    """
+    import re as _re
+    paths: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if not (isinstance(block, dict) and block.get("type") == "text"):
+                continue
+            text = block.get("text", "") or ""
+            for m in _re.finditer(r"Inspect the attached image file:\s*([^\s;\]\n]+)", text):
+                p = m.group(1).strip().strip("\"'")
+                if p and p not in paths:
+                    paths.append(p)
+            if not paths:
+                for m in _re.finditer(r"^-\s*([^\s\n]+)$", text, _re.MULTILINE):
+                    p = m.group(1).strip()
+                    if p and p not in paths:
+                        paths.append(p)
+    return paths
+
 
 class Agent(QObject):
     """The geospatial AI agent."""
@@ -493,6 +518,21 @@ class Agent(QObject):
                 dropped = self._messages.pop(0)
                 total_chars -= len(str(dropped.get("content", "")))
                 total_tokens = total_chars // 4
+
+                # If the dropped message carried attached image pixels, keep a
+                # compact TEXT note with the file paths so the model can re-view
+                # them later via inspect_image(path=...). Never silently lose
+                # awareness of an attached image — that is what made follow-up
+                # "view the image" prompts flail (e.g. drawing polygons).
+                if dropped.get("role") == "user" and _content_has_image_blocks(dropped.get("content")):
+                    _paths = _image_paths_from_message(dropped.get("content"))
+                    if _paths:
+                        _note = ("[Compacted] [System: The user attached image(s): "
+                                 + "; ".join(_paths)
+                                 + " — re-view them with inspect_image(path=...).]")
+                        self._messages.insert(0, {"role": "user", "content": _note})
+                        total_chars += len(_note)
+                        total_tokens = total_chars // 4
 
                 # If we dropped an Anthropic tool_use, we MUST drop the subsequent tool_result!
                 while self._messages:

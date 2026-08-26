@@ -11,7 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 
-from aery_plugin.agent import Agent, _is_image_data_uri, _content_has_image_blocks
+from aery_plugin.agent import (
+    Agent,
+    _is_image_data_uri,
+    _content_has_image_blocks,
+    _image_paths_from_message,
+)
 from aery_plugin.tools import ToolRegistry, _extract_chat_text
 from aery_plugin.prompts import build_system_prompt
 
@@ -193,6 +198,52 @@ def test_trim_messages_keeps_image_data_uri_string_whole_under_pressure():
     for m in agent._messages:
         if isinstance(m.get("content"), str):
             assert "[Compacted]" not in m["content"]
+
+
+def test_image_paths_from_message_extracts_paths():
+    content = [
+        {"type": "text", "text": "view this\n\n[Attached files:\n- /a/b.png\n- /c/d.jpg\n]"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+        {"type": "text", "text": "[Session attached files: Inspect the attached image file: /a/b.png; Inspect the attached image file: /c/d.jpg] If you cannot see the image pixels, call inspect_image(path=...)."},
+    ]
+    paths = _image_paths_from_message(content)
+    assert "/a/b.png" in paths
+    assert "/c/d.jpg" in paths
+    assert _image_paths_from_message("plain text") == []
+    assert _image_paths_from_message([{"type": "image_url", "image_url": {"url": "u"}}]) == []
+
+
+def test_trim_messages_keeps_image_path_note_when_user_image_message_compacted():
+    """Compaction dropping the multimodal user message must leave a compact
+    TEXT note naming the attached file(s) so the model can re-view them via
+    inspect_image(path=...). Silently losing the image AND its path is what
+    made follow-up "view the image" prompts flail (e.g. drawing polygons)."""
+    agent = Agent(None)
+    agent._max_context_messages = 10  # token pressure (not count) forces compaction
+    huge_uri = "data:image/png;base64," + "A" * 400_000  # ~100k tokens
+    agent._messages = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "view this image\n\n[Attached files:\n- /tmp/photo.png\n]"},
+            {"type": "image_url", "image_url": {"url": huge_uri}},
+            {"type": "text", "text": "[Session attached files: Inspect the attached image file: /tmp/photo.png] If you cannot see the image pixels in your context, call inspect_image(path=...) to view it with a vision model."},
+        ]},
+        {"role": "assistant", "content": "I see it."},
+        {"role": "tool", "content": "some result", "tool_call_id": "c1", "name": "get_project_context"},
+    ]
+    agent._trim_messages()
+    # The image pixels are gone (dropped under pressure)...
+    assert not any(
+        isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and b.get("type") == "image_url" for b in m["content"])
+        for m in agent._messages
+    )
+    # ...but a compact text note keeps the path + inspect_image hint, and no
+    # mangled/truncated base64 survives.
+    joined = " ".join(str(m.get("content")) for m in agent._messages)
+    assert "/tmp/photo.png" in joined
+    assert "inspect_image" in joined
+    assert "[Compacted]" in joined
+    assert "data:image/png" not in joined
 
 
 # ── start_with_images explicit action + instruction ────────────────────────
