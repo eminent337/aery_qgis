@@ -1335,6 +1335,7 @@ class ChatPanel(QDockWidget):
             self._input_area.input.setFocus()
             if self.iface and hasattr(self.iface, "mapCanvas") and self.iface.mapCanvas():
                 self.iface.mapCanvas().refresh()
+    def _show_dialog(self, title: str, body: str) -> None:
         dialog = InfoDialog(title, body, self)
         self._dialogs.append(dialog)
         dialog.show()
