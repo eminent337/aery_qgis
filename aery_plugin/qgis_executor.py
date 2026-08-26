@@ -570,11 +570,16 @@ class QGISCodeExecutor(QObject):
                                 "project_dir": project_dir,
                                 "result": None,
                             }
-                            # stdout capture for progress reporting
+                            # stdout capture for progress reporting & result fallback
+                            _captured_output = []
+                            def _on_stdout_line(line):
+                                _captured_output.append(line)
+                                result_queue.put({"type": "progress", "message": line, "progress": -1})
+
                             _orig_stdout = _sys_mod.stdout
                             _tee = _ProgressStdout(
                                 _orig_stdout,
-                                lambda line: result_queue.put({"type": "progress", "message": line, "progress": -1}),
+                                _on_stdout_line,
                                 threading.current_thread(),
                             )
                             _sys_mod.stdout = _tee
@@ -597,10 +602,15 @@ class QGISCodeExecutor(QObject):
                                 self.iface.mapCanvas().refresh()
                         except Exception:
                             pass
+                        # If script produced no explicit 'result = ...', fallback to captured stdout
+                        final_res = local_vars.get("result")
+                        if final_res is None and _captured_output:
+                            final_res = "\n".join(_captured_output).strip()
+
                         response = {
                             "id": req_id,
                             "success": True,
-                            "result": self._safe_json_result(local_vars.get("result")),
+                            "result": self._safe_json_result(final_res),
                             "risks": risks,
                         }
                     result_queue.put(response)

@@ -967,11 +967,24 @@ result = f"Algorithm execution complete: {{out}}"
         raise RuntimeError(result.get("error", "Failed to get project context"))
     async def _execute_get_layer_schema(self, params: dict) -> str:
         layer_name = params["layer_name"]
-        code = f"__get_layer_schema__:{layer_name}"
-        result = await asyncio.to_thread(self.executor.execute, code, 30)
-        if result.get("success"):
-            return json.dumps(result["result"], indent=2)
-        raise RuntimeError(result.get("error", f"Failed to get schema for layer {layer_name}"))
+        code = f"""
+from aery_plugin.geospatial_tools import resolve_layer
+from qgis.core import QgsVectorLayer
+layer = resolve_layer({repr(layer_name)})
+if layer is None:
+    raise RuntimeError(f"Layer '{layer_name}' not found in project.")
+fields = []
+if isinstance(layer, QgsVectorLayer):
+    for f in layer.fields():
+        fields.append({{"name": f.name(), "type": f.typeName(), "alias": f.alias() or ""}})
+    count = layer.featureCount()
+else:
+    count = None
+ext = layer.extent()
+result = {{"id": layer.id(), "name": layer.name(), "type": "vector" if isinstance(layer, QgsVectorLayer) else "raster", "crs": layer.crs().authid() if layer.crs() else "", "feature_count": count, "fields": fields, "extent": [ext.xMinimum(), ext.yMinimum(), ext.xMaximum(), ext.yMaximum()] if ext else []}}
+"""
+        res = await self._execute_qgis_code({"code": code})
+        return res
 
     async def _execute_capture_canvas(self, params: dict) -> str:
         result = await asyncio.to_thread(self.executor.execute, "__capture_canvas__", 30)
