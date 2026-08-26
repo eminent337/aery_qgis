@@ -141,7 +141,9 @@ def _build_globals() -> dict[str, Any]:
             "QgsLayoutItemScaleBar", "QgsLayoutMeasurement", "QgsLayoutObject", "QgsLayoutPoint",
             "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem", "QgsLayoutUnits", "QgsPageLayout",
             "QgsPrintLayout", "QgsLayoutExporter",
-            # Pseudocolor/renderer
+            # Pseudocolor/renderer & Symbology
+            "QgsFillSymbol", "QgsLineSymbol", "QgsSimpleFillSymbolLayer", "QgsSimpleLineSymbolLayer",
+            "QgsSimpleMarkerSymbolLayer", "QgsCategorizedSymbolRenderer", "QgsRendererCategory",
             "QgsColorRampShader", "QgsRasterShader", "QgsSingleBandPseudoColorRenderer",
             "QgsSingleBandGrayRenderer", "QgsGraduatedSymbolRenderer", "QgsClassificationQuantile",
             "QgsVectorLayerSimpleLabeling"
@@ -221,6 +223,10 @@ def _build_globals() -> dict[str, Any]:
             load_cog_layer as _load_cog_layer,
             get_gee_tile_url as _get_gee_tile_url,
             load_gee_tile_layer as _load_gee_tile_layer,
+            resolve_layer as _resolve_layer,
+            safe_create_geodataframe as _safe_create_geodataframe,
+            query_overpass as _query_overpass,
+            run_quickosm_query as _run_quickosm_query,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -240,6 +246,10 @@ def _build_globals() -> dict[str, Any]:
             "load_cog_layer": _load_cog_layer,
             "get_gee_tile_url": _get_gee_tile_url,
             "load_gee_tile_layer": _load_gee_tile_layer,
+            "resolve_layer": _resolve_layer,
+            "safe_create_geodataframe": _safe_create_geodataframe,
+            "query_overpass": _query_overpass,
+            "run_quickosm_query": _run_quickosm_query,
         })
     except ImportError:
         pass

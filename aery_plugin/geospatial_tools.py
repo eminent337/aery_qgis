@@ -46,6 +46,123 @@ def safe_to_file(gdf, output_path: str, **kwargs) -> None:
         gdf.to_file(output_path, **kwargs)
 
 
+def resolve_layer(name_or_id: str):
+    """Resolve a QGIS layer by its name or ID with robust fuzzy fallback."""
+    from qgis.core import QgsProject
+    project = QgsProject.instance()
+    # 1. Direct ID lookup
+    layer = project.mapLayer(name_or_id)
+    if layer:
+        return layer
+    # 2. Exact name lookup
+    layers = project.mapLayersByName(name_or_id)
+    if layers:
+        return layers[0]
+    # 3. Case-insensitive name lookup
+    target_lower = name_or_id.lower().strip()
+    for l in project.mapLayers().values():
+        if l.name().lower().strip() == target_lower:
+            return l
+    return None
+
+
+def safe_create_geodataframe(features: list, crs: str = "EPSG:4326", **kwargs):
+    """Safely construct a GeoDataFrame, handling empty feature lists without ValueError."""
+    import geopandas as gpd
+    from shapely.geometry import shape
+
+    if not features:
+        return gpd.GeoDataFrame(geometry=[], crs=crs)
+
+    # If list of dicts with geometry
+    valid_features = []
+    for f in features:
+        if isinstance(f, dict) and "geometry" in f and f["geometry"] is not None:
+            geom = f["geometry"]
+            f_copy = dict(f)
+            f_copy["geometry"] = shape(geom) if isinstance(geom, dict) else geom
+            valid_features.append(f_copy)
+        elif hasattr(f, "geometry"):
+            valid_features.append(f)
+
+    if not valid_features:
+        return gpd.GeoDataFrame(geometry=[], crs=crs)
+
+    return gpd.GeoDataFrame(valid_features, crs=crs, **kwargs)
+
+
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+
+
+def query_overpass(query: str, timeout: int = 30) -> dict:
+    """Execute an Overpass QL query with automatic mirror failover, User-Agent, and backoff."""
+    import json
+    import time
+    import urllib.parse
+    import urllib.request
+
+    last_err = None
+    headers = {
+        "User-Agent": "AeryQGISPlugin/1.0 (https://github.com/eminent337/aery; geospatial-assistant)",
+        "Accept": "application/json",
+    }
+
+    # Strip formatting or wrap in [out:json] if missing
+    clean_query = query.strip()
+    if not clean_query.startswith("[out:json]"):
+        clean_query = f"[out:json][timeout:{timeout}];\n" + clean_query
+
+    encoded_data = urllib.parse.urlencode({"data": clean_query}).encode("utf-8")
+
+    for mirror in OVERPASS_MIRRORS:
+        try:
+            req = urllib.request.Request(mirror, data=encoded_data, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+        except Exception as e:
+            err_str = str(e)
+            last_err = e
+            # Rate limiting or 500 error - brief pause before trying next mirror
+            if "429" in err_str or "500" in err_str or "504" in err_str:
+                time.sleep(1.5)
+            continue
+
+    raise RuntimeError(f"All Overpass API mirrors failed. Last error: {last_err}")
+
+
+def run_quickosm_query(key: str, value: str, extent=None, layer_name: str = "OSM Query") -> dict:
+    """Execute a QuickOSM processing query if installed, or gracefully fallback."""
+    from qgis.core import QgsProject, QgsProcessingFeedback, QgsRectangle
+    import processing
+
+    try:
+        algs = [a.id() for a in QgsProject.instance().processingRegistry().algorithms()]
+    except Exception:
+        algs = []
+
+    # QuickOSM extent query algorithm id
+    q_alg = next((a for a in algs if "quickosm" in a.lower() and "extent" in a.lower()), None)
+    if not q_alg:
+        return {"success": False, "error": "QuickOSM plugin algorithm not found in QGIS processing registry."}
+
+    try:
+        params = {
+            "KEY": key,
+            "VALUE": value,
+            "EXTENT": extent,
+            "OUTPUT": "memory:",
+        }
+        feedback = QgsProcessingFeedback()
+        res = processing.run(q_alg, params, feedback=feedback)
+        return {"success": True, "output": res}
+    except Exception as e:
+        return {"success": False, "error": f"QuickOSM execution failed: {e}"}
+
 def smooth_geometry(geom, simplify_tolerance: float = 0.5, preserve_topology: bool = True):
     """Simplify and smooth a polygon or geometry to remove vertex noise.
 
