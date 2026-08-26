@@ -1847,19 +1847,19 @@ else:
     url = ("https://nominatim.openstreetmap.org/search?format=json"
            "&limit=1&q=" + urllib.parse.quote(place))
     req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
-    _chunks, _total = [], 0
-    while True:
-        _c = resp.read(64 * 1024)
-        if not _c:
-            break
-        _total += len(_c)
-        if _total > 10 * 1024 * 1024:
-            raise RuntimeError("Geocoding response exceeded 10 MB limit")
-        _chunks.append(_c)
-    data = json.loads(b"".join(_chunks).decode("utf-8"))
-if not data:
-    raise RuntimeError(f"Geocoding returned no results for place: '{{place}}'")
-bb = data[0]["boundingbox"]
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        _chunks, _total = [], 0
+        while True:
+            _c = resp.read(64 * 1024)
+            if not _c:
+                break
+            _total += len(_c)
+            if _total > 10 * 1024 * 1024:
+                raise RuntimeError("Geocoding response exceeded 10 MB limit")
+            _chunks.append(_c)
+        data = json.loads(b"".join(_chunks).decode("utf-8"))
+    if not data:
+        raise RuntimeError(f"Geocoding returned no results for place: '{{place}}'")
 # Nominatim returns [south_lat, north_lat, west_lon, east_lon]
 south, north, west, east = (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
 # Build bounding rectangle in EPSG:4326: QgsRectangle(xmin, ymin, xmax, ymax) -> (west, south, east, north)
