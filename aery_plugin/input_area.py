@@ -11,6 +11,16 @@ from aery_plugin.ui_constants import (
     TEXT_MUTED, FONT_SANS,
 )
 
+# Prompt box auto-grow bounds (px). The editor grows with content up to
+# PROMPT_MAX_HEIGHT, then scrolls, so long multi-line input stays visible
+# instead of being clipped by a fixed-height frame.
+PROMPT_MIN_HEIGHT = 46
+PROMPT_MAX_HEIGHT = 160
+# AttachmentChip is a fixed-height (28px) widget; used as a fallback when the
+# chips layout's sizeHint is momentarily stale (Qt layout cache quirk while a
+# removed chip is pending deleteLater).
+CHIP_ROW_HEIGHT = 28
+
 
 class PromptInput(QTextEdit):
     """Prompt editor with submit/newline/abort/history and drag-and-drop file behavior."""
@@ -155,6 +165,7 @@ class InputArea(QFrame):
         self._attachments: list[str] = []
         self.setStyleSheet(f"background:{BG_SURFACE};border-top:1px solid {BORDER};")
         main_layout = QVBoxLayout(self)
+        self._main_layout = main_layout
         main_layout.setContentsMargins(10, 6, 10, 8)
         main_layout.setSpacing(4)
 
@@ -174,7 +185,7 @@ class InputArea(QFrame):
 
         # Prompt container frame with unified border
         self._box_frame = QFrame(self)
-        self._box_frame.setFixedHeight(46)
+        self._box_frame.setMinimumHeight(46)
         self._box_frame.setStyleSheet(f"""
             QFrame {{
                 background:{BG_BASE}; border:1px solid {BORDER}; border-radius:6px;
@@ -220,6 +231,29 @@ class InputArea(QFrame):
         self._update_button(streaming=False, has_text=False)
         row_layout.addWidget(self._send_btn)
         main_layout.addLayout(row_layout)
+        self.autosize()
+
+    def autosize(self) -> None:
+        """Grow the prompt box with its content (capped) so long input stays visible.
+
+        Called on every text change and attachment-chip refresh. The editor grows
+        up to PROMPT_MAX_HEIGHT then scrolls internally; the box frame and the
+        outer InputArea height are recomputed from the actual layouts so no line
+        of text is clipped.
+        """
+        doc_height = int(self._input.document().size().height()) + 16
+        input_height = max(PROMPT_MIN_HEIGHT, min(PROMPT_MAX_HEIGHT, doc_height))
+        self._input.setFixedHeight(input_height)
+
+        # Input row height: editor plus the box frame's vertical padding.
+        box_layout = self._box_frame.layout()
+        box_pad = box_layout.contentsMargins().top() + box_layout.contentsMargins().bottom()
+        row_height = input_height + box_pad
+        # Full InputArea height: outer margins + chips row (and its spacing) + input row.
+        m = self._main_layout.contentsMargins()
+        chips_h = max(self._chips_layout.sizeHint().height(), CHIP_ROW_HEIGHT) if self._attachments else 0
+        spacing = self._main_layout.spacing() if chips_h else 0
+        self.setFixedHeight(m.top() + m.bottom() + chips_h + spacing + row_height)
 
     def add_attachment(self, file_path: str) -> None:
         """Add a file to the active attachment chips row."""
@@ -252,13 +286,12 @@ class InputArea(QFrame):
 
         if not self._attachments:
             self._chips_container.setVisible(False)
-            self.setFixedHeight(66)
         else:
             for path in self._attachments:
                 chip = AttachmentChip(path, on_remove=self.remove_attachment, parent=self._chips_container)
                 self._chips_layout.insertWidget(self._chips_layout.count() - 1, chip)
             self._chips_container.setVisible(True)
-            self.setFixedHeight(102)
+        self.autosize()
 
     @property
     def input(self) -> PromptInput:

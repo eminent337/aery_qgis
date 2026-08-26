@@ -1062,10 +1062,7 @@ class ChatPanel(QDockWidget):
             self._transcript.add_bubble("ERROR", f"Scopes dialog: {e}", "error")
 
     def _autosize_input(self) -> None:
-        doc_height = int(self._input_area.input.document().size().height()) + 16
-        input_height = max(46, min(140, doc_height))
-        self._input_area.input.setFixedHeight(input_height)
-        self._input_area.setFixedHeight(max(66, input_height + 20))
+        self._input_area.autosize()
 
     def _on_clear_clicked(self) -> None:
         reply = QMessageBox.question(
