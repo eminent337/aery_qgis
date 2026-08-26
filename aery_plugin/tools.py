@@ -190,6 +190,21 @@ class ToolRegistry:
         })
 
         self.register({
+            "name": "load_layer",
+            "description": "Load any local vector, raster, or georeferenced image file directly into the QGIS Layers Panel and Map Canvas.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative file path to the layer (.gpkg, .shp, .geojson, .tif, .img, .png, .jpg)"},
+                    "layer_name": {"type": "string", "description": "Optional custom display name for the layer"},
+                },
+                "required": ["path"],
+            },
+            "execute": self._execute_load_layer_tool,
+        })
+
+
+        self.register({
             "name": "read_image",
             "description": "Read any local image or raster file from disk (PNG, JPG, JPEG, GeoTIFF, WebP) and return its high-resolution image data directly for visual inspection, object counting, georeferencing analysis, or visual QA.",
             "parameters": {
@@ -999,6 +1014,28 @@ result = {{"id": layer.id(), "name": layer.name(), "type": "vector" if isinstanc
 """
         res = await self._execute_qgis_code({"code": code})
         return res
+
+    async def _execute_load_layer_tool(self, params: dict) -> str:
+        path = params["path"].strip()
+        layer_name = params.get("layer_name", "")
+        code = f"""
+import os
+from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
+p = {repr(path)}
+name = {repr(layer_name)} or os.path.splitext(os.path.basename(p))[0]
+_, ext = os.path.splitext(p.lower())
+if ext in ('.gpkg', '.shp', '.geojson', '.kml', '.tab', '.csv'):
+    layer = QgsVectorLayer(p, name, 'ogr')
+else:
+    layer = QgsRasterLayer(p, name, 'gdal')
+if not layer.isValid():
+    raise RuntimeError(f"Failed to load layer from '{{p}}'")
+QgsProject.instance().addMapLayer(layer)
+iface.mapCanvas().refresh()
+result = f"Successfully loaded '{{layer.name()}}' (type={{'vector' if isinstance(layer, QgsVectorLayer) else 'raster'}}, id={{layer.id()}}) into QGIS."
+"""
+        return await self._execute_qgis_code({"code": code})
+
 
     async def _execute_capture_canvas(self, params: dict) -> str:
         result = await asyncio.to_thread(self.executor.execute, "__capture_canvas__", 30)
