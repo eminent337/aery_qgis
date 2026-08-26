@@ -609,3 +609,17 @@ def get_custom_providers() -> list[dict]:
             "models": cfg.get("models", []),
         })
     return result
+
+
+# ── Earth Engine OAuth & Project Configuration (Ported from GeoLibre) ─────────
+# Default OAuth2 Client ID from GeoLibre earth-engine-auth.ts
+DEFAULT_GEE_OAUTH_CLIENT_ID = "141292844612-gitmgm28jkmkujonfkrkvdaqjiqt6qkf.apps.googleusercontent.com"
+
+def get_earth_engine_config() -> dict:
+    """Get GEE OAuth Client ID and configured Google Cloud Project ID."""
+    client_id = os.environ.get("GEE_OAUTH_CLIENT_ID") or DEFAULT_GEE_OAUTH_CLIENT_ID
+    project_id = os.environ.get("GEE_PROJECT_ID") or os.environ.get("EARTHENGINE_PROJECT", "")
+    return {
+        "client_id": client_id,
+        "project_id": project_id,
+    }

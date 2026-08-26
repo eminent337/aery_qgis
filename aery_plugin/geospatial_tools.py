@@ -205,6 +205,64 @@ def load_cog_layer(
         "crs": layer.crs().authid(),
     }
 
+
+def get_gee_tile_url(image_or_map_id, vis_params: Optional[dict] = None) -> str:
+    """Get an XYZ tile URL template from a Google Earth Engine image or mapId dict.
+
+    Adapted from GeoLibre MapLibre Earth Engine plugin (maplibre-earth-engine.ts).
+    """
+    if isinstance(image_or_map_id, dict):
+        # Already a mapId dictionary from ee.data.getMapId
+        tile_url = image_or_map_id.get("tile_fetcher", {}).get("url_format", "")
+        if not tile_url and "mapid" in image_or_map_id:
+            mapid = image_or_map_id["mapid"]
+            token = image_or_map_id.get("token", "")
+            tile_url = f"https://earthengine.googleapis.com/v1/{mapid}/tiles/{{z}}/{{x}}/{{y}}?token={token}"
+        return tile_url
+
+    # Earth Engine Image object
+    try:
+        import ee
+        map_id_dict = ee.data.getMapId({"image": image_or_map_id, **(vis_params or {})})
+        return map_id_dict.get("tile_fetcher", {}).get("url_format", "")
+    except Exception:
+        return ""
+
+
+def load_gee_tile_layer(
+    image_or_map_id,
+    layer_name: str = "Earth Engine Layer",
+    vis_params: Optional[dict] = None,
+    iface=None,
+) -> dict:
+    """Load a live GEE tile stream directly into QGIS as an XYZ raster layer.
+
+    Eliminates downloading heavy GeoTIFFs to disk; streams tiles instantly.
+    """
+    from qgis.core import QgsRasterLayer, QgsProject
+
+    tile_url = get_gee_tile_url(image_or_map_id, vis_params)
+    if not tile_url:
+        return {"success": False, "error": "Failed to generate GEE tile URL."}
+
+    # Construct QGIS XYZ WMS URI
+    uri = f"type=xyz&url={tile_url}&zmax=24&zmin=0"
+    layer = QgsRasterLayer(uri, layer_name, "wms")
+
+    if not layer.isValid():
+        return {"success": False, "error": f"Failed to initialize live GEE raster layer from {tile_url}"}
+
+    QgsProject.instance().addMapLayer(layer)
+    if iface:
+        iface.mapCanvas().refresh()
+
+    return {
+        "success": True,
+        "layer_name": layer.name(),
+        "layer_id": layer.id(),
+        "tile_url": tile_url,
+    }
+
 def export_webmap(output_dir: str, basemap: str = "osm",
                   extent: str = "", include_search: bool = False,
                   title: str = "", iface=None) -> dict:

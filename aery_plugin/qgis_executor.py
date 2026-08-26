@@ -219,6 +219,8 @@ def _build_globals() -> dict[str, Any]:
             get_city_bbox as _get_city_bbox,
             search_stac as _search_stac,
             load_cog_layer as _load_cog_layer,
+            get_gee_tile_url as _get_gee_tile_url,
+            load_gee_tile_layer as _load_gee_tile_layer,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -236,11 +238,12 @@ def _build_globals() -> dict[str, Any]:
             "get_city_bbox": _get_city_bbox,
             "search_stac": _search_stac,
             "load_cog_layer": _load_cog_layer,
+            "get_gee_tile_url": _get_gee_tile_url,
+            "load_gee_tile_layer": _load_gee_tile_layer,
         })
     except ImportError:
         pass
 
-    # Question-answer bridge: chat_panel calls this to deliver user answers
     try:
         g["_resolve_question"] = _resolve_question  # type: ignore[name-defined]
     except NameError:

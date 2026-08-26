@@ -350,6 +350,23 @@ class ToolRegistry:
             "execute": self._execute_load_cog_layer,
         })
 
+        # load_gee_tile_layer tool - instant XYZ tile streaming from Google Earth Engine
+        self.register({
+            "name": "load_gee_tile_layer",
+            "description": "Stream an Earth Engine map layer directly into the QGIS map canvas via XYZ tile URL without downloading GeoTIFF files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mapid": {"type": "string", "description": "GEE map ID or tile URL template"},
+                    "token": {"type": "string", "description": "Optional GEE access token", "default": ""},
+                    "layer_name": {"type": "string", "description": "Display name for the layer", "default": "Earth Engine Layer"},
+                },
+                "required": ["mapid"],
+            },
+            "execute": self._execute_load_gee_tile_layer,
+        })
+
+
         # pip_install tool - safely install Python packages in background
         self.register({
             "name": "pip_install",
@@ -1919,6 +1936,18 @@ res = load_cog_layer({repr(url)}, {repr(layer_name)}, iface=iface)
 result = f"COG layer loaded: {{res.get('layer_name')}} (CRS: {{res.get('crs')}})" if res.get("success") else f"Failed: {{res.get('error')}}"
 """
         return await self._execute_qgis_code({"code": code})
+
+    async def _execute_load_gee_tile_layer(self, params: dict) -> str:
+        mapid = params["mapid"]
+        token = params.get("token", "")
+        layer_name = params.get("layer_name", "Earth Engine Layer")
+        code = f"""
+from aery_plugin.geospatial_tools import load_gee_tile_layer
+res = load_gee_tile_layer({{"mapid": {repr(mapid)}, "token": {repr(token)}}}, layer_name={repr(layer_name)}, iface=iface)
+result = f"GEE Tile Layer loaded: {{res.get('layer_name')}}" if res.get("success") else f"Failed: {{res.get('error')}}"
+"""
+        return await self._execute_qgis_code({"code": code})
+
 
 
     async def _execute_pip_install(self, params: dict, on_progress: Optional[Callable] = None) -> str:
