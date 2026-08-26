@@ -90,7 +90,7 @@ class PromptInput(QTextEdit):
         super().keyPressEvent(event)
 
 class InputArea(QFrame):
-    """Input bar with prompt editor, attachment/browse button, and send/abort button."""
+    """Input bar with prompt editor, embedded attachment button, and send/abort button."""
 
     def __init__(self, on_send, on_abort, on_attach=None, on_file_dropped=None, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -100,43 +100,53 @@ class InputArea(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        # Attachment / Clip button
-        self._attach_btn = QPushButton("\U0001f4ce")  # paperclip icon
-        self._attach_btn.setFixedSize(34, 34)
+        # Prompt container frame with unified border
+        self._box_frame = QFrame(self)
+        self._box_frame.setFixedHeight(46)
+        self._box_frame.setStyleSheet(f"""
+            QFrame {{
+                background:{BG_BASE}; border:1px solid {BORDER}; border-radius:6px;
+            }}
+            QFrame:focus-within {{ border-color:{ACCENT}; }}
+        """)
+        box_layout = QHBoxLayout(self._box_frame)
+        box_layout.setContentsMargins(6, 4, 8, 4)
+        box_layout.setSpacing(6)
+
+        # Embedded paperclip button inside the prompt box
+        self._attach_btn = QPushButton("\U0001f4ce", self._box_frame)
+        self._attach_btn.setFixedSize(26, 26)
+        self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._attach_btn.setToolTip("Attach or drop vector, raster, or image files (GeoPackage, Shapefile, GeoTIFF, PNG, etc.)")
         self._attach_btn.setStyleSheet(f"""
             QPushButton {{
-                background:{BG_HIGH}; border:1px solid {BORDER}; border-radius:17px;
-                color:{TEXT_MUTED}; font-size:14px;
+                background:transparent; border:none; border-radius:13px;
+                color:{TEXT_MUTED}; font-size:14px; padding:0px;
             }}
-            QPushButton:hover {{ border-color:{ACCENT}; color:{ACCENT}; }}
+            QPushButton:hover {{ background:{BG_HIGH}; color:{ACCENT}; }}
         """)
         if on_attach:
             self._attach_btn.clicked.connect(on_attach)
-        layout.addWidget(self._attach_btn)
+        box_layout.addWidget(self._attach_btn)
 
-        self._input = PromptInput(on_send, on_abort, file_dropped_callback=on_file_dropped)
-        self._input.setFixedHeight(46)
-        self._input.setMinimumHeight(46)
-        self._input.setMaximumHeight(140)
-        self._input.setPlaceholderText("Enter geospatial command or drag & drop files here...")
+        self._input = PromptInput(on_send, on_abort, file_dropped_callback=on_file_dropped, parent=self._box_frame)
+        self._input.setPlaceholderText("Enter command or drag & drop files...")
         self._input.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self._input.setStyleSheet(f"""
             QTextEdit {{
-                background:{BG_BASE}; border:1px solid {BORDER}; border-radius:6px;
-                color:{TEXT_MAIN}; padding:6px 12px; font-family:{FONT_SANS}; font-size:14px;
+                background:transparent; border:none;
+                color:{TEXT_MAIN}; padding:2px 4px; font-family:{FONT_SANS}; font-size:14px;
                 selection-background-color:{ACCENT}; selection-color:{BG_BASE};
             }}
-            QTextEdit:focus {{ border-color:{ACCENT}; }}
         """)
-        layout.addWidget(self._input, stretch=1)
+        box_layout.addWidget(self._input, stretch=1)
+        layout.addWidget(self._box_frame, stretch=1)
 
-        self._send_btn = QPushButton("\u27a4")
+        self._send_btn = QPushButton("\u27a4", self)
         self._send_btn.setFixedSize(34, 34)
         self._send_btn.clicked.connect(on_send)
         self._update_button(streaming=False, has_text=False)
         layout.addWidget(self._send_btn)
-
     @property
     def input(self) -> PromptInput:
         return self._input
