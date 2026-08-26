@@ -136,9 +136,10 @@ class InputArea(QFrame):
         self._send_btn.clicked.connect(on_send)
         self._update_button(streaming=False, has_text=False)
         layout.addWidget(self._send_btn)
+
+    @property
     def input(self) -> PromptInput:
         return self._input
-
     @property
     def send_btn(self) -> QPushButton:
         return self._send_btn
