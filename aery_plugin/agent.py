@@ -102,6 +102,28 @@ class _AgentWorker(QObject):
             loop.close()
 
 
+def _is_image_data_uri(s) -> bool:
+    """True for data:image/...;base64,.... strings (image payloads, never truncate)."""
+    return isinstance(s, str) and s.lstrip().startswith("data:image/")
+
+
+def _content_has_image_blocks(content) -> bool:
+    """True when message content embeds real image pixels.
+
+    Matches both OpenAI-style list blocks ({"type": "image_url", ...} produced by
+    format_message_pair) and raw data-URI strings. Image-bearing content must
+    never be sliced or reduced to a summary — that is what caused "truncated
+    base64" hallucinations and context loss after viewing an image.
+    """
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                return True
+    elif _is_image_data_uri(content):
+        return True
+    return False
+
+
 class Agent(QObject):
     """The geospatial AI agent."""
 
@@ -291,15 +313,32 @@ class Agent(QObject):
                 self._thread.wait(500)
 
     def start_with_images(self, user_message: str, images: list[tuple[str, str]]) -> None:
-        """Post a user prompt with attached base64 image data URLs for multimodal vision models."""
+        """Post a user prompt with attached base64 image data URLs for multimodal vision models.
+
+        Follows the main Aery agent's input-controller pattern: each image is
+        delivered as an OpenAI ``image_url`` content block, and the prompt ALSO
+        names every attached file with an explicit action — so a text-only
+        provider (whose gateway may strip/omit image blocks) still knows to call
+        ``inspect_image(path=...)`` / ``read_image(path=...)`` for the pixels.
+        """
         # Format message content as multimodal array: [{"type": "text", "text": ...}, {"type": "image_url", ...}]
         content_blocks: list[dict] = []
         if user_message:
             content_blocks.append({"type": "text", "text": user_message})
+        attached: list[str] = []
         for file_path, data_url in images:
             content_blocks.append({
                 "type": "image_url",
                 "image_url": {"url": data_url},
+            })
+            attached.append(f"Inspect the attached image file: {file_path}")
+        if attached:
+            content_blocks.append({
+                "type": "text",
+                "text": "[Session attached files: " + "; ".join(attached) +
+                        "] If you cannot see the image pixels in your context, "
+                        "call `inspect_image(path=...)` to view it with a vision "
+                        "model, or `read_image(path=...)` to obtain the image data.",
             })
         with self._lock:
             self._messages.append({"role": "user", "content": content_blocks})
@@ -412,15 +451,19 @@ class Agent(QObject):
         COMPACT_TOKENS = 80_000
 
         with self._lock:
-            # 1. Truncate oversized tool results in-place
+            # 1. Truncate oversized tool results in-place.
+            #    Image payloads (data:image/... data URIs and image_url blocks)
+            #    are NEVER truncated — slicing base64 produces "truncated base64"
+            #    hallucinations. Whole image-bearing tool messages are dropped in
+            #    step 4 if context pressure ever requires it.
             for msg in self._messages:
                 if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
-                    if len(msg["content"]) > MAX_TOOL_CHARS:
+                    if len(msg["content"]) > MAX_TOOL_CHARS and not _is_image_data_uri(msg["content"]):
                         msg["content"] = msg["content"][:MAX_TOOL_CHARS] + " ...[truncated]"
                 elif msg.get("role") == "user" and isinstance(msg.get("content"), list):
                     for block in msg["content"]:
                         if isinstance(block, dict) and block.get("type") == "tool_result":
-                            if isinstance(block.get("content"), str) and len(block["content"]) > MAX_TOOL_CHARS:
+                            if isinstance(block.get("content"), str) and len(block["content"]) > MAX_TOOL_CHARS and not _is_image_data_uri(block["content"]):
                                 block["content"] = block["content"][:MAX_TOOL_CHARS] + " ...[truncated]"
 
             # 2. Strip thinking blocks from assistant messages to save tokens
@@ -469,6 +512,14 @@ class Agent(QObject):
 
                     # Compact OpenAI tool results
                     if msg.get("role") == "tool":
+                        # Image-bearing tool results must never be mangled into a
+                        # 120-char summary (that corrupted image_url lists into
+                        # "[{'type': 'text'...}" text). Drop the whole message.
+                        if _content_has_image_blocks(msg.get("content")):
+                            self._messages.pop(0)
+                            total_chars -= len(str(msg.get("content", "")))
+                            total_tokens = total_chars // 4
+                            break
                         tool_name = msg.get("name", "tool")
                         content = str(msg.get("content", ""))
                         old_len = len(content)
@@ -485,6 +536,13 @@ class Agent(QObject):
                     if msg.get("role") == "user" and isinstance(msg.get("content"), list):
                         blocks = msg["content"]
                         if blocks and isinstance(blocks[0], dict) and blocks[0].get("type") == "tool_result":
+                            # Same protection as OpenAI tool results: drop whole
+                            # image-bearing tool results instead of mangling them.
+                            if _content_has_image_blocks(msg.get("content")):
+                                self._messages.pop(0)
+                                total_chars -= len(str(msg.get("content", "")))
+                                total_tokens = total_chars // 4
+                                break
                             content = str(blocks[0].get("content", ""))
                             old_len = len(str(msg["content"]))
                             summary = content[:120].rstrip() + ("..." if len(content) > 120 else "")

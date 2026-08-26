@@ -102,6 +102,44 @@ class HookRegistry:
             await fn(**kwargs)
 
 
+def _extract_chat_text(resp: dict) -> str:
+    """Extract the assistant text from any provider's one-shot chat response.
+
+    Handles the OpenAI-completions shape used by the Aery gateway
+    (``choices[0].message.content``) as well as Anthropic
+    (``content[0].text``) and Gemini (``candidates[0].content.parts[0].text``).
+    """
+    if not isinstance(resp, dict):
+        return ""
+    try:
+        choices = resp.get("choices")
+        if isinstance(choices, list) and choices:
+            msg = choices[0].get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+        content = resp.get("content")
+        if isinstance(content, list) and content:
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        return text
+        candidates = resp.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            parts = ((candidates[0].get("content") or {}).get("parts")) or []
+            for part in parts:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        return text
+        if isinstance(content, str):
+            return content
+    except Exception:
+        return ""
+    return ""
+
+
 class ToolRegistry:
     """Registry of tools available to the agent."""
 
@@ -245,6 +283,20 @@ class ToolRegistry:
                 "required": ["path"],
             },
             "execute": self._execute_read_image,
+        })
+
+        self.register({
+            "name": "inspect_image",
+            "description": "Inspect any local image or raster file and return a text description of its visual content. Runs a separate one-shot vision-model completion with the image attached and returns a plain-text description (never base64). Use this when the user asks you to view/describe/analyze an image but you cannot see its pixels directly in your context. Also useful for visual QA of renderings and screenshots.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the image or raster file on disk"},
+                    "question": {"type": "string", "description": "Optional question about the image; defaults to a full detailed description"},
+                },
+                "required": ["path"],
+            },
+            "execute": self._execute_inspect_image,
         })
 
 
@@ -1088,8 +1140,17 @@ result = f"Georeferenced successfully: '{{res.get('output_path')}}' ({{res.get('
 
     async def _execute_read_image(self, params: dict) -> str:
         """Read any local image or raster file and return data:image/png;base64 for visual LLM perception."""
-        import base64, os
         img_path = params["path"].strip()
+        return await self._read_image_to_data_url(img_path)
+
+    async def _read_image_to_data_url(self, img_path: str) -> str:
+        """Resolve a (possibly relative) image path and encode it as a data URI.
+
+        Mirrors the main Aery agent's loadImageInput (image-loading.ts): standard
+        raster formats are base64-encoded directly (PNG/JPG/WebP), while GeoTIFF
+        and other rasters are rendered to a downsampled PNG via GDAL/PIL.
+        """
+        import base64, os
         if not os.path.isabs(img_path) and hasattr(self, "_get_project_dir"):
             proj_dir = self._get_project_dir()
             if proj_dir:
@@ -1137,6 +1198,61 @@ result = f"Georeferenced successfully: '{{res.get('output_path')}}' ({{res.get('
             with open(img_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("utf-8")
             return f"data:image/png;base64,{b64}"
+
+    async def _execute_inspect_image(self, params: dict) -> str:
+        """Port of the main Aery agent's inspect_image (inspect-image.ts).
+
+        Runs a SEPARATE one-shot vision completion against the configured model
+        with the image embedded as an OpenAI ``image_url`` block, and returns the
+        model's plain-TEXT description as the tool result. The main-conversation
+        model therefore only ever sees a text description — which survives
+        context trimming — never a raw base64 blob in the tool result.
+
+        Mirrors main-agent behaviour:
+          - content = [{type:"image", data, mimeType}, {type:"text", text:question}]
+          - a fresh one-shot completion, not a continuation of the main loop
+          - returns text only (never base64 back into the loop)
+        """
+        import os
+        img_path = params.get("path", "").strip()
+        question = (params.get("question") or
+                    "Describe this image in detail, including colors, objects, "
+                    "text, layout, and any notable features.")
+        if not img_path:
+            raise RuntimeError("inspect_image requires a 'path' parameter")
+        data_url = await self._read_image_to_data_url(img_path)
+
+        agent = getattr(self, "_agent", None)
+        client = getattr(agent, "_client", None) if agent is not None else None
+        if client is None:
+            # No live client (e.g. tests or a detached registry): fall back to
+            # the data URI so the caller can still surface the image itself.
+            return data_url
+        model = getattr(agent, "_model", "") or ""
+        max_tokens = 2048
+        try:
+            tokens = getattr(agent, "_model_max_tokens", None)
+            if tokens:
+                max_tokens = int(tokens)
+        except Exception:
+            pass
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }]
+        try:
+            resp = await client.chat(messages=messages, model=model, max_tokens=max_tokens)
+            text = _extract_chat_text(resp)
+        except Exception as e:
+            return f"[inspect_image] vision request failed: {e}"
+        if not text:
+            return "[inspect_image] the vision model returned no description."
+        return text
+
 
     async def _execute_web_search(self, params: dict) -> str:
         """Search the web with robust error handling and anti-bot detection."""
