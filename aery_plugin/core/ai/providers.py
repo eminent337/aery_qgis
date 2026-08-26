@@ -75,32 +75,23 @@ class AntigravityProvider(ProviderBase):
         self.api_key = api_key
         
     async def stream_chat(self, messages: list[dict], model: str) -> AsyncGenerator[str, None]:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": True
-        }
-        
-        client = httpx.AsyncClient()
-        async with client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_lines():
-                if chunk.startswith("data: "):
-                    data = chunk[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        parsed = json.loads(data)
-                        if parsed.get("choices") and "delta" in parsed["choices"][0]:
-                            content = parsed["choices"][0]["delta"].get("content", "")
-                            if content:
-                                yield content
-                    except json.JSONDecodeError:
-                        continue
+        # Delegate to the canonical Cloud Code Assist client so the Antigravity
+        # wire format lives in one place (aery_plugin.llm_client.AntigravityClient).
+        from aery_plugin.llm_client import (
+            AntigravityClient as CloudCodeClient,
+            _resolve_antigravity_credentials,
+        )
+
+        token, project_id = _resolve_antigravity_credentials("google-antigravity", {})
+        if not token:
+            token = self.api_key
+        base_url = self.base_url.rstrip("/").removesuffix("/v1")
+        client = CloudCodeClient(api_key=token, project_id=project_id, base_url=base_url)
+        async for chunk in client.chat_stream(messages, model, max_tokens=8192):
+            choice = (chunk.get("choices") or [{}])[0]
+            delta = choice.get("delta", {})
+            if delta.get("content"):
+                yield delta["content"]
 
 class CustomOpenAIProvider(ProviderBase):
     def __init__(self, base_url: str, api_key: str = ""):

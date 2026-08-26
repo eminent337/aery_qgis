@@ -588,6 +588,8 @@ class AerySettingsDialog(QDialog):
 
         self._prov_combo = QComboBox()
         self._prov_combo.addItem("Kilo Gateway (free active models)", "kilo")
+        self._prov_combo.addItem("Google Antigravity (Claude / Gemini)", "google-antigravity")
+        self._prov_combo.currentIndexChanged.connect(self._on_provider_changed)
         self._prov_combo.setFixedHeight(32)
         prov_lay.addWidget(self._prov_combo)
 
@@ -660,22 +662,34 @@ class AerySettingsDialog(QDialog):
         footer.addWidget(done_btn)
 
         root.addLayout(footer)
-
     def _populate_models(self) -> None:
+        pid = self._prov_combo.currentData() or "kilo"
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
-        models = oauth_helper._oauth_models("kilo")
+        models = oauth_helper._oauth_models(pid)
         for mid, mname in models:
             self._model_combo.addItem(f"{mname}  ({mid})", mid)
         self._model_combo.blockSignals(False)
 
-    def _refresh(self) -> None:
+    def _on_provider_changed(self) -> None:
+        self._populate_models()
+        self._refresh()
+
+    def _provider_name(self) -> str:
+        pid = self._prov_combo.currentData() or "kilo"
+        return (oauth_helper.OAUTH_CONFIGS.get(pid) or {}).get("name", pid)
+
+    def _provider_has_creds(self, pid: str) -> bool:
         auth = oauth_helper._load_auth()
-        kilo_entry = auth.get("kilo", {})
-        has_creds = bool(
-            kilo_entry.get("access") or kilo_entry.get("accessToken")
-            or kilo_entry.get("access_token")
+        entry = auth.get(pid, {})
+        return bool(
+            entry.get("access") or entry.get("accessToken")
+            or entry.get("access_token")
         )
+
+    def _refresh(self) -> None:
+        pid = self._prov_combo.currentData() or "kilo"
+        has_creds = self._provider_has_creds(pid)
 
         if has_creds:
             self._status_badge.setText("● Connected")
@@ -684,7 +698,7 @@ class AerySettingsDialog(QDialog):
                 f" border-radius: 11px; font-size: 10px; font-weight: 600; padding: 0 8px;"
             )
             self._auth_status_title.setText("Authenticated Session")
-            self._auth_status_sub.setText("Kilo OAuth credentials verified & active in Vault")
+            self._auth_status_sub.setText(f"{self._provider_name()} credentials verified & active in Vault")
             self._auth_btn.setText("Disconnect Account")
             self._auth_btn.setStyleSheet(
                 f"QPushButton {{ background: transparent; color: {TEXT_MUTED}; border: 1px solid {BORDER_LIGHT};"
@@ -697,9 +711,14 @@ class AerySettingsDialog(QDialog):
                 f"background: rgba(248, 81, 73, 0.12); color: {DANGER}; border: 1px solid rgba(248, 81, 73, 0.3);"
                 f" border-radius: 11px; font-size: 10px; font-weight: 600; padding: 0 8px;"
             )
-            self._auth_status_title.setText("Device Flow Authentication")
-            self._auth_status_sub.setText("One-click sign in via browser")
-            self._auth_btn.setText("Sign in with Kilo")
+            if pid == "kilo":
+                self._auth_status_title.setText("Device Flow Authentication")
+                self._auth_status_sub.setText("One-click sign in via browser")
+                self._auth_btn.setText("Sign in with Kilo")
+            else:
+                self._auth_status_title.setText("Google OAuth Authentication")
+                self._auth_status_sub.setText("Sign in with Google to enable Antigravity models")
+                self._auth_btn.setText("Sign in with Google")
             self._auth_btn.setStyleSheet(
                 f"QPushButton {{ background: {ACCENT}; color: {BG_DARK}; border: none;"
                 f" border-radius: 6px; font-size: 11px; font-weight: 700; padding: 0 12px; }}"
@@ -708,40 +727,67 @@ class AerySettingsDialog(QDialog):
 
         active = oauth_helper.get_active_provider()
         current_model = active.get("model", "") if active else ""
-        if current_model:
-            idx = self._model_combo.findData(current_model)
-            if idx >= 0:
-                self._model_combo.blockSignals(True)
-                self._model_combo.setCurrentIndex(idx)
-                self._model_combo.blockSignals(False)
+        if current_model and self._model_combo.findData(current_model) >= 0:
+            self._model_combo.blockSignals(True)
+            self._model_combo.setCurrentIndex(self._model_combo.findData(current_model))
+            self._model_combo.blockSignals(False)
 
     def _on_auth_clicked(self) -> None:
-        auth = oauth_helper._load_auth()
-        kilo_entry = auth.get("kilo", {})
-        has_creds = bool(
-            kilo_entry.get("access") or kilo_entry.get("accessToken")
-            or kilo_entry.get("access_token")
-        )
-        if has_creds:
+        pid = self._prov_combo.currentData() or "kilo"
+        if self._provider_has_creds(pid):
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Disconnect Account")
-            msg_box.setText("Are you sure you want to disconnect Kilo Gateway?")
+            msg_box.setText(f"Are you sure you want to disconnect {self._provider_name()}?")
             msg_box.setInformativeText("Your stored credentials will be removed from the local vault.")
             msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             msg_box.setDefaultButton(QMessageBox.StandardButton.No)
             msg_box.setStyleSheet(_dialog_stylesheet())
             if msg_box.exec() == QMessageBox.StandardButton.Yes:
-                oauth_helper.logout_provider("kilo")
+                oauth_helper.logout_provider(pid)
                 self._refresh()
         else:
-            dlg = _DeviceFlowDialog("kilo", self)
-            if dlg.exec():
-                self._refresh()
+            if pid == "kilo":
+                dlg = _DeviceFlowDialog("kilo", self)
+                if dlg.exec():
+                    self._refresh()
+            else:
+                self._run_pkce_login(pid)
+
+    def _run_pkce_login(self, pid: str) -> None:
+        """Run the PKCE browser login off the GUI thread (it blocks up to 120s)."""
+        self._auth_btn.setEnabled(False)
+        self._auth_btn.setText("Waiting for browser sign-in...")
+        result: dict = {}
+
+        def _work():
+            try:
+                result["ok"] = oauth_helper.login_provider(pid)
+            except Exception as e:  # noqa: BLE001 - surfaced to the user below
+                result["error"] = str(e)
+
+        t = threading.Thread(target=_work, daemon=True)
+        t.start()
+
+        def _poll():
+            if t.is_alive():
+                QTimer.singleShot(500, _poll)
+                return
+            self._auth_btn.setEnabled(True)
+            if result.get("error"):
+                QMessageBox.critical(self, "Sign-in Failed", result["error"])
+            elif result.get("ok"):
+                QMessageBox.information(self, "Connected", f"{self._provider_name()} connected successfully.")
+            else:
+                QMessageBox.warning(self, "Timed Out", "Sign-in timed out. Please try again.")
+            self._refresh()
+
+        QTimer.singleShot(500, _poll)
 
     def _on_model_changed(self, index: int) -> None:
+        pid = self._prov_combo.currentData() or "kilo"
         model_id = self._model_combo.itemData(index)
         if model_id:
-            oauth_helper.set_active_provider("kilo", model_id)
+            oauth_helper.set_active_provider(pid, model_id)
 
 
 # Backward-compatibility aliases

@@ -1,24 +1,23 @@
 """Tests for create_client model-family routing on google-antigravity.
 
-Regression guard for the bug where non-Gemini models (Claude, GPT-OSS)
-on the google-antigravity provider were routed to GeminiClient pointed
-at the native Gemini API, producing a guaranteed 404 on every request.
+Regression guard for the Antigravity provider: every model family (Claude,
+Gemini, GPT-OSS) on the google-antigravity provider must route to
+AntigravityClient (the Cloud Code Assist wire format), not to a mismatched
+Anthropic/Gemini/OpenAI client pointed at the wrong API.
 """
 
 import sys
 import os
+import json
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import aery_plugin
-from aery_plugin import llm_client
 from aery_plugin.llm_client import (
     create_client,
-    AnthropicClient,
-    OpenAIClient,
-    GeminiClient,
+    AntigravityClient,
     APIError,
 )
 
@@ -29,39 +28,52 @@ def _dummy_auth():
     return {"type": "api_key", "key": "test-key-123"}
 
 
-def test_claude_model_routes_to_anthropic_client():
-    """claude-sonnet-4-6 on google-antigravity must use AnthropicClient,
-    NOT GeminiClient, and must use the Antigravity gateway base_url."""
-    client, model = create_client("google-antigravity", _dummy_auth(), "claude-sonnet-4-6")
-    assert isinstance(client, AnthropicClient), f"expected AnthropicClient, got {type(client).__name__}"
-    assert "cloudcode" in client.base_url, f"expected Antigravity gateway base_url, got {client.base_url}"
+def _antigravity_auth():
+    """Stored Antigravity credentials (JSON-wrapped access with projectId)."""
+    return {
+        "access_token": json.dumps({"token": "tok-123", "projectId": "proj-42"}),
+        "refresh_token": "rt",
+        "expires_at": int(time.time() * 1000) + 3600_000,
+    }
+
+
+def _create_antigravity(model: str):
+    with patch("aery_plugin.oauth_helper.get_auth_entry", return_value=_antigravity_auth()):
+        return create_client("google-antigravity", _dummy_auth(), model)
+
+
+def test_claude_model_routes_to_antigravity_client():
+    """claude-sonnet-4-6 on google-antigravity must use AntigravityClient with
+    the Cloud Code Assist sandbox base_url and the stored projectId."""
+    client, model = _create_antigravity("claude-sonnet-4-6")
+    assert isinstance(client, AntigravityClient), f"expected AntigravityClient, got {type(client).__name__}"
+    assert client.project_id == "proj-42"
+    assert "daily-cloudcode-pa.sandbox.googleapis.com" in client.base_url
     assert model == "claude-sonnet-4-6"
 
 
-def test_gemini_model_routes_to_gemini_client():
-    """gemini-3-flash on google-antigravity still routes to GeminiClient.
-    Patch get_auth_entry to return a valid Gemini API key so the gemini
-    path constructs a GeminiClient without raising."""
-    with patch("aery_plugin.oauth_helper.get_auth_entry", return_value={"key": "AIza-test-gemini-key"}):
-        client, model = create_client("google-antigravity", _dummy_auth(), "gemini-3-flash")
-    assert isinstance(client, GeminiClient), f"expected GeminiClient, got {type(client).__name__}"
+def test_gemini_model_routes_to_antigravity_client():
+    """gemini-3-flash on google-antigravity must use AntigravityClient (Cloud
+    Code Assist), not a native Gemini client."""
+    client, model = _create_antigravity("gemini-3-flash")
+    assert isinstance(client, AntigravityClient), f"expected AntigravityClient, got {type(client).__name__}"
+    assert client.project_id == "proj-42"
     assert model == "gemini-3-flash"
 
 
-def test_gpt_oss_model_routes_to_openai_client():
-    """gpt-oss-120b-medium on google-antigravity must use OpenAIClient."""
-    client, model = create_client("google-antigravity", _dummy_auth(), "gpt-oss-120b-medium")
-    assert isinstance(client, OpenAIClient), f"expected OpenAIClient, got {type(client).__name__}"
-    assert "cloudcode" in client.base_url, f"expected Antigravity gateway base_url, got {client.base_url}"
+def test_gpt_oss_model_routes_to_antigravity_client():
+    """gpt-oss-120b-medium on google-antigravity must use AntigravityClient."""
+    client, model = _create_antigravity("gpt-oss-120b-medium")
+    assert isinstance(client, AntigravityClient), f"expected AntigravityClient, got {type(client).__name__}"
+    assert client.project_id == "proj-42"
+    assert model == "gpt-oss-120b-medium"
 
 
-def test_unknown_family_raises_clear_error():
-    """An unrecognised model family must raise a clear APIError, not a
-    silent broken GeminiClient."""
+def test_unauthenticated_antigravity_raises_clear_error():
+    """Without stored Antigravity credentials, routing raises a 401 APIError."""
     try:
-        create_client("google-antigravity", _dummy_auth(), "weird-model-xyz")
-        assert False, "expected APIError for unknown model family"
+        create_client("google-antigravity", _dummy_auth(), "claude-sonnet-4-6")
+        assert False, "expected APIError for unauthenticated antigravity"
     except APIError as e:
-        assert e.status_code == 400
-        assert e.status_code == 400
-        assert "no registry entry" in str(e)
+        assert e.status_code == 401
+        assert "not authenticated" in str(e).lower()

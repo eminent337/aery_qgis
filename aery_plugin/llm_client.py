@@ -1084,6 +1084,345 @@ class GeminiClient(LLMClientBase):
                 raise
 
 
+def _split_data_uri(url: str) -> tuple[str, str]:
+    """Split a ``data:`` URI into ``(mime_type, base64_data)``.
+
+    Returns ``("", "")`` for anything that is not a data URI so callers can
+    skip image parts safely.
+    """
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return "", ""
+    try:
+        header, _, data = url.partition(",")
+        if not data:
+            return "", ""
+        mime = header[5:].split(";")[0]
+        return mime, data
+    except Exception:
+        return "", ""
+
+
+class AntigravityClient(LLMClientBase):
+    """Client for Google Antigravity (Cloud Code Assist).
+
+    Speaks the Cloud Code Assist wire format mirrored from the main Aery agent
+    (``packages/ai/src/providers/google-gemini-cli.ts`` +
+    ``utils/oauth/google-antigravity.ts``):
+
+      POST {base}/v1internal:streamGenerateContent?alt=sse
+      body {project, model, requestType:"agent", userAgent:"antigravity",
+            requestId, request:{contents, sessionId, systemInstruction,
+                                generationConfig, tools, toolConfig}}
+
+    It emits the same OpenAI-style chunks as the other clients (delta.content /
+    delta.tool_calls) so ``agent.py`` can consume it unchanged.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        project_id: str = "",
+        base_url: str = "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ):
+        self.api_key = api_key
+        self.project_id = project_id
+        self.base_url = base_url.rstrip("/")
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def close(self):
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    # ── Cloud Code Assist request building ────────────────────────────────────
+
+    @staticmethod
+    def _derive_session_id(messages: list[dict]) -> str:
+        """Antigravity sessions use a signed-decimal id derived from the first
+        user text (mirrors ``deriveAntigravitySessionId`` in the main agent)."""
+        import hashlib
+        import random
+
+        for m in messages:
+            if m.get("role") != "user":
+                continue
+            content = m.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "".join(
+                    str(p.get("text", "")) for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            else:
+                text = ""
+            if text.strip():
+                digest = hashlib.sha256(text.encode("utf-8")).digest()
+                value = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+                return f"-{value}"
+        return f"-{random.SystemRandom().randrange(9_000_000_000_000_000_000)}"
+
+    @staticmethod
+    def _convert_messages(messages: list[dict]) -> tuple[list[dict], dict]:
+        """OpenAI-format messages -> Google contents (role user/model + parts).
+
+        Returns ``(contents, tool_id_to_name)`` where the second value maps
+        tool-call ids to function names so tool-result turns can be attached.
+        """
+        contents: list[dict] = []
+        tool_id_to_name: dict = {}
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("system", "developer"):
+                continue
+            if role == "user":
+                parts: list[dict] = []
+                if isinstance(content, str):
+                    if content.strip():
+                        parts.append({"text": content})
+                elif isinstance(content, list):
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("type") == "text" and str(item.get("text", "")).strip():
+                            parts.append({"text": item["text"]})
+                        elif item.get("type") == "image_url":
+                            url = (item.get("image_url") or {}).get("url", "")
+                            mime, data = _split_data_uri(url)
+                            if data:
+                                parts.append({"inlineData": {"mimeType": mime or "image/png", "data": data}})
+                if not parts:
+                    continue
+                contents.append({"role": "user", "parts": parts})
+            elif role == "assistant":
+                parts: list[dict] = []
+                if isinstance(content, str) and content.strip():
+                    parts.append({"text": content})
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    try:
+                        args = json.loads(fn.get("arguments", "") or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    call_id = tc.get("id", "")
+                    call_name = fn.get("name", "")
+                    if call_id:
+                        tool_id_to_name[call_id] = call_name
+                    parts.append({"functionCall": {"id": call_id, "name": call_name, "args": args}})
+                if not parts:
+                    continue
+                contents.append({"role": "model", "parts": parts})
+            elif role == "tool":
+                tool_call_id = msg.get("tool_call_id", "")
+                tool_name = msg.get("name", "") or tool_id_to_name.get(tool_call_id, "")
+                text_parts: list[str] = []
+                image_parts: list[dict] = []
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("type") == "text" and str(item.get("text", "")).strip():
+                            text_parts.append(item["text"])
+                        elif item.get("type") == "image_url":
+                            url = (item.get("image_url") or {}).get("url", "")
+                            mime, data = _split_data_uri(url)
+                            if data:
+                                image_parts.append({"inlineData": {"mimeType": mime or "image/png", "data": data}})
+                part = {
+                    "functionResponse": {
+                        "id": tool_call_id,
+                        "name": tool_name,
+                        "response": {"output": "\n".join(text_parts)},
+                    }
+                }
+                if contents and contents[-1]["role"] == "user" and any(
+                    "functionResponse" in p for p in contents[-1]["parts"]
+                ):
+                    contents[-1]["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
+                # Tool-result images go in a separate user turn (universally
+                # accepted shape, mirrors the main agent's Gemini<3 path).
+                if image_parts:
+                    contents.append({"role": "user", "parts": [{"text": "Tool result image:"}, *image_parts]})
+        return contents, tool_id_to_name
+
+    def _build_payload(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
+        system_texts = [
+            m.get("content", "")
+            for m in messages
+            if m.get("role") == "system" and isinstance(m.get("content"), str)
+        ]
+        system_text = "\n".join(system_texts).strip()
+
+        contents, _tool_map = self._convert_messages(messages)
+        generation_config: dict = {}
+        temperature = kwargs.get("temperature")
+        if temperature is not None:
+            generation_config["temperature"] = temperature
+        if max_tokens:
+            generation_config["maxOutputTokens"] = max_tokens
+
+        request: dict = {"contents": contents}
+        request["sessionId"] = self._derive_session_id(messages)
+        if system_text:
+            request["systemInstruction"] = {"parts": [{"text": system_text}]}
+        if generation_config:
+            request["generationConfig"] = generation_config
+
+        tools = kwargs.get("tools") or []
+        if tools:
+            decls = []
+            for t in tools:
+                fn = t.get("function", t) if isinstance(t, dict) else {}
+                decl = {"name": fn.get("name", ""), "description": fn.get("description", "") or ""}
+                params = fn.get("parameters")
+                if params is not None:
+                    # Claude models on Cloud Code expect `parameters`; the API
+                    # translates it into Anthropic's input_schema (mirrors the
+                    # main agent's convertTools).
+                    if model.lower().startswith("claude"):
+                        decl["parameters"] = params
+                    else:
+                        decl["parametersJsonSchema"] = params
+                decls.append(decl)
+            request["tools"] = [{"functionDeclarations": decls}]
+            request["toolConfig"] = {
+                "functionCallingConfig": {
+                    "mode": "VALIDATED" if model.lower().startswith("claude") else "AUTO",
+                }
+            }
+
+        import uuid
+        return {
+            "project": self.project_id,
+            "model": model,
+            "requestType": "agent",
+            "userAgent": "antigravity",
+            "requestId": f"agent-{uuid.uuid4()}",
+            "request": request,
+        }
+
+    def _request_headers(self) -> dict:
+        from aery_plugin.core.ai.auth import _antigravity_user_agent
+        return {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": _antigravity_user_agent(),
+        }
+
+    # ── Streaming ────────────────────────────────────────────────────────────
+
+    async def _stream_sse(self, url: str, payload: dict, headers: dict):
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=120)
+        async with self._client.stream("POST", url, json=payload, headers=headers, timeout=120) as resp:
+            if resp.status_code >= 400:
+                body = ""
+                try:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                msg = _extract_error_message(body)
+                raise APIError(
+                    msg or f"HTTP {resp.status_code}",
+                    resp.status_code,
+                    retryable=_is_retryable(resp.status_code) or _is_retryable_text(body),
+                )
+            tool_index = 0
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or line.startswith(":") or line.startswith("event:") or line.startswith("id:") or line.startswith("retry:"):
+                    continue
+                if line.startswith("data: "):
+                    line = line[6:]
+                if not line or line == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                response = chunk.get("response") or {}
+                candidate = (response.get("candidates") or [{}])[0]
+                parts = ((candidate.get("content") or {}).get("parts")) or []
+                has_function_call = False
+                for part in parts:
+                    if part.get("text") is not None and str(part.get("text", "")) != "":
+                        yield {"choices": [{"delta": {"content": part["text"]}}]}
+                    if part.get("functionCall"):
+                        has_function_call = True
+                        fc = part["functionCall"]
+                        tc = {
+                            "index": tool_index,
+                            "id": fc.get("id", ""),
+                            "function": {
+                                "name": fc.get("name", ""),
+                                "arguments": json.dumps(fc.get("args") or {}, ensure_ascii=False),
+                            },
+                        }
+                        tool_index += 1
+                        yield {"choices": [{"delta": {"tool_calls": [tc]}}]}
+                if candidate.get("finishReason"):
+                    reason = "tool_calls" if has_function_call else "stop"
+                    yield {"choices": [{"delta": {}, "finish_reason": reason}]}
+
+    async def chat_stream(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> Any:
+        """Yield OpenAI-style streaming chunks for the Cloud Code Assist API."""
+        payload = self._build_payload(messages, model, max_tokens, **kwargs)
+        url = f"{self.base_url}/v1internal:streamGenerateContent?alt=sse"
+        headers = self._request_headers()
+        max_retries = 3
+        delay = 2.0
+        for attempt in range(max_retries + 1):
+            try:
+                async for chunk in self._stream_sse(url, payload, headers):
+                    yield chunk
+                return
+            except APIError as e:
+                if e.retryable and attempt < max_retries:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
+
+    async def chat(self, messages: list[dict], model: str, max_tokens: int = 8192, **kwargs) -> dict:
+        """Non-streaming: consume the SSE stream and assemble an OpenAI-style
+        response dict (used by agent.py's fallback path)."""
+        content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        async for chunk in self.chat_stream(messages, model, max_tokens, **kwargs):
+            choice = (chunk.get("choices") or [{}])[0]
+            delta = choice.get("delta", {})
+            if delta.get("content"):
+                content_parts.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                while len(tool_calls) <= idx:
+                    tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                existing = tool_calls[idx]
+                if tc.get("id"):
+                    existing["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    existing["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    existing["function"]["arguments"] += fn["arguments"]
+        return {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    "tool_calls": tool_calls or None,
+                },
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }],
+        }
+
+
 async def _timeout_aiter(ait, timeout: float = 30):
     """Wrap an async iterator with a per-item timeout."""
     it = ait.__aiter__()
@@ -1328,6 +1667,49 @@ def _resolve_url_placeholders(base_url: str, auth_entry: dict) -> str:
     return base_url
 
 
+def _resolve_antigravity_credentials(provider_id: str, auth_entry: dict) -> tuple[str, str]:
+    """Return ``(access_token, project_id)`` for a google-antigravity provider.
+
+    Re-reads the freshest auth entry from the vault, unwraps the JSON-stored
+    access token (``{"token": ..., "projectId": ...}``), and refreshes first if
+    the stored token is expired (mirrors ``_resolve_api_key`` for the Google
+    providers while also recovering the Cloud Code Assist ``projectId``).
+    """
+    from aery_plugin.core.ai.auth import get_auth_entry
+
+    entry = get_auth_entry(provider_id) or auth_entry
+    token, project_id = _resolve_google_credentials(entry)
+    if not token:
+        return "", ""
+
+    expires = entry.get("expires_at", 0)
+    if expires and int(time.time() * 1000) >= expires:
+        from aery_plugin import oauth_helper
+        try:
+            refreshed = oauth_helper.refresh_google_token(provider_id)
+            token, project_id = _resolve_google_credentials(refreshed)
+        except Exception as e:
+            raise APIError(
+                f"Failed to refresh Antigravity OAuth token: {e}. "
+                "Please re-authenticate via Settings.",
+                status_code=401,
+                retryable=False,
+            )
+    return token, project_id
+
+
+def _resolve_antigravity_client(provider_id: str, auth_entry: dict, model: str, base_url: str) -> tuple[Any, str]:
+    """Build an ``AntigravityClient`` (Cloud Code Assist) for a google-antigravity model."""
+    token, project_id = _resolve_antigravity_credentials(provider_id, auth_entry)
+    if not token:
+        raise APIError(
+            "Antigravity is not authenticated. Sign in via Settings → Provider & Credentials.",
+            status_code=401,
+            retryable=False,
+        )
+    return AntigravityClient(api_key=token, project_id=project_id, base_url=base_url), model
+
+
 def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, str]:
     """Create the appropriate API client for a provider.
 
@@ -1409,6 +1791,11 @@ def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, 
         # that produced a guaranteed 404 (claude-... sent to
         # generativelanguage.googleapis.com).
         if api_type == "google-gemini-cli":
+            # google-antigravity models are served by the Cloud Code Assist
+            # gateway with the Antigravity wire format — route every family
+            # (Claude, Gemini, GPT-OSS) through AntigravityClient.
+            if provider_id == "google-antigravity":
+                return _resolve_antigravity_client(provider_id, auth_entry, model, base_url)
             model_l = model.lower()
             if model_l.startswith("gemini-"):
                 gemini_result = _resolve_gemini_client_for_model(provider_id, auth_entry, model)
@@ -1431,6 +1818,12 @@ def create_client(provider_id: str, auth_entry: dict, model: str) -> tuple[Any, 
         if oauth_cfg["api_type"] == "anthropic":
             return AnthropicClient(api_key=key), model
         if oauth_cfg["api_type"] == "google":
+            # google-antigravity uses the Cloud Code Assist wire format; the
+            # registry Tier 3 normally catches it, but route here too so models
+            # without a registry entry still reach AntigravityClient.
+            if provider_id == "google-antigravity":
+                ag_base = oauth_cfg.get("base_url", "https://daily-cloudcode-pa.sandbox.googleapis.com")
+                return _resolve_antigravity_client(provider_id, auth_entry, model, ag_base)
             oauth_token, project_id = _resolve_google_credentials(auth_entry)
             # Gemini models are served by the native Gemini API / Vertex AI
             # (accepts cloud-platform scoped OAuth).

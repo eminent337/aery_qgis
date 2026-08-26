@@ -30,7 +30,7 @@ def _decode(s: str) -> str:
     import base64
     return base64.b64decode(s).decode()
 
-# ── OAuth provider configs - Kilo only ──────────────────────────────────────
+# ── OAuth provider configs ────────────────────────────────────────────────────
 OAUTH_CONFIGS: dict[str, dict] = {
     "kilo": {
         "name": "Kilo Gateway",
@@ -47,10 +47,124 @@ OAUTH_CONFIGS: dict[str, dict] = {
         # treat it as a static bearer credential that never refreshes.
         "static_bearer": True,
     },
+    "google-antigravity": {
+        "name": "Google Antigravity",
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        # Client credentials are supplied via environment variables so the
+        # plugin never embeds the Antigravity OAuth client secret in the repo
+        # (it was scrubbed from history for GitHub push-protection hygiene).
+        # Set ENV_GOOGLE_OAUTH_CLIENT_ID / ENV_GOOGLE_OAUTH_CLIENT_SECRET (the
+        # same names the old oauth_helper.py used) and restart QGIS.
+        "client_id": os.environ.get("ENV_GOOGLE_OAUTH_CLIENT_ID", ""),
+        "client_secret": os.environ.get("ENV_GOOGLE_OAUTH_CLIENT_SECRET", ""),
+        "redirect_port": 51121,
+        "redirect_path": "/oauth-callback",
+        "scopes": [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/cclog",
+            "https://www.googleapis.com/auth/experimentsandconfigs",
+        ],
+        # After the authorization-code exchange, discover/provision the Cloud
+        # Code Assist project (loadCodeAssist -> onboardUser) mirroring the
+        # main agent's google-antigravity.ts OAuth flow.
+        "discover_project": True,
+        "project_tier": "legacy-tier",
+        "cloud_code_endpoint": "https://cloudcode-pa.googleapis.com",
+    },
 }
 
 # No API_PROVIDERS - Kilo only
 API_PROVIDERS: dict[str, dict] = {}
+
+# ── Antigravity project discovery (mirrors main agent google-antigravity.ts) ──
+
+def _antigravity_user_agent() -> str:
+    """User-Agent that identifies as Antigravity (unlocks Cloud Code API)."""
+    import platform as _platform
+
+    version = os.environ.get("AERY_ANTIGRAVITY_VERSION", "1.104.0")
+    system = _platform.system().lower()  # "windows" | "darwin" | "linux"
+    os_name = "windows" if system == "windows" else ("darwin" if system == "darwin" else "linux")
+    machine = _platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        arch = "amd64"
+    elif machine in ("i386", "i686"):
+        arch = "386"
+    else:
+        arch = machine
+    return f"antigravity/{version} {os_name}/{arch}"
+
+
+def _read_antigravity_project_id(value) -> Optional[str]:
+    """Accept either a plain project id string or {'id': '...'}."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"]:
+        return value["id"]
+    return None
+
+
+def _discover_antigravity_project(access_token: str, endpoint: str) -> str:
+    """Return the Cloud Code Assist project id for an Antigravity token.
+
+    Tries ``v1internal:loadCodeAssist`` first; if no project exists yet it
+    provisions one via ``v1internal:onboardUser`` (up to 5 attempts, 2s apart).
+    Mirrors ``discoverProject`` in the main agent.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": _antigravity_user_agent(),
+    }
+    metadata = {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}
+
+    def _post(path: str, body: dict):
+        req = urllib.request.Request(
+            f"{endpoint}{path}",
+            data=json.dumps(body).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+
+    try:
+        load = _post("/v1internal:loadCodeAssist", {"metadata": metadata})
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not discover an Antigravity project. loadCodeAssist failed: {e}"
+        )
+
+    existing = _read_antigravity_project_id(load.get("cloudaicompanionProject"))
+    if existing:
+        return existing
+
+    tier_id = "legacy-tier"
+    for tier in load.get("allowedTiers") or []:
+        if tier.get("isDefault") and _read_antigravity_project_id(tier.get("id")):
+            tier_id = tier["id"]
+            break
+
+    for attempt in range(1, 6):
+        if attempt > 1:
+            time.sleep(2)
+        try:
+            op = _post("/v1internal:onboardUser", {"tierId": tier_id, "metadata": metadata})
+        except Exception as e:
+            if attempt < 5:
+                continue
+            raise RuntimeError(f"onboardUser failed: {e}")
+        if op.get("done"):
+            pid = _read_antigravity_project_id((op.get("response") or {}).get("cloudaicompanionProject"))
+            if pid:
+                return pid
+    raise RuntimeError("onboardUser did not return a provisioned project id after 5 attempts")
+
+
+
 
 # ── Auth storage ──────────────────────────────────────────────────────────────
 
@@ -163,6 +277,25 @@ def _oauth_models(pid: str) -> list[tuple]:
             ("nvidia/nemotron-3-super-120b-a12b:free", "NVIDIA: Nemotron 3 Super (free)"),
             ("poolside/laguna-m.1:free", "Poolside: Laguna M.1 (free)"),
             ("openrouter/free", "OpenRouter Free (free)"),
+        ],
+        # Google Antigravity models (mirrors providers.py registry and the main
+        # agent's models.json google-antigravity block).
+        "google-antigravity": [
+            ("claude-opus-4-5-thinking", "Claude Opus 4.5 Thinking (Antigravity)"),
+            ("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking) (Antigravity)"),
+            ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+            ("claude-sonnet-4-5-thinking", "Claude Sonnet 4.5 Thinking (Antigravity)"),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 Thinking (Antigravity)"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gemini-2.5-flash-thinking", "Gemini 2.5 Flash (Thinking) (Antigravity)"),
+            ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("gemini-3-flash", "Gemini 3 Flash"),
+            ("gemini-3-pro-high", "Gemini 3 Pro (High) (Antigravity)"),
+            ("gemini-3-pro-low", "Gemini 3 Pro (Low) (Antigravity)"),
+            ("gemini-3.1-pro-high", "Gemini 3.1 Pro (High) (Antigravity)"),
+            ("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low) (Antigravity)"),
+            ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium) (Antigravity)"),
         ],
     }
     if pid in models:
@@ -370,7 +503,7 @@ def test_provider_connection(provider_id: str) -> Optional[str]:
     auth = _load_auth()
     entry = auth.get(provider_id, {})
 
-    # Only Kilo
+    # Kilo gateway (device flow bearer)
     if provider_id == "kilo":
         access = entry.get("access", "") or entry.get("accessToken", "") or entry.get("access_token", "")
         if not access:
@@ -380,6 +513,25 @@ def test_provider_connection(provider_id: str) -> Optional[str]:
             "https://api.kilo.ai/api/health",
             {},
             {"Authorization": f"Bearer {access}"},
+        )
+
+    # Google Antigravity: validate the OAuth token against Cloud Code Assist
+    if provider_id == "google-antigravity":
+        access = entry.get("access", "") or entry.get("accessToken", "") or entry.get("access_token", "")
+        if not access:
+            return "Not logged in"
+        token = access
+        try:
+            wrapped = json.loads(access)
+            token = wrapped.get("token", access)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        cfg = OAUTH_CONFIGS.get(provider_id, {})
+        endpoint = cfg.get("cloud_code_endpoint", "https://cloudcode-pa.googleapis.com")
+        return _post_json(
+            f"{endpoint}/v1internal:loadCodeAssist",
+            {"metadata": {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}},
+            {"Authorization": f"Bearer {token}", "User-Agent": _antigravity_user_agent()},
         )
 
     return "Unknown provider"
@@ -393,7 +545,6 @@ def save_api_key(provider_id: str, key: str, account_id: str = "", base_url: str
     if not get_active_provider():
         default_model = _oauth_models(provider_id)
         set_active_provider(provider_id, default_model[0][0] if default_model else "")
-
 
 def save_gateway_key(aery_key: str) -> None:
     vault = get_vault("auth")
@@ -412,7 +563,7 @@ def login_provider(provider_id: str) -> bool:
 
     if cfg.get("device_flow"):
         return _device_flow_login(provider_id, cfg)
-    return False  # No PKCE providers
+    return _pkce_login(provider_id, cfg)
 
 
 def _device_flow_login(provider_id: str, cfg: dict, code_callback=None) -> bool:
@@ -475,6 +626,131 @@ def _device_flow_login(provider_id: str, cfg: dict, code_callback=None) -> bool:
     return False
 
 
+def _pkce_login(provider_id: str, cfg: dict) -> bool:
+    """Authorization-code + PKCE login via a local callback server.
+
+    Used by Google OAuth providers (Antigravity). Client credentials come from
+    the provider config (env-driven, never embedded in the repo). After the
+    token exchange, project-scoped providers run Antigravity project discovery
+    (``loadCodeAssist``/``onboardUser``) and the access token is stored wrapped
+    as JSON ``{"token": ..., "projectId": ...}`` so the request builder can hand
+    both back to the Cloud Code Assist API.
+    """
+    port = cfg["redirect_port"]
+    redirect_path = cfg["redirect_path"]
+    redirect_uri = f"http://localhost:{port}{redirect_path}"
+    client_id = cfg.get("client_id", "")
+    if not client_id:
+        raise RuntimeError(
+            "Google OAuth client id is not configured. Set ENV_GOOGLE_OAUTH_CLIENT_ID "
+            "(and ENV_GOOGLE_OAUTH_CLIENT_SECRET) in the QGIS environment and restart."
+        )
+
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(cfg.get("scopes", [])),
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    auth_url = cfg["auth_url"] + "?" + urllib.parse.urlencode(params)
+    result: dict = {"code": None, "error": None}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == redirect_path:
+                qs = urllib.parse.parse_qs(parsed.query)
+                if "error" in qs:
+                    result["error"] = qs["error"][0]
+                    self._respond(400, "OAuth error: " + qs["error"][0])
+                elif "code" in qs and qs.get("state", [""])[0] == state:
+                    result["code"] = qs["code"][0]
+                    self._respond(200, "Authentication complete. You can close this window.")
+                else:
+                    result["error"] = "State mismatch or missing code"
+                    self._respond(400, "Authentication failed")
+            else:
+                self._respond(404, "Not found")
+
+        def _respond(self, status: int, body: str):
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *args, **kwargs):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server.timeout = 120
+
+    def run():
+        while result["code"] is None and result["error"] is None:
+            server.handle_request()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    webbrowser.open(auth_url)
+    t.join(timeout=120)
+    server.server_close()
+
+    if not result["code"]:
+        return False
+
+    exchange = {
+        "client_id": client_id,
+        "client_secret": cfg.get("client_secret", ""),
+        "code": result["code"],
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+        "code_verifier": code_verifier,
+    }
+    req = urllib.request.Request(
+        cfg["token_url"],
+        data=urllib.parse.urlencode(exchange).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            token_data = json.loads(resp.read().decode())
+    except Exception as e:
+        raise RuntimeError(f"Token exchange failed: {e}")
+
+    access = token_data.get("access_token")
+    if not access:
+        raise RuntimeError(f"No access_token in response: {token_data}")
+
+    refresh = token_data.get("refresh_token", "")
+    expires_ms = int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000
+
+    stored_access = access
+    if cfg.get("discover_project"):
+        project_id = _discover_antigravity_project(
+            access,
+            cfg.get("cloud_code_endpoint", "https://cloudcode-pa.googleapis.com"),
+        )
+        stored_access = json.dumps({"token": access, "projectId": project_id})
+
+    vault = get_vault("auth")
+    vault.set_oauth_tokens(provider_id, stored_access, refresh, expires_ms)
+    if not get_active_provider():
+        models = _oauth_models(provider_id)
+        set_active_provider(provider_id, models[0][0] if models else "")
+    return True
+
+
 def refresh_oauth_token(provider_id: str) -> dict:
     """Refresh an expired OAuth access token using the stored refresh token.
     Works for any provider defined in OAUTH_CONFIGS (Kilo).
@@ -526,9 +802,24 @@ def refresh_oauth_token(provider_id: str) -> dict:
     if not access:
         raise RuntimeError(f"No access_token in refresh response: {token_data}")
 
+    # Preserve the Cloud Code Assist projectId across refreshes for
+    # project-scoped providers (Antigravity): the access token is stored wrapped
+    # as JSON {"token": ..., "projectId": ...} so _resolve_google_credentials in
+    # llm_client can hand both back to the Cloud Code request builder.
+    stored_access = access
+    if cfg.get("discover_project"):
+        project_id = ""
+        old_access = tokens.get("access_token", "")
+        try:
+            old_wrapped = json.loads(old_access)
+            project_id = old_wrapped.get("projectId", "")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        stored_access = json.dumps({"token": access, "projectId": project_id})
+
     vault.set_oauth_tokens(
         provider_id,
-        access,
+        stored_access,
         token_data.get("refresh_token", refresh_token),
         int(time.time() * 1000) + int(token_data.get("expires_in", 3600)) * 1000
     )
