@@ -190,6 +190,20 @@ class ToolRegistry:
         })
 
         self.register({
+            "name": "read_image",
+            "description": "Read any local image or raster file from disk (PNG, JPG, JPEG, GeoTIFF, WebP) and return its high-resolution image data directly for visual inspection, object counting, georeferencing analysis, or visual QA.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or relative path to the image or raster file on disk"},
+                },
+                "required": ["path"],
+            },
+            "execute": self._execute_read_image,
+        })
+
+
+        self.register({
             "name": "web_search",
             "description": "Search the web for GIS documentation, data portals, and spatial datasets.",
             "parameters": {
@@ -991,6 +1005,58 @@ result = {{"id": layer.id(), "name": layer.name(), "type": "vector" if isinstanc
         if result.get("success"):
             return result["result"]
         raise RuntimeError(result.get("error", "Canvas capture failed"))
+
+    async def _execute_read_image(self, params: dict) -> str:
+        """Read any local image or raster file and return data:image/png;base64 for visual LLM perception."""
+        import base64, os
+        img_path = params["path"].strip()
+        if not os.path.isabs(img_path) and hasattr(self, "_get_project_dir"):
+            proj_dir = self._get_project_dir()
+            if proj_dir:
+                img_path = os.path.join(proj_dir, img_path)
+
+        if not os.path.exists(img_path):
+            raise RuntimeError(f"Image file not found: {img_path}")
+
+        _, ext = os.path.splitext(img_path.lower())
+        # Handle standard PNG/JPG/WebP directly
+        if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            mime = "image/png" if ext == ".png" else "image/jpeg" if ext in {".jpg", ".jpeg"} else "image/webp"
+            return f"data:{mime};base64,{b64}"
+
+        # Handle GeoTIFF / Raster format by rendering to PNG via QGIS/GDAL/PIL
+        try:
+            import rasterio
+            from PIL import Image
+            import io, numpy as np
+            with rasterio.open(img_path) as src:
+                # Read first 3 bands (or 1 band for greyscale)
+                count = min(src.count, 3)
+                arr = src.read(list(range(1, count + 1)))
+                # Normalize to 0-255 uint8
+                if arr.dtype != np.uint8:
+                    arr_min, arr_max = arr.min(), arr.max()
+                    if arr_max > arr_min:
+                        arr = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+                    else:
+                        arr = np.zeros_like(arr, dtype=np.uint8)
+                if count == 1:
+                    img = Image.fromarray(arr[0], mode="L")
+                else:
+                    img = Image.fromarray(np.transpose(arr, (1, 2, 0)), mode="RGB")
+                # Downsample if overly huge for vision models (max 1600px)
+                img.thumbnail((1600, 1600))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                return f"data:image/png;base64,{b64}"
+        except Exception as e:
+            # Fallback to direct binary read
+            with open(img_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            return f"data:image/png;base64,{b64}"
 
     async def _execute_web_search(self, params: dict) -> str:
         """Search the web with robust error handling and anti-bot detection."""
