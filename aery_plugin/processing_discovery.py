@@ -10,6 +10,14 @@ into a discoverable, LLM-friendly catalog.
 import json
 from typing import Any
 
+def _ensure_processing_initialized():
+    """Ensure QGIS Processing framework is initialized and algorithms registered."""
+    try:
+        from processing.core.Processing import Processing
+        Processing.initialize()
+    except Exception:
+        pass
+
 
 def _get_parameter_type_name(param) -> str:
     """Return a human-readable type name for a QgsProcessingParameterDefinition."""
@@ -62,18 +70,26 @@ def _get_parameter_type_name(param) -> str:
 
 
 def _build_parameter_schema(param) -> dict[str, Any]:
-    """Convert a single QgsProcessingParameterDefinition to a JSON-Schema fragment."""
+    import qgis.core as qc
     from qgis.core import QgsProcessingParameterEnum, QgsProcessingParameterNumber
 
+    is_opt = False
+    if hasattr(param, "isOptional"):
+        is_opt = param.isOptional()
+    elif hasattr(param, "flags") and hasattr(qc, "QgsProcessingParameterDefinition"):
+        is_opt = bool(param.flags() & qc.QgsProcessingParameterDefinition.FlagOptional)
+
+    is_dest = False
+    if hasattr(param, "isDestination"):
+        is_dest = param.isDestination()
     entry = {
         "name": param.name(),
         "description": param.description() or "",
         "type": _get_parameter_type_name(param),
-        "optional": param.isOptional(),
-        "is_output": param.isDestination(),
-        "default": _safe_value(param.defaultValue()),
+        "optional": is_opt,
+        "is_output": is_dest,
+        "default": _safe_value(param.defaultValue()) if hasattr(param, "defaultValue") else None,
     }
-
     if isinstance(param, QgsProcessingParameterEnum):
         try:
             entry["options"] = list(param.options())
@@ -125,6 +141,7 @@ def discover_qgis_algorithms(
             "algorithms": [],
         }
 
+    _ensure_processing_initialized()
     registry = QgsApplication.processingRegistry()
     if registry is None:
         return {"error": "QGIS Processing registry is not available.", "algorithms": []}
@@ -345,11 +362,10 @@ def get_algorithm_parameters(
 
     if not algorithm_id:
         return {"error": "algorithm_id is required.", "algorithm_id": algorithm_id}
-
+    _ensure_processing_initialized()
     registry = QgsApplication.processingRegistry()
     if registry is None:
         return {"error": "QGIS Processing registry is not available.", "algorithm_id": algorithm_id}
-
     try:
         alg = registry.algorithmById(algorithm_id)
     except Exception:
@@ -429,16 +445,16 @@ def generate_algorithm_tool_defs() -> list[dict]:
             required_params = []
             try:
                 for param in alg.parameterDefinitions():
-                    if param.isDestination():
+                    is_dest = param.isDestination() if hasattr(param, "isDestination") else False
+                    if is_dest:
                         continue  # Skip outputs - they are handled automatically
                     param_name = param.name()
                     if not param_name:
                         continue
                     param_desc = param.description() or ""
                     param_type = _get_parameter_type_name(param)
-                    is_optional = param.isOptional()
-                    default_val = _safe_value(param.defaultValue())
-
+                    is_optional = param.isOptional() if hasattr(param, "isOptional") else bool(getattr(param, "flags", lambda: 0)() & getattr(qc.QgsProcessingParameterDefinition, "FlagOptional", 1))
+                    default_val = _safe_value(param.defaultValue()) if hasattr(param, "defaultValue") else None
                     prop = {
                         "type": "string",
                         "description": f"{param_desc} (type: {param_type}){' (optional)' if is_optional else ''}",

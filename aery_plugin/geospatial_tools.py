@@ -66,30 +66,51 @@ def resolve_layer(name_or_id: str):
     return None
 
 
-def safe_create_geodataframe(features: list, crs: str = "EPSG:4326", **kwargs):
-    """Safely construct a GeoDataFrame, handling empty feature lists without ValueError."""
+def safe_create_geodataframe(features: Any, crs: str = "EPSG:4326", **kwargs):
+    """Safely construct a GeoDataFrame, handling empty or non-spatial inputs without ValueError."""
     import geopandas as gpd
-    from shapely.geometry import shape
+    from shapely.geometry import shape, Point, Polygon, LineString
 
     if not features:
-        return gpd.GeoDataFrame(geometry=[], crs=crs)
+        return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
 
-    # If list of dicts with geometry
+    # If already a GeoDataFrame
+    if isinstance(features, gpd.GeoDataFrame):
+        return features
+
     valid_features = []
-    for f in features:
-        if isinstance(f, dict) and "geometry" in f and f["geometry"] is not None:
-            geom = f["geometry"]
-            f_copy = dict(f)
-            f_copy["geometry"] = shape(geom) if isinstance(geom, dict) else geom
-            valid_features.append(f_copy)
-        elif hasattr(f, "geometry"):
-            valid_features.append(f)
+    if isinstance(features, list):
+        for f in features:
+            if not isinstance(f, dict):
+                continue
+            # Case 1: Standard GeoJSON geometry dict or shapely object
+            if "geometry" in f and f["geometry"] is not None:
+                geom = f["geometry"]
+                f_copy = dict(f)
+                try:
+                    f_copy["geometry"] = shape(geom) if isinstance(geom, dict) else geom
+                    valid_features.append(f_copy)
+                except Exception:
+                    pass
+            # Case 2: OSM point elements with lat/lon
+            elif "lat" in f and "lon" in f:
+                try:
+                    f_copy = dict(f)
+                    f_copy["geometry"] = Point(float(f["lon"]), float(f["lat"]))
+                    valid_features.append(f_copy)
+                except Exception:
+                    pass
+            # Case 3: Shape or Geometry object directly
+            elif hasattr(f, "geometry"):
+                valid_features.append(f)
 
     if not valid_features:
-        return gpd.GeoDataFrame(geometry=[], crs=crs)
+        return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
 
-    return gpd.GeoDataFrame(valid_features, crs=crs, **kwargs)
-
+    try:
+        return gpd.GeoDataFrame(valid_features, geometry="geometry", crs=crs, **kwargs)
+    except Exception:
+        return gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=crs)
 
 OVERPASS_MIRRORS = [
     "https://overpass-api.de/api/interpreter",
