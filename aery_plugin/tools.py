@@ -350,6 +350,22 @@ class ToolRegistry:
             "execute": self._execute_load_cog_layer,
         })
 
+        # pip_install tool - safely install Python packages in background
+        self.register({
+            "name": "pip_install",
+            "description": "Install Python packages (such as geoai-py, leafmap, geemap) into the QGIS Python environment.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package": {"type": "string", "description": "Package name to install (e.g. 'geoai-py', 'geemap')"},
+                    "upgrade": {"type": "boolean", "description": "Whether to upgrade the package", "default": False},
+                },
+                "required": ["package"],
+            },
+            "execute": self._execute_pip_install,
+        })
+
+
         # Register geospatial tools (export_webmap, publish_geoserver, set_layer_style,
         # multi_map_layout, save_map_theme, load_map_theme, list_map_themes, refresh_canvas)
         self._register_geospatial_tools()
@@ -1903,6 +1919,37 @@ res = load_cog_layer({repr(url)}, {repr(layer_name)}, iface=iface)
 result = f"COG layer loaded: {{res.get('layer_name')}} (CRS: {{res.get('crs')}})" if res.get("success") else f"Failed: {{res.get('error')}}"
 """
         return await self._execute_qgis_code({"code": code})
+
+
+    async def _execute_pip_install(self, params: dict, on_progress: Optional[Callable] = None) -> str:
+        import subprocess, sys
+        package = params["package"].strip()
+        upgrade = params.get("upgrade", False)
+        cmd = [sys.executable, "-m", "pip", "install"]
+        if upgrade:
+            cmd.append("--upgrade")
+        cmd.append(package)
+
+        def run_install():
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            output_lines = []
+            for line in proc.stdout:
+                output_lines.append(line)
+                if on_progress:
+                    on_progress({"type": "progress", "message": line.strip()})
+            proc.wait()
+            return proc.returncode, "".join(output_lines)
+
+        returncode, output = await asyncio.to_thread(run_install)
+        if returncode == 0:
+            return f"Successfully installed {package}:\n{output[-500:]}"
+        else:
+            raise RuntimeError(f"Failed to install {package} (exit code {returncode}):\n{output[-1000:]}")
 
     async def _execute_refresh_canvas(self, params: dict) -> str:
         code = """
