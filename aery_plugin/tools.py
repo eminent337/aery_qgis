@@ -184,7 +184,7 @@ class ToolRegistry:
 
         self.register({
             "name": "capture_canvas",
-            "description": "Capture the QGIS map canvas as a base64 PNG image.",
+            "description": "Capture the live QGIS map canvas rendering as a high-resolution base64 PNG image so you can visually inspect, perceive, and verify map layers, satellite imagery, building footprints, and styling.",
             "parameters": {"type": "object", "properties": {}},
             "execute": self._execute_capture_canvas,
         })
