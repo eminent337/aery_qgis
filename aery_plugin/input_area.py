@@ -89,16 +89,88 @@ class PromptInput(QTextEdit):
             return
         super().keyPressEvent(event)
 
+class AttachmentChip(QFrame):
+    """Individual file/image chip badge with icon, filename, and remove (x) button."""
+
+    def __init__(self, file_path: str, on_remove, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        import os
+        self.file_path = file_path
+        self._on_remove = on_remove
+        self.setFixedHeight(28)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background:{BG_HIGH}; border:1px solid {BORDER}; border-radius:14px;
+            }}
+        """)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 6, 2)
+        layout.setSpacing(6)
+
+        # Determine icon based on file extension
+        _, ext = os.path.splitext(file_path.lower())
+        if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+            icon_txt = "\U0001f5bc"  # image frame
+        elif ext in {".tif", ".tiff", ".img", ".dem"}:
+            icon_txt = "\U0001f30d"  # globe/raster
+        elif ext in {".gpkg", ".shp", ".geojson", ".kml"}:
+            icon_txt = "\u2b21"      # polygon/vector
+        else:
+            icon_txt = "\U0001f4c4"  # document
+
+        from PyQt6.QtWidgets import QLabel
+        icon_lbl = QLabel(icon_txt, self)
+        icon_lbl.setStyleSheet(f"color:{ACCENT}; font-size:12px; border:none; background:transparent;")
+        layout.addWidget(icon_lbl)
+
+        name = os.path.basename(file_path)
+        if len(name) > 20:
+            name = name[:10] + "..." + name[-7:]
+        name_lbl = QLabel(name, self)
+        name_lbl.setToolTip(file_path)
+        name_lbl.setStyleSheet(f"color:{TEXT_MAIN}; font-family:{FONT_SANS}; font-size:12px; font-weight:500; border:none; background:transparent;")
+        layout.addWidget(name_lbl)
+
+        del_btn = QPushButton("\u00d7", self)
+        del_btn.setFixedSize(16, 16)
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setToolTip("Remove attachment")
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background:transparent; border:none; border-radius:8px;
+                color:{TEXT_MUTED}; font-size:13px; font-weight:bold; padding:0px;
+            }}
+            QPushButton:hover {{ background:{BORDER}; color:{ERROR_COLOR}; }}
+        """)
+        del_btn.clicked.connect(lambda: self._on_remove(self.file_path))
+        layout.addWidget(del_btn)
+
+
 class InputArea(QFrame):
-    """Input bar with prompt editor, embedded attachment button, and send/abort button."""
+    """Modern input bar with prompt editor, embedded attachment button, attachment chip preview, and send button."""
 
     def __init__(self, on_send, on_abort, on_attach=None, on_file_dropped=None, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setFixedHeight(66)
+        from PyQt6.QtWidgets import QVBoxLayout
+        self._attachments: list[str] = []
         self.setStyleSheet(f"background:{BG_SURFACE};border-top:1px solid {BORDER};")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 6, 10, 8)
+        main_layout.setSpacing(4)
+
+        # Top: Horizontal layout for active attachment chips
+        self._chips_container = QWidget(self)
+        self._chips_layout = QHBoxLayout(self._chips_container)
+        self._chips_layout.setContentsMargins(0, 0, 0, 0)
+        self._chips_layout.setSpacing(6)
+        self._chips_layout.addStretch(1)
+        self._chips_container.setVisible(False)
+        main_layout.addWidget(self._chips_container)
+
+        # Bottom: Input Row
+        row_layout = QHBoxLayout()
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
 
         # Prompt container frame with unified border
         self._box_frame = QFrame(self)
@@ -117,7 +189,7 @@ class InputArea(QFrame):
         self._attach_btn = QPushButton("\U0001f4ce", self._box_frame)
         self._attach_btn.setFixedSize(26, 26)
         self._attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._attach_btn.setToolTip("Attach or drop vector, raster, or image files (GeoPackage, Shapefile, GeoTIFF, PNG, etc.)")
+        self._attach_btn.setToolTip("Attach files or images (GeoPackage, Shapefile, GeoTIFF, PNG, etc.)")
         self._attach_btn.setStyleSheet(f"""
             QPushButton {{
                 background:transparent; border:none; border-radius:13px;
@@ -130,7 +202,7 @@ class InputArea(QFrame):
         box_layout.addWidget(self._attach_btn)
 
         self._input = PromptInput(on_send, on_abort, file_dropped_callback=on_file_dropped, parent=self._box_frame)
-        self._input.setPlaceholderText("Enter command or drag & drop files...")
+        self._input.setPlaceholderText("Message Aery or drag & drop files...")
         self._input.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self._input.setStyleSheet(f"""
             QTextEdit {{
@@ -140,16 +212,58 @@ class InputArea(QFrame):
             }}
         """)
         box_layout.addWidget(self._input, stretch=1)
-        layout.addWidget(self._box_frame, stretch=1)
+        row_layout.addWidget(self._box_frame, stretch=1)
 
         self._send_btn = QPushButton("\u27a4", self)
         self._send_btn.setFixedSize(34, 34)
         self._send_btn.clicked.connect(on_send)
         self._update_button(streaming=False, has_text=False)
-        layout.addWidget(self._send_btn)
+        row_layout.addWidget(self._send_btn)
+        main_layout.addLayout(row_layout)
+
+    def add_attachment(self, file_path: str) -> None:
+        """Add a file to the active attachment chips row."""
+        if file_path in self._attachments:
+            return
+        self._attachments.append(file_path)
+        self._refresh_chips()
+
+    def remove_attachment(self, file_path: str) -> None:
+        """Remove a file from the active attachment chips row."""
+        if file_path in self._attachments:
+            self._attachments.remove(file_path)
+            self._refresh_chips()
+
+    def clear_attachments(self) -> None:
+        """Clear all active attachment chips."""
+        self._attachments.clear()
+        self._refresh_chips()
+
+    def get_attachments(self) -> list[str]:
+        """Return the list of currently attached file paths."""
+        return list(self._attachments)
+
+    def _refresh_chips(self) -> None:
+        # Clear existing chip widgets
+        while self._chips_layout.count() > 1:
+            item = self._chips_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._attachments:
+            self._chips_container.setVisible(False)
+            self.setFixedHeight(66)
+        else:
+            for path in self._attachments:
+                chip = AttachmentChip(path, on_remove=self.remove_attachment, parent=self._chips_container)
+                self._chips_layout.insertWidget(self._chips_layout.count() - 1, chip)
+            self._chips_container.setVisible(True)
+            self.setFixedHeight(102)
+
     @property
     def input(self) -> PromptInput:
         return self._input
+
     @property
     def send_btn(self) -> QPushButton:
         return self._send_btn
@@ -168,8 +282,9 @@ class InputArea(QFrame):
                 QPushButton:hover {{ background:{ERROR_COLOR}; color:{BG_BASE}; }}
             """)
         else:
-            bg = ACCENT if has_text else BG_HIGH
-            fg = BG_BASE if has_text else TEXT_MUTED
+            has_content = has_text or bool(self._attachments)
+            bg = ACCENT if has_content else BG_HIGH
+            fg = BG_BASE if has_content else TEXT_MUTED
             self._send_btn.setText("\u27a4")
             self._send_btn.setStyleSheet(f"""
                 QPushButton {{

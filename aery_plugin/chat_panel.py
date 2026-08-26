@@ -482,22 +482,32 @@ class ChatPanel(QDockWidget):
 
     def _on_send(self) -> None:
         text = self._input_area.get_text()
-        if not text:
+        attachments = self._input_area.get_attachments()
+        if not text and not attachments:
             return
-        logger.info(f"[Aery] _on_send: text={text[:50]!r} state={self._session_state}")
-        self._history.append(text)
+
+        display_text = text
+        prompt_text = text
+        if attachments:
+            attach_summary = f"[Attached files:\n" + "\n".join(f"- {p}" for p in attachments) + "\n]"
+            prompt_text = f"{text}\n\n{attach_summary}" if text else attach_summary
+            if not display_text:
+                display_text = f"[Attached {len(attachments)} file(s)]"
+
+        logger.info(f"[Aery] _on_send: prompt={prompt_text[:60]!r} state={self._session_state}")
+        self._history.append(text or prompt_text)
         self._history_idx = -1
-        self._transcript.add_bubble("YOU", text, "user")
+        self._transcript.add_bubble("YOU", display_text, "user")
         self._input_area.clear()
+        self._input_area.clear_attachments()
         self._autosize_input()
         if self._session_state == SessionState.RUNNING:
-            self._local_prompt_queue.append(text)
+            self._local_prompt_queue.append(prompt_text)
             self._set_activity(f"{len(self._local_prompt_queue)} queued", active=True)
             return
-        if self._check_project_guard(text):
+        if self._check_project_guard(prompt_text):
             return
-        self._dispatch_prompt(text)
-
+        self._dispatch_prompt(prompt_text)
     def _check_project_guard(self, text: str) -> bool:
         try:
             from qgis.core import QgsProject
@@ -1320,16 +1330,11 @@ class ChatPanel(QDockWidget):
         if msg_parts:
             summary = "\n".join(msg_parts)
             self._transcript.add_bubble("SYSTEM", summary, "system")
-            curr = self._input_area.get_text()
-            file_refs = "\n".join(file_paths)
-            if curr:
-                self._input_area.input.setPlainText(f"{curr}\n\n[Attached files]:\n{file_refs}")
-            else:
-                self._input_area.input.setPlainText(f"[Attached files]:\n{file_refs}\n")
+            for path in file_paths:
+                self._input_area.add_attachment(path)
             self._input_area.input.setFocus()
             if self.iface and hasattr(self.iface, "mapCanvas") and self.iface.mapCanvas():
                 self.iface.mapCanvas().refresh()
-    def _show_dialog(self, title: str, body: str) -> None:
         dialog = InfoDialog(title, body, self)
         self._dialogs.append(dialog)
         dialog.show()
