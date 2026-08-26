@@ -749,9 +749,10 @@ class Agent(QObject):
         self._system_prompt = base_prompt
 
         with self._lock:
-            self._messages.append({"role": "user", "content": user_message})
-        self._persist_message({"role": "user", "content": user_message})
-
+            # Avoid pushing a duplicate plain-text message if start_with_images already queued the multimodal content
+            if not self._messages or self._messages[-1].get("role") != "user":
+                self._messages.append({"role": "user", "content": user_message})
+                self._persist_message({"role": "user", "content": user_message})
         # Record prompt in graph
         if self._project_dir:
             try:
