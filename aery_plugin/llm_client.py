@@ -71,16 +71,20 @@ class LLMClientBase(abc.ABC):
 
     def format_message_pair(self, tool_call: dict, tool_result: str) -> list[dict]:
         """Return the messages to append to conversation history after a tool execution.
-        Returns messages: assistant (with tool_calls) + tool (with string result).
+        Returns messages: assistant (with tool_calls) + tool (with multimodal or string content).
         """
-        # If tool returned a base64 image, keep tool response as clean confirmation text
-        # to avoid payload errors on text-only LLM models.
-        content = tool_result
         if isinstance(tool_result, str) and tool_result.startswith("data:image/"):
-            content = "Map canvas captured successfully (image rendered on user screen)."
+            # Pass base64 image block in OpenAI/OpenRouter vision format
+            tool_content = [
+                {"type": "text", "text": "Map canvas / image snapshot:"},
+                {"type": "image_url", "image_url": {"url": tool_result}},
+            ]
+        else:
+            tool_content = str(tool_result)
+
         return [
             {"role": "assistant", "tool_calls": [tool_call]},
-            {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": content},
+            {"role": "tool", "tool_call_id": tool_call.get("id", ""), "content": tool_content},
         ]
 
 

@@ -488,7 +488,23 @@ class ChatPanel(QDockWidget):
 
         display_text = text
         prompt_text = text
+        image_data_urls = []
         if attachments:
+            import base64
+            text_files = []
+            for p in attachments:
+                _, ext = os.path.splitext(p.lower())
+                if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+                    try:
+                        with open(p, "rb") as img_f:
+                            b64 = base64.b64encode(img_f.read()).decode("utf-8")
+                            mime = "image/png" if ext == ".png" else "image/jpeg"
+                            image_data_urls.append((p, f"data:{mime};base64,{b64}"))
+                    except Exception as e:
+                        text_files.append(p)
+                else:
+                    text_files.append(p)
+
             attach_summary = f"[Attached files:\n" + "\n".join(f"- {p}" for p in attachments) + "\n]"
             prompt_text = f"{text}\n\n{attach_summary}" if text else attach_summary
             if not display_text:
@@ -507,7 +523,7 @@ class ChatPanel(QDockWidget):
             return
         if self._check_project_guard(prompt_text):
             return
-        self._dispatch_prompt(prompt_text)
+        self._dispatch_prompt(prompt_text, images=image_data_urls)
     def _check_project_guard(self, text: str) -> bool:
         try:
             from qgis.core import QgsProject
@@ -527,10 +543,10 @@ class ChatPanel(QDockWidget):
 
 
 
-    def _dispatch_prompt(self, text: str) -> None:
-        if not text:
+    def _dispatch_prompt(self, text: str, images: Optional[list] = None) -> None:
+        if not text and not images:
             return
-        logger.info(f"[Aery ChatPanel] _dispatch_prompt: text={text[:50]!r}")
+        logger.info(f"[Aery ChatPanel] _dispatch_prompt: text={text[:50]!r} (images={len(images or [])})")
         self._set_activity("thinking...", active=True)
         self._allow_next_assistant_stream = True
         self._got_assistant_event = False
@@ -552,8 +568,10 @@ class ChatPanel(QDockWidget):
             self._chunk_connected = True
 
         logger.info(f"[Aery ChatPanel] calling agent.start()")
-        self.agent.start(text)
-
+        if images and hasattr(self.agent, "start_with_images"):
+            self.agent.start_with_images(text, images)
+        else:
+            self.agent.start(text)
     @pyqtSlot(dict)
     def _on_agent_event(self, event: dict) -> None:
         # Reset thinking timeout — the agent is alive and sending events

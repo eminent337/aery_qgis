@@ -290,6 +290,21 @@ class Agent(QObject):
                 self._thread.quit()
                 self._thread.wait(500)
 
+    def start_with_images(self, user_message: str, images: list[tuple[str, str]]) -> None:
+        """Post a user prompt with attached base64 image data URLs for multimodal vision models."""
+        # Format message content as multimodal array: [{"type": "text", "text": ...}, {"type": "image_url", ...}]
+        content_blocks: list[dict] = []
+        if user_message:
+            content_blocks.append({"type": "text", "text": user_message})
+        for file_path, data_url in images:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
+        with self._lock:
+            self._messages.append({"role": "user", "content": content_blocks})
+        self.start(user_message)
+
     def start(self, user_message: str) -> None:
         """Post a user message and start processing in the QThread worker.
 
@@ -321,7 +336,6 @@ class Agent(QObject):
                 self._worker.start_task(user_message)
                 logger.info(f"[Aery Agent] starting thread...")
                 self._thread.start()
-            else:
                 import warnings
                 warnings.warn("PyQt6 not available; agent.run() must be called directly")
 
