@@ -161,8 +161,13 @@ class ChatPanel(QDockWidget):
 
         self._transcript = TranscriptView(self)
         self._activity = ActivityStrip(self)
-        self._input_area = InputArea(self._on_send, self._abort, self)
-
+        self._input_area = InputArea(
+            on_send=self._on_send,
+            on_abort=self._abort,
+            on_attach=self._on_attach_file,
+            on_file_dropped=self._on_files_dropped,
+            parent=self
+        )
         self._transcript.set_save_callback(self._save_session)
         self._input_area.input.textChanged.connect(self._on_input_changed)
         self._input_area.input.textChanged.connect(self._autosize_input)
@@ -1251,6 +1256,77 @@ class ChatPanel(QDockWidget):
     def notify_layers_removed(self, count: int) -> None:
         _refresh_layer_cache()
         self._transcript.add_bubble("SYSTEM", f"{count} layer(s) removed from project.", "system")
+
+    def _on_attach_file(self) -> None:
+        """Open file dialog to attach vector, raster, or image files."""
+        from PyQt6.QtWidgets import QFileDialog
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach Geospatial or Image Files to Aery",
+            "",
+            "Geospatial & Image Files (*.gpkg *.shp *.geojson *.json *.tif *.tiff *.png *.jpg *.jpeg *.csv *.kml);;All Files (*)",
+        )
+        if files:
+            self._on_files_dropped(files)
+
+    def _on_files_dropped(self, file_paths: list[str]) -> None:
+        """Handle attached or drag-and-dropped files: load to canvas if geodata and populate prompt."""
+        from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer
+        import os
+
+        geo_exts_vector = {".gpkg", ".shp", ".geojson", ".kml", ".tab", ".csv"}
+        geo_exts_raster = {".tif", ".tiff", ".img", ".asc", ".dem", ".vrt"}
+        img_exts = {".png", ".jpg", ".jpeg", ".webp"}
+
+        loaded_layers = []
+        attached_images = []
+        other_files = []
+
+        for path in file_paths:
+            if not os.path.exists(path):
+                continue
+            _, ext = os.path.splitext(path.lower())
+            base_name = os.path.splitext(os.path.basename(path))[0]
+
+            if ext in geo_exts_vector:
+                vlayer = QgsVectorLayer(path, base_name, "ogr")
+                if vlayer.isValid():
+                    QgsProject.instance().addMapLayer(vlayer)
+                    loaded_layers.append(f"Vector Layer: '{base_name}' ({path})")
+                else:
+                    other_files.append(path)
+            elif ext in geo_exts_raster:
+                rlayer = QgsRasterLayer(path, base_name, "gdal")
+                if rlayer.isValid():
+                    QgsProject.instance().addMapLayer(rlayer)
+                    loaded_layers.append(f"Raster Layer: '{base_name}' ({path})")
+                else:
+                    other_files.append(path)
+            elif ext in img_exts:
+                attached_images.append(path)
+            else:
+                other_files.append(path)
+
+        msg_parts = []
+        if loaded_layers:
+            msg_parts.append(f"Added to QGIS Layers: {', '.join(loaded_layers)}")
+        if attached_images:
+            msg_parts.append(f"Attached Image(s): {', '.join(attached_images)}")
+        if other_files:
+            msg_parts.append(f"Attached File(s): {', '.join(other_files)}")
+
+        if msg_parts:
+            summary = "\n".join(msg_parts)
+            self._transcript.add_bubble("SYSTEM", summary, "system")
+            curr = self._input_area.get_text()
+            file_refs = "\n".join(file_paths)
+            if curr:
+                self._input_area.input.setPlainText(f"{curr}\n\n[Attached files]:\n{file_refs}")
+            else:
+                self._input_area.input.setPlainText(f"[Attached files]:\n{file_refs}\n")
+            self._input_area.input.setFocus()
+            if self.iface:
+                self.iface.mapCanvas().refresh()
 
     def _show_dialog(self, title: str, body: str) -> None:
         dialog = InfoDialog(title, body, self)
