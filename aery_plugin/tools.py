@@ -203,6 +203,36 @@ class ToolRegistry:
             "execute": self._execute_load_layer_tool,
         })
 
+        self.register({
+            "name": "georeference_image",
+            "description": "Georeference an unreferenced image (PNG, JPG, TIFF) using Ground Control Points (GCPs) and warp it into a rectified GeoTIFF loaded on the map.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input_image_path": {"type": "string", "description": "Path to the raw image file on disk"},
+                    "gcps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "pixel_x": {"type": "number", "description": "Pixel X column coordinate in the source image"},
+                                "pixel_y": {"type": "number", "description": "Pixel Y row coordinate in the source image"},
+                                "map_x": {"type": "number", "description": "Destination ground X coordinate (longitude or easting)"},
+                                "map_y": {"type": "number", "description": "Destination ground Y coordinate (latitude or northing)"},
+                            },
+                            "required": ["pixel_x", "pixel_y", "map_x", "map_y"],
+                        },
+                        "description": "List of at least 3 Ground Control Points (GCPs)",
+                    },
+                    "target_crs": {"type": "string", "description": "Target Coordinate Reference System", "default": "EPSG:4326"},
+                    "output_path": {"type": "string", "description": "Optional output GeoTIFF file path"},
+                },
+                "required": ["input_image_path", "gcps"],
+            },
+            "execute": self._execute_georeference_image,
+        })
+
+
 
         self.register({
             "name": "read_image",
@@ -1035,6 +1065,19 @@ iface.mapCanvas().refresh()
 result = f"Successfully loaded '{{layer.name()}}' (type={{'vector' if isinstance(layer, QgsVectorLayer) else 'raster'}}, id={{layer.id()}}) into QGIS."
 """
         return await self._execute_qgis_code({"code": code})
+
+    async def _execute_georeference_image(self, params: dict) -> str:
+        img_path = params["input_image_path"].strip()
+        gcps = params["gcps"]
+        target_crs = params.get("target_crs", "EPSG:4326")
+        output_path = params.get("output_path", "")
+        code = f"""
+from aery_plugin.geospatial_tools import georeference_image
+res = georeference_image({repr(img_path)}, {json.dumps(gcps)}, output_path={repr(output_path) if output_path else 'None'}, target_crs={repr(target_crs)}, iface=iface)
+result = f"Georeferenced successfully: '{{res.get('output_path')}}' ({{res.get('gcp_count')}} GCPs, CRS={{res.get('crs')}})" if res.get("success") else f"Georeferencing failed: {{res.get('error')}}"
+"""
+        return await self._execute_qgis_code({"code": code})
+
 
 
     async def _execute_capture_canvas(self, params: dict) -> str:

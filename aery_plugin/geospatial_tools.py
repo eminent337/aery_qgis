@@ -229,6 +229,90 @@ def regularize_polygon(polygon, simplify_tolerance: float = 0.5, orthogonalize: 
     return rotate(rotated, dominant_angle, origin="centroid")
 
 
+def georeference_image(
+    input_image_path: str,
+    gcps: list[dict],
+    output_path: Optional[str] = None,
+    target_crs: str = "EPSG:4326",
+    resampling: str = "bilinear",
+    load_to_qgis: bool = True,
+    iface=None,
+) -> dict:
+    """Georeference an unreferenced image using Ground Control Points (GCPs) via GDAL.
+
+    Parameters:
+        input_image_path: Path to the raw image (PNG, JPG, TIFF).
+        gcps: List of Ground Control Points, each formatted as:
+              {"pixel_x": float, "pixel_y": float, "map_x": float, "map_y": float}
+        output_path: Output GeoTIFF path (defaults to same name with _georef.tif).
+        target_crs: Destination coordinate reference system (default: EPSG:4326).
+        resampling: Resampling method ('near', 'bilinear', 'cubic').
+        load_to_qgis: Automatically add the georeferenced GeoTIFF into QGIS.
+    """
+    import os, subprocess, tempfile
+    from qgis.core import QgsRasterLayer, QgsProject
+
+    if not os.path.exists(input_image_path):
+        return {"success": False, "error": f"Input image not found: {input_image_path}"}
+
+    if not gcps or len(gcps) < 3:
+        return {"success": False, "error": "Georeferencing requires at least 3 Ground Control Points (GCPs)."}
+
+    if not output_path:
+        base, _ = os.path.splitext(input_image_path)
+        output_path = f"{base}_georef.tif"
+
+    # 1. Translate image with embedded GCPs to temporary VRT or TIFF
+    temp_gcp_tif = tempfile.mktemp(suffix="_gcp.tif")
+    gdal_translate_cmd = ["gdal_translate", "-of", "GTiff"]
+    for gcp in gcps:
+        px, py = gcp.get("pixel_x", 0.0), gcp.get("pixel_y", 0.0)
+        mx, my = gcp.get("map_x", 0.0), gcp.get("map_y", 0.0)
+        gdal_translate_cmd.extend(["-gcp", str(px), str(py), str(mx), str(my)])
+    gdal_translate_cmd.extend([input_image_path, temp_gcp_tif])
+
+    try:
+        res1 = subprocess.run(gdal_translate_cmd, capture_output=True, text=True, check=True)
+    except Exception as e:
+        return {"success": False, "error": f"gdal_translate GCP assignment failed: {e}"}
+
+    # 2. Warp GCP image into rectified output GeoTIFF
+    gdalwarp_cmd = [
+        "gdalwarp",
+        "-t_srs", target_crs,
+        "-r", resampling,
+        "-co", "COMPRESS=LZW",
+        "-overwrite",
+        temp_gcp_tif,
+        output_path,
+    ]
+
+    try:
+        res2 = subprocess.run(gdalwarp_cmd, capture_output=True, text=True, check=True)
+    except Exception as e:
+        return {"success": False, "error": f"gdalwarp rectification failed: {e}"}
+    finally:
+        if os.path.exists(temp_gcp_tif):
+            try: os.remove(temp_gcp_tif)
+            except Exception: pass
+
+    # 3. Optionally load into active QGIS project
+    if load_to_qgis:
+        layer_name = os.path.splitext(os.path.basename(output_path))[0]
+        layer = QgsRasterLayer(output_path, layer_name, "gdal")
+        if layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
+            if iface and hasattr(iface, "mapCanvas"):
+                iface.mapCanvas().refresh()
+
+    return {
+        "success": True,
+        "output_path": output_path,
+        "gcp_count": len(gcps),
+        "crs": target_crs,
+    }
+
+
 # ── Pre-cached Fast Bounding Boxes for Major World Cities ────────────────────
 # Adapted from GeoAI STACTools._LOCATION_CACHE (geoai/agents/stac_tools.py)
 MAJOR_CITIES_BBOX = {

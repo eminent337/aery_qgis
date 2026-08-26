@@ -227,6 +227,7 @@ def _build_globals() -> dict[str, Any]:
             safe_create_geodataframe as _safe_create_geodataframe,
             query_overpass as _query_overpass,
             run_quickosm_query as _run_quickosm_query,
+            georeference_image as _georeference_image,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -250,6 +251,7 @@ def _build_globals() -> dict[str, Any]:
             "safe_create_geodataframe": _safe_create_geodataframe,
             "query_overpass": _query_overpass,
             "run_quickosm_query": _run_quickosm_query,
+            "georeference_image": _georeference_image,
         })
     except ImportError:
         pass
