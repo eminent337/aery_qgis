@@ -585,3 +585,27 @@ def get_model_changelog() -> str:
             "Updates are fetched from the model registry on startup.\n"
             "See https://github.com/eminent337/aery for the latest models."
         )
+
+
+def get_custom_providers() -> list[dict]:
+    """Return list of custom OpenAI-compatible providers saved in models.json.
+
+    Each entry: {"id": str, "name": str, "base_url": str, "models": list[str]}.
+    """
+    models_path = os.path.join(AGENT_DIR, "models.json")
+    if not os.path.exists(models_path):
+        return []
+    try:
+        with open(models_path) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    result = []
+    for pid, cfg in (data.get("providers") or {}).items():
+        result.append({
+            "id": pid,
+            "name": cfg.get("name", pid),
+            "base_url": cfg.get("baseUrl", "https://api.openai.com/v1"),
+            "models": cfg.get("models", []),
+        })
+    return result

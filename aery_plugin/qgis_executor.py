@@ -23,6 +23,52 @@ from aery_plugin.sandbox import (
 )
 from PyQt6.QtCore import QObject, QTimer
 # Cached globals — built once on first execution, reused for all subsequent calls
+
+class _ProgressStdout:
+    """Tee stdout during code execution to capture print() output as progress events.
+
+    Adapted from GeoAI worker pattern (_ProgressStdout in geoai_task_worker.py).
+    Only captures output from the designated execution thread to avoid cross-talk.
+    """
+
+    def __init__(self, real_stdout, emit_fn, owner_thread):
+        self._real = real_stdout
+        self._emit = emit_fn
+        self._owner = owner_thread
+        self._buf = ""
+
+    def write(self, text: str) -> int:
+        try:
+            self._real.write(text)
+        except Exception:
+            pass
+        if threading.current_thread() is self._owner:
+            self._buf += text
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                line_str = line.strip()
+                if line_str:
+                    try:
+                        self._emit(line_str)
+                    except Exception:
+                        pass
+        return len(text)
+
+    def flush(self) -> None:
+        try:
+            self._real.flush()
+        except Exception:
+            pass
+        if threading.current_thread() is self._owner and self._buf.strip():
+            line_str = self._buf.strip()
+            self._buf = ""
+            try:
+                self._emit(line_str)
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 _GLOBALS_CACHE: Optional[dict[str, Any]] = None
 # ── Sanitization: Block dangerous canvas background manipulation ──
 def _sanitize_code(code: str) -> str:
@@ -166,6 +212,8 @@ def _build_globals() -> dict[str, Any]:
             load_map_theme as _load_map_theme,
             list_map_themes as _list_map_themes,
             refresh_canvas as _refresh_canvas,
+            safe_to_file as _safe_to_file,
+            clean_proj_env as _clean_proj_env,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -176,6 +224,8 @@ def _build_globals() -> dict[str, Any]:
             "load_map_theme": _load_map_theme,
             "list_map_themes": _list_map_themes,
             "refresh_canvas": _refresh_canvas,
+            "safe_to_file": _safe_to_file,
+            "clean_proj_env": _clean_proj_env,
         })
     except ImportError:
         pass
@@ -497,9 +547,22 @@ class QGISCodeExecutor(QObject):
                                 "project_dir": project_dir,
                                 "result": None,
                             }
-                            # NOTE: watchdog removed; cancellation uses QgsProcessingFeedback.cancel()
-                            # which is cooperative and checked inside processing algorithms.
-                            exec(code, g, local_vars)
+                            # stdout capture for progress reporting
+                            _orig_stdout = _sys_mod.stdout
+                            _tee = _ProgressStdout(
+                                _orig_stdout,
+                                lambda line: result_queue.put({"type": "progress", "message": line, "progress": -1}),
+                                threading.current_thread(),
+                            )
+                            _sys_mod.stdout = _tee
+                            try:
+                                exec(code, g, local_vars)
+                            finally:
+                                try:
+                                    _tee.flush()
+                                except Exception:
+                                    pass
+                                _sys_mod.stdout = _orig_stdout
                         finally:
                             _sub_mod.Popen = _orig_popen
                             _sys_mod.modules["subprocess"] = _sub_mod

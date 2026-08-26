@@ -13,6 +13,37 @@ import tempfile
 import urllib.request
 import base64
 from typing import Any
+from contextlib import contextmanager
+import threading
+
+_proj_env_lock = threading.Lock()
+
+
+@contextmanager
+def clean_proj_env():
+    """Temporarily remove PROJ_DATA/PROJ_LIB from environment during file writes.
+
+    pyogrio (geopandas >= 1.0) validates bundled data and can crash if PROJ_DATA
+    points elsewhere.
+    """
+    with _proj_env_lock:
+        saved = {}
+        for var in ("PROJ_DATA", "PROJ_LIB"):
+            if var in os.environ:
+                saved[var] = os.environ.pop(var)
+        try:
+            yield
+        finally:
+            os.environ.update(saved)
+
+
+def safe_to_file(gdf, output_path: str, **kwargs) -> None:
+    """Write a GeoDataFrame to file with PROJ env vars temporarily cleared.
+
+    Avoids pyogrio PROJ data detection errors inside the QGIS environment.
+    """
+    with clean_proj_env():
+        gdf.to_file(output_path, **kwargs)
 
 
 def export_webmap(output_dir: str, basemap: str = "osm",

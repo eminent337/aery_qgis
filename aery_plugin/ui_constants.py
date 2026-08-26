@@ -16,3 +16,11 @@ WARNING_COLOR = "#FFD1AA"
 SUCCESS_COLOR = "#8EE7A8"
 FONT_SANS = "Inter, Aptos, Segoe UI, sans-serif"
 FONT_MONO = "JetBrains Mono, Consolas, monospace"
+
+# Legacy aliases used by older widgets (approval_flow, diff_widget). Kept so
+# those modules stay importable; prefer the newer names above.
+TEXT = TEXT_MAIN
+DIM = TEXT_DIM
+RED = ERROR_COLOR
+F_H = 14
+F_S = 11
