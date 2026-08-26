@@ -1860,26 +1860,27 @@ else:
         data = json.loads(b"".join(_chunks).decode("utf-8"))
     if not data:
         raise RuntimeError(f"Geocoding returned no results for place: '{{place}}'")
-# Nominatim returns [south_lat, north_lat, west_lon, east_lon]
-south, north, west, east = (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
-# Build bounding rectangle in EPSG:4326: QgsRectangle(xmin, ymin, xmax, ymax) -> (west, south, east, north)
-src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-dest_crs = QgsProject.instance().crs()
-if not dest_crs.isValid() or dest_crs.authid() == "":
-    dest_crs = QgsCoordinateReferenceSystem("EPSG:3857")
-    QgsProject.instance().setCrs(dest_crs)
-rect = QgsRectangle(west, south, east, north)
-if src_crs != dest_crs:
-    xform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
-    rect = xform.transformBoundingBox(rect)
-# Critical: sync canvas destination CRS to project CRS before setting extent
-canvas = iface.mapCanvas()
-canvas.setDestinationCrs(dest_crs)
-canvas.setRenderFlag(True)
-canvas.setExtent(rect)
-canvas.refreshAllLayers()
-canvas.refresh()
-result = f"Zoomed to '{{place}}' ({{data[0].get('display_name', place)}})"
+    bb = data[0]["boundingbox"]
+    # Nominatim returns [south_lat, north_lat, west_lon, east_lon]
+    south, north, west, east = (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
+    # Build bounding rectangle in EPSG:4326: QgsRectangle(xmin, ymin, xmax, ymax) -> (west, south, east, north)
+    src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+    dest_crs = QgsProject.instance().crs()
+    if not dest_crs.isValid() or dest_crs.authid() == "":
+        dest_crs = QgsCoordinateReferenceSystem("EPSG:3857")
+        QgsProject.instance().setCrs(dest_crs)
+    rect = QgsRectangle(west, south, east, north)
+    if src_crs != dest_crs:
+        xform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        rect = xform.transformBoundingBox(rect)
+    # Critical: sync canvas destination CRS to project CRS before setting extent
+    canvas = iface.mapCanvas()
+    canvas.setDestinationCrs(dest_crs)
+    canvas.setRenderFlag(True)
+    canvas.setExtent(rect)
+    canvas.refreshAllLayers()
+    canvas.refresh()
+    result = f"Zoomed to '{{place}}' ({{data[0].get('display_name', place)}})"
 """
         return await self._execute_qgis_code({"code": code})
 
