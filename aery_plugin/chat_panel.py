@@ -179,13 +179,23 @@ class ChatPanel(QDockWidget):
         self._thinking_timer = QTimer(self)
         self._thinking_timer.setSingleShot(True)
         self._thinking_timer.timeout.connect(self._on_thinking_timeout)
+
+        # Register initial session with SessionManager if empty
+        try:
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            if not mgr.get_active_session():
+                sid = mgr.create_session(agent=self.agent)
+                mgr.set_active_session(sid)
+        except Exception as _e:
+            logger.info(f"Aery: session manager registration: {_e}")
+
         try:
             from qgis.core import QgsProject
             QgsProject.instance().layersAdded.connect(_refresh_layer_cache)
             QgsProject.instance().layersRemoved.connect(_refresh_layer_cache)
         except Exception as _e:
             logger.info(f"Aery: could not connect layer-change signals: {_e}")
-
     @property
     def session_state(self) -> SessionState:
         return self._session_state
@@ -1266,8 +1276,15 @@ class ChatPanel(QDockWidget):
             return
         try:
             import json
+            msgs = self._transcript.get_session_messages()[-200:]
             with open(path, "w") as f:
-                json.dump(self._transcript.get_session_messages()[-200:], f, indent=2)
+                json.dump(msgs, f, indent=2)
+            # Touch active session in session manager
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            active = mgr.get_active_session()
+            if active:
+                active.touch()
         except Exception as e:
             logger.error(f"Aery: session save error: {e}")
 
@@ -1283,9 +1300,14 @@ class ChatPanel(QDockWidget):
                 self._transcript.set_session_messages(msgs)
                 if show_resume_msg:
                     self._transcript.add_bubble("SYSTEM", f"Resumed session ({len(msgs)} messages)", "system")
+            # Ensure active session in manager is synced
+            from aery_plugin.session_manager import get_session_manager
+            mgr = get_session_manager()
+            if not mgr.get_active_session():
+                sid = mgr.create_session(agent=self.agent)
+                mgr.set_active_session(sid)
         except Exception as e:
             logger.error(f"Aery: session load error: {e}")
-
     def _export_html_report(self) -> None:
         try:
             from qgis.core import QgsProject
