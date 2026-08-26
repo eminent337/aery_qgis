@@ -317,6 +317,39 @@ class ToolRegistry:
             "execute": self._execute_run_python_script,
         })
 
+        # search_stac tool - search satellite imagery catalogs
+        self.register({
+            "name": "search_stac",
+            "description": "Search STAC satellite imagery catalogs (Microsoft Planetary Computer or Earth Search) by collection, bounding box, and datetime.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "collection": {"type": "string", "description": "STAC collection ID (e.g. 'sentinel-2-l2a', 'landsat-c2-l2')", "default": "sentinel-2-l2a"},
+                    "bbox": {"type": "array", "items": {"type": "number"}, "description": "Bounding box [minx, miny, maxx, maxy] in EPSG:4326"},
+                    "time_range": {"type": "string", "description": "ISO 8601 datetime or range (e.g. '2023-01-01/2023-12-31')"},
+                    "max_items": {"type": "integer", "description": "Max scenes to return (default: 5)", "default": 5},
+                    "endpoint": {"type": "string", "description": "STAC API endpoint URL", "default": "https://planetarycomputer.microsoft.com/api/stac/v1"},
+                },
+                "required": [],
+            },
+            "execute": self._execute_search_stac,
+        })
+
+        # load_cog_layer tool - stream Cloud-Optimized GeoTIFF into QGIS
+        self.register({
+            "name": "load_cog_layer",
+            "description": "Load a remote Cloud-Optimized GeoTIFF (COG) directly into the QGIS map canvas using /vsicurl/ streaming.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Direct HTTP(S) URL to the COG GeoTIFF file"},
+                    "layer_name": {"type": "string", "description": "Display name for the layer in QGIS", "default": "Satellite COG"},
+                },
+                "required": ["url"],
+            },
+            "execute": self._execute_load_cog_layer,
+        })
+
         # Register geospatial tools (export_webmap, publish_geoserver, set_layer_style,
         # multi_map_layout, save_map_theme, load_map_theme, list_map_themes, refresh_canvas)
         self._register_geospatial_tools()
@@ -1849,6 +1882,27 @@ canvas.refresh()
 result = f"Zoomed to '{{place}}' ({{data[0].get('display_name', place)}})"
 """
         return await self._execute_qgis_code({"code": code})
+
+    async def _execute_search_stac(self, params: dict) -> str:
+        from aery_plugin.geospatial_tools import search_stac
+        collection = params.get("collection", "sentinel-2-l2a")
+        bbox = params.get("bbox")
+        time_range = params.get("time_range")
+        max_items = int(params.get("max_items", 5))
+        endpoint = params.get("endpoint", "https://planetarycomputer.microsoft.com/api/stac/v1")
+        res = await asyncio.to_thread(search_stac, collection, bbox, time_range, max_items, endpoint)
+        return json.dumps(res, indent=2)
+
+    async def _execute_load_cog_layer(self, params: dict) -> str:
+        url = params["url"]
+        layer_name = params.get("layer_name", "Satellite COG")
+        code = f"""
+from aery_plugin.geospatial_tools import load_cog_layer
+res = load_cog_layer({repr(url)}, {repr(layer_name)}, iface=iface)
+result = f"COG layer loaded: {{res.get('layer_name')}} (CRS: {{res.get('crs')}})" if res.get("success") else f"Failed: {{res.get('error')}}"
+"""
+        return await self._execute_qgis_code({"code": code})
+
     async def _execute_refresh_canvas(self, params: dict) -> str:
         code = """
 iface.mapCanvas().refresh()

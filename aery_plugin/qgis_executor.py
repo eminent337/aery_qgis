@@ -217,6 +217,8 @@ def _build_globals() -> dict[str, Any]:
             smooth_geometry as _smooth_geometry,
             regularize_polygon as _regularize_polygon,
             get_city_bbox as _get_city_bbox,
+            search_stac as _search_stac,
+            load_cog_layer as _load_cog_layer,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -232,6 +234,8 @@ def _build_globals() -> dict[str, Any]:
             "smooth_geometry": _smooth_geometry,
             "regularize_polygon": _regularize_polygon,
             "get_city_bbox": _get_city_bbox,
+            "search_stac": _search_stac,
+            "load_cog_layer": _load_cog_layer,
         })
     except ImportError:
         pass

@@ -113,6 +113,98 @@ def get_city_bbox(city_name: str) -> Optional[list[float]]:
     """Get fast cached WGS84 bounding box [minx, miny, maxx, maxy] for major cities."""
     return MAJOR_CITIES_BBOX.get(city_name.lower().strip())
 
+
+# ── STAC & Planetary Data Search Tools ───────────────────────────────────────
+# Adapted from GeoAI STACTools & download utilities (geoai/agents/stac_tools.py)
+
+def search_stac(
+    collection: str = "sentinel-2-l2a",
+    bbox: Optional[list[float]] = None,
+    time_range: Optional[str] = None,
+    max_items: int = 5,
+    endpoint: str = "https://planetarycomputer.microsoft.com/api/stac/v1",
+) -> dict:
+    """Search a STAC API endpoint (e.g. Microsoft Planetary Computer or Earth Search).
+
+    Returns a list of items with their Cloud-Optimized GeoTIFF (COG) asset URLs.
+    """
+    import json
+    import urllib.request
+
+    payload: dict = {
+        "collections": [collection],
+        "limit": max_items,
+    }
+    if bbox:
+        payload["bbox"] = bbox
+    if time_range:
+        payload["datetime"] = time_range
+
+    search_url = endpoint.rstrip("/") + "/search"
+    try:
+        req = urllib.request.Request(
+            search_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Aery-QGIS-Plugin"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        items = []
+        for feature in data.get("features", []):
+            assets = {}
+            for k, v in feature.get("assets", {}).items():
+                assets[k] = {
+                    "href": v.get("href"),
+                    "title": v.get("title", k),
+                    "type": v.get("type", ""),
+                }
+            items.append({
+                "id": feature.get("id"),
+                "datetime": feature.get("properties", {}).get("datetime"),
+                "bbox": feature.get("bbox"),
+                "assets": assets,
+            })
+
+        return {
+            "endpoint": endpoint,
+            "collection": collection,
+            "count": len(items),
+            "items": items,
+        }
+    except Exception as e:
+        return {"error": str(e), "collection": collection, "count": 0, "items": []}
+
+
+def load_cog_layer(
+    url: str,
+    layer_name: str = "Satellite COG",
+    iface=None,
+) -> dict:
+    """Load a remote Cloud-Optimized GeoTIFF (COG) directly into the QGIS map canvas.
+
+    Uses GDAL's /vsicurl/ virtual filesystem for tile streaming.
+    """
+    from qgis.core import QgsRasterLayer, QgsProject
+
+    # Wrap in /vsicurl/ if standard HTTP(S) URL
+    source_uri = f"/vsicurl/{url}" if url.startswith("http://") or url.startswith("https://") else url
+    layer = QgsRasterLayer(source_uri, layer_name, "gdal")
+
+    if not layer.isValid():
+        return {"success": False, "error": f"Failed to load COG layer from {url}"}
+
+    QgsProject.instance().addMapLayer(layer)
+    if iface:
+        iface.mapCanvas().refresh()
+
+    return {
+        "success": True,
+        "layer_name": layer.name(),
+        "layer_id": layer.id(),
+        "crs": layer.crs().authid(),
+    }
+
 def export_webmap(output_dir: str, basemap: str = "osm",
                   extent: str = "", include_search: bool = False,
                   title: str = "", iface=None) -> dict:
