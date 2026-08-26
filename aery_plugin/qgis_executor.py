@@ -136,11 +136,14 @@ def _build_globals() -> dict[str, Any]:
             "QgsSymbol", "QgsSymbolLayer", "QgsTextFormat", "QgsVectorDataProvider", "QgsVectorFileWriter",
             "QgsVectorLayer", "QgsVectorLayerUtils", "QgsWkbTypes",
             # Layout classes
+            # Layout and Cartography classes
             "QgsLayout", "QgsLayoutItemLabel", "QgsLayoutItemLegend", "QgsLayoutItemMap",
-            "QgsLayoutItemNorthArrow", "QgsLayoutItemPage", "QgsLayoutItemPicture",
-            "QgsLayoutItemScaleBar", "QgsLayoutMeasurement", "QgsLayoutObject", "QgsLayoutPoint",
-            "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem", "QgsLayoutUnits", "QgsPageLayout",
-            "QgsPrintLayout", "QgsLayoutExporter",
+            "QgsLayoutItemMapGrid", "QgsLayoutItemMapOverview", "QgsLayoutItemNorthArrow",
+            "QgsLayoutItemPage", "QgsLayoutItemPicture", "QgsLayoutItemScaleBar",
+            "QgsLayoutItemPolygon", "QgsLayoutItemPolyline", "QgsLayoutItemHtml",
+            "QgsLayoutItemAttributeTable", "QgsLayoutMeasurement", "QgsLayoutObject",
+            "QgsLayoutPoint", "QgsLayoutSize", "QgsLayoutUnit", "QgsLayoutItem",
+            "QgsLayoutUnits", "QgsPageLayout", "QgsPrintLayout", "QgsLayoutExporter",
             # Pseudocolor/renderer & Symbology
             "QgsFillSymbol", "QgsLineSymbol", "QgsSimpleFillSymbolLayer", "QgsSimpleLineSymbolLayer",
             "QgsSimpleMarkerSymbolLayer", "QgsCategorizedSymbolRenderer", "QgsRendererCategory",
