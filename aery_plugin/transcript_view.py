@@ -742,8 +742,16 @@ class TranscriptView(QScrollArea):
         return self._session_messages
 
     def set_session_messages(self, msgs: list[dict]) -> None:
-        self._session_messages = msgs
-
+        self._session_messages = list(msgs)
+        # Repopulate the visual message feed with previous conversation bubbles
+        self.clear()
+        for msg in self._session_messages:
+            role = msg.get("role", "assistant")
+            text = msg.get("text", "")
+            sender = "YOU" if role == "user" else "SYSTEM" if role == "system" else "AERY"
+            bubble = MessageBubble(sender, text, role)
+            self._feed_layout.insertWidget(self._feed_layout.count() - 1, bubble)
+        QTimer.singleShot(50, self.scroll_to_bottom)
     def _schedule_save(self) -> None:
         if self._save_callback:
             self._save_callback()
