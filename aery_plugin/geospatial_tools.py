@@ -46,6 +46,73 @@ def safe_to_file(gdf, output_path: str, **kwargs) -> None:
         gdf.to_file(output_path, **kwargs)
 
 
+def smooth_geometry(geom, simplify_tolerance: float = 0.5, preserve_topology: bool = True):
+    """Simplify and smooth a polygon or geometry to remove vertex noise.
+
+    Adapted from GeoAI (opengeos/geoai) utils/geometry.py.
+    """
+    if hasattr(geom, "simplify"):
+        return geom.simplify(simplify_tolerance, preserve_topology=preserve_topology)
+    return geom
+
+
+def regularize_polygon(polygon, simplify_tolerance: float = 0.5, orthogonalize: bool = True):
+    """Regularize a building footprint polygon by simplifying and aligning dominant angles.
+
+    Adapted from GeoAI (opengeos/geoai) utils/geometry.py.
+    """
+    import numpy as np
+    from shapely.affinity import rotate
+    from shapely.geometry import Polygon
+
+    if not hasattr(polygon, "simplify"):
+        return polygon
+
+    simplified = polygon.simplify(simplify_tolerance, preserve_topology=True)
+    if not orthogonalize or not hasattr(simplified, "exterior") or simplified.exterior is None:
+        return simplified
+
+    coords = np.array(simplified.exterior.coords)
+    if len(coords) < 3:
+        return simplified
+
+    segments = np.diff(coords, axis=0)
+    angles = np.arctan2(segments[:, 1], segments[:, 0]) * 180 / np.pi
+    binned_angles = np.round(angles / 90) * 90
+    dominant_angle = np.bincount(binned_angles.astype(int) % 180).argmax()
+
+    # Rotate to axis, box-simplify, rotate back
+    rotated = rotate(simplified, -dominant_angle, origin="centroid")
+    minx, miny, maxx, maxy = rotated.bounds
+    # If the rotated shape is close to an envelope, return the aligned box
+    rect = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)])
+    if rotated.intersection(rect).area / max(rotated.area, 1e-6) > 0.85:
+        return rotate(rect, dominant_angle, origin="centroid")
+    return rotate(rotated, dominant_angle, origin="centroid")
+
+
+# ── Pre-cached Fast Bounding Boxes for Major World Cities ────────────────────
+# Adapted from GeoAI STACTools._LOCATION_CACHE (geoai/agents/stac_tools.py)
+MAJOR_CITIES_BBOX = {
+    "san francisco": [-122.5155, 37.7034, -122.3549, 37.8324],
+    "new york": [-74.0479, 40.6829, -73.9067, 40.8820],
+    "new york city": [-74.0479, 40.6829, -73.9067, 40.8820],
+    "paris": [2.2241, 48.8156, 2.4698, 48.9022],
+    "london": [-0.5103, 51.2868, 0.3340, 51.6919],
+    "tokyo": [139.5694, 35.5232, 139.9182, 35.8173],
+    "los angeles": [-118.6682, 33.7037, -118.1553, 34.3373],
+    "chicago": [-87.9401, 41.6445, -87.5241, 42.0230],
+    "accra": [-0.3100, 5.5000, -0.1000, 5.6700],
+    "nairobi": [36.6500, -1.4500, 37.1000, -1.1500],
+    "berlin": [13.0883, 52.3382, 13.7611, 52.6755],
+    "sydney": [150.5209, -34.1183, 151.3430, -33.5781],
+}
+
+
+def get_city_bbox(city_name: str) -> Optional[list[float]]:
+    """Get fast cached WGS84 bounding box [minx, miny, maxx, maxy] for major cities."""
+    return MAJOR_CITIES_BBOX.get(city_name.lower().strip())
+
 def export_webmap(output_dir: str, basemap: str = "osm",
                   extent: str = "", include_search: bool = False,
                   title: str = "", iface=None) -> dict:

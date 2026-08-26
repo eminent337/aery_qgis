@@ -214,6 +214,9 @@ def _build_globals() -> dict[str, Any]:
             refresh_canvas as _refresh_canvas,
             safe_to_file as _safe_to_file,
             clean_proj_env as _clean_proj_env,
+            smooth_geometry as _smooth_geometry,
+            regularize_polygon as _regularize_polygon,
+            get_city_bbox as _get_city_bbox,
         )
         g.update({
             "export_webmap": _export_webmap,
@@ -226,6 +229,9 @@ def _build_globals() -> dict[str, Any]:
             "refresh_canvas": _refresh_canvas,
             "safe_to_file": _safe_to_file,
             "clean_proj_env": _clean_proj_env,
+            "smooth_geometry": _smooth_geometry,
+            "regularize_polygon": _regularize_polygon,
+            "get_city_bbox": _get_city_bbox,
         })
     except ImportError:
         pass

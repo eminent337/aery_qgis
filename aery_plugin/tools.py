@@ -1793,12 +1793,27 @@ from qgis.core import (
     QgsRectangle, QgsCoordinateReferenceSystem, QgsCoordinateTransform,
     QgsProject, QgsGeometry, QgsPointXY,
 )
+from aery_plugin.geospatial_tools import get_city_bbox
 place = {repr(place)}
 target_crs_str = {repr(target_crs)}
-url = ("https://nominatim.openstreetmap.org/search?format=json"
-       "&limit=1&q=" + urllib.parse.quote(place))
-req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
-with urllib.request.urlopen(req, timeout=20) as resp:
+_fast_bbox = get_city_bbox(place)
+if _fast_bbox:
+    # Fast-path: instant local lookup without network latency
+    minx, miny, maxx, maxy = _fast_bbox
+    rect = QgsRectangle(minx, miny, maxx, maxy)
+    src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+    dest_crs = QgsCoordinateReferenceSystem(target_crs_str) if target_crs_str else QgsProject.instance().crs()
+    if src_crs.isValid() and dest_crs.isValid() and src_crs != dest_crs:
+        transform = QgsCoordinateTransform(src_crs, dest_crs, QgsProject.instance())
+        rect = transform.transformBoundingBox(rect)
+    canvas = iface.mapCanvas()
+    canvas.setExtent(rect)
+    canvas.refresh()
+    result = f"Zoomed to '{{place}}' (cached bbox: {{minx}}, {{miny}}, {{maxx}}, {{maxy}})"
+else:
+    url = ("https://nominatim.openstreetmap.org/search?format=json"
+           "&limit=1&q=" + urllib.parse.quote(place))
+    req = urllib.request.Request(url, headers={{"User-Agent": "AeryQGISPlugin/1.0"}})
     _chunks, _total = [], 0
     while True:
         _c = resp.read(64 * 1024)
