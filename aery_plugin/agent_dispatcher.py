@@ -13,6 +13,12 @@ YIELD_SLEEP_MS = 0.02
 YIELD_INTERVAL_MS = 0.05
 _last_yield_at = 0.0
 
+# Bounded wait used ONLY when there is no UI to answer a permission request
+# (headless / automation runs, where `on_event` is None). Interactive runs
+# wait indefinitely — an unanswered request must never auto-deny, because the
+# model then retries the tool and burns a turn per retry until max turns.
+HEADLESS_PERMISSION_TIMEOUT = 120
+
 async def yield_if_due() -> None:
     global _last_yield_at
     now = time.monotonic()
@@ -109,7 +115,15 @@ class ToolDispatcher:
                         })
 
                     self.agent.permissions.register_request(req_id)
-                    approved = self.agent.permissions.wait_for_approval(request_id=req_id, timeout=120)
+                    # Wait for the user to approve/deny. Interactive runs
+                    # (on_event present) wait indefinitely — the request stays
+                    # visible until answered, and Stop (cancel_all) unblocks it.
+                    # Only headless runs (no UI to answer) use the bounded
+                    # timeout so automation can't hang forever.
+                    approved = self.agent.permissions.wait_for_approval(
+                        request_id=req_id,
+                        timeout=None if on_event else HEADLESS_PERMISSION_TIMEOUT,
+                    )
 
                     if not approved:
                         tool_result = f"Permission denied — tool '{name}' not executed."

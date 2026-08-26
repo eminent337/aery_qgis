@@ -1,4 +1,5 @@
 import threading
+from typing import Optional
 from aery_plugin.logger import logger
 
 class PermissionManager:
@@ -16,6 +17,18 @@ class PermissionManager:
         # prompts) without making every tool call a click-through.
         self.code_approved: bool = False
 
+    def _clear_requests(self) -> None:
+        """Deny-and-drop every pending request.
+
+        Sets each pending event (approved=False) before removing the request,
+        so a blocked ``wait_for_approval`` can never strand the agent thread
+        when requests are cleared without an explicit UI resolve.
+        """
+        for req in self._requests.values():
+            req["approved"] = False
+            req["event"].set()
+        self._requests.clear()
+
     def reset(self) -> None:
         """Clear stale permission state — call at the start of each turn.
         We deliberately do NOT reset `self.always` here. When the user ticks
@@ -24,16 +37,17 @@ class PermissionManager:
         breaking the session-wide bypass after the first turn.
         """
         with self._lock:
-            self._requests.clear()
+            self._clear_requests()
             # self.always and code_approved are session-scoped; keep them alive
             # across turns. They are cleared only by reset_session().
+
     def reset_session(self) -> None:
         """Clear all session-scoped permission state.
         Call when starting a new session (new project, "Reset" button, etc.)
         so that the first code execution in the new session prompts again.
         """
         with self._lock:
-            self._requests.clear()
+            self._clear_requests()
             self.always = False
             self.code_approved = False
 
@@ -69,8 +83,15 @@ class PermissionManager:
                 req["approved"] = False
                 req["event"].set()
 
-    def wait_for_approval(self, request_id: str, timeout: int = 120) -> bool:
-        """Block until UI resolves the permission request."""
+    def wait_for_approval(self, request_id: str, timeout: Optional[float] = None) -> bool:
+        """Block until UI resolves the permission request.
+
+        ``timeout=None`` (the default) waits indefinitely: a permission
+        request stays pending until the user approves/denies or the run is
+        stopped (cancel_all). An explicit timeout — used only by headless or
+        automation callers that have no UI to answer — returns False when it
+        elapses so the agent never hangs forever without a human.
+        """
         with self._lock:
             req = self._requests.get(request_id)
             if not req:

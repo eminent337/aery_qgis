@@ -36,7 +36,6 @@ class AgentState:
     PLANNING = "planning"
     CONFIRMED = "confirmed"
     EXECUTING = "executing"
-    WAITING_APPROVAL = "waiting_approval"
     VERIFYING = "verifying"
     DONE = "done"
 
@@ -156,10 +155,6 @@ class Agent(QObject):
     finished = pyqtSignal(str) if _HAS_PYQT6 else None
     error = pyqtSignal(str) if _HAS_PYQT6 else None
 
-    # Plan-first workflow signals
-    _step_approved = pyqtSignal(str) if _HAS_PYQT6 else None   # emits tool_name when user approves a destructive step
-    _step_cancelled = pyqtSignal(str) if _HAS_PYQT6 else None  # emits reason when user cancels
-
     def __init__(self, executor, iface=None, session_context=None):
         super().__init__()
         self.executor = executor
@@ -205,8 +200,6 @@ class Agent(QObject):
         self._pending_steps: list = []
         self._current_step_index: int = 0
         self._retry_count: int = 0
-        self._approval_event: Optional[asyncio.Event] = None  # paused destructive step await
-        self._approval_result: bool = False  # True=approved, False=cancelled
 
         self._last_layer_hash: str = ""  # track layer state changes
         self._max_context_messages: int = 40  # trim history to this many messages
@@ -249,20 +242,32 @@ class Agent(QObject):
         tool_name = step.get("function", {}).get("name", "")
 
         if self._is_destructive(tool_name):
-            # Destructive tools always require user approval
-            self._approval_event = asyncio.Event()
-            self._set_state(AgentState.WAITING_APPROVAL)
-            self._step_approved.emit(tool_name)
-            # Wait for user to approve in chat_panel (which calls resume_from_approval)
-            try:
-                await asyncio.wait_for(self._approval_event.wait(), timeout=300)
-            except asyncio.TimeoutError:
-                self._set_state(AgentState.IDLE)
-                return ("Approval timed out after 5 minutes.", False)
-            self._approval_event = None
-            if not self._approval_result:
-                return (f"Step cancelled by user.", False)
-            self._approval_result = False  # reset for next time
+            # Destructive tools always require user approval. Route through the
+            # same PermissionManager + "permission_request" event flow as the
+            # dispatcher so the request surfaces as the inline permission card
+            # and WAITS for the user. (The old _approval_event/_step_approved
+            # flow was never wired to the UI, so approval was impossible and
+            # every destructive plan step stalled until its timeout.)
+            req_id = str(uuid.uuid4())
+            if on_event:
+                on_event({
+                    "type": "permission_request",
+                    "request_id": req_id,
+                    "tool_name": tool_name,
+                    "tool_use_id": step.get("id", ""),
+                    "input": step.get("function", {}).get("arguments", {}),
+                    "description": f"Execute {tool_name}",
+                    "risk_level": "high",
+                    "uuid": str(uuid.uuid4()),
+                    "session_id": self._session_id,
+                })
+            self.permissions.register_request(req_id)
+            approved = self.permissions.wait_for_approval(
+                request_id=req_id,
+                timeout=None if on_event else 300,
+            )
+            if not approved:
+                return ("Step cancelled by user.", False)
 
         # Execute yolo step
         self._set_state(AgentState.EXECUTING)
@@ -292,13 +297,6 @@ class Agent(QObject):
 
         return (tool_result, False)
 
-    def resume_from_approval(self) -> None:
-        """Called by ChatPanel when user approves a destructive step.
-
-        Sets the approval event, which unblocks _execute_next_step's await.
-        """
-        if self._approval_event is not None:
-            self._approval_event.set()
 
     def _restart_after_finish(self) -> None:
         """One-shot slot: called when the thread exits after a deferred restart.
