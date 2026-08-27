@@ -31,4 +31,8 @@ def test_trim_messages_truncates_large_results():
         {"role": "tool", "content": large_result, "tool_call_id": "call_1"}
     ]
     agent._trim_messages()
-    assert len(agent._messages[0]["content"]) < 10000
+    # Truncated well below the original size (constant-specific ceiling is
+    # tested via the agent attribute, not hard-coded here)
+    assert len(agent._messages[0]["content"]) < len(large_result)
+    assert agent._messages[0]["content"].endswith("...[truncated]")
+    assert len(agent._messages[0]["content"]) <= Agent.MAX_TOOL_RESULT_CHARS + 50

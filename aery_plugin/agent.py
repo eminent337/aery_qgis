@@ -148,12 +148,91 @@ def _image_paths_from_message(content) -> list[str]:
     return paths
 
 
+def _extract_identifiers(content: str) -> dict:
+    """Extract key identifiers from a tool result string.
+
+    Returns a dict with: layer_names (quoted strings), paths (file paths),
+    metrics (numbers with context). Used to build smart compaction summaries
+    that preserve the identifiers the LLM needs to reference later.
+    """
+    import re
+    identifiers = {"layer_names": [], "paths": [], "metrics": []}
+    if not content:
+        return identifiers
+
+    # Layer names in single or double quotes that look like layer names
+    for m in re.finditer(r"""['"]([a-zA-Z_][a-zA-Z0-9_\s\-]{1,60})['"]""", content):
+        name = m.group(1).strip()
+        if name and name not in identifiers["layer_names"]:
+            identifiers["layer_names"].append(name)
+
+    # File paths
+    # File paths
+    for m in re.finditer(r"([/~][^\s'\"\\\:]+\.[a-zA-Z]{2,10})", content):
+        path = m.group(1).strip()
+        if path and path not in identifiers["paths"]:
+            identifiers["paths"].append(path)
+
+    # Key metrics: numbers followed by units or preceded by keywords
+    for m in re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*(features|rows|pixels|km|m|mb|gb|%|degrees|points|layers|files|seconds|minutes|hours)", content, re.IGNORECASE):
+        metric = f"{m.group(1)} {m.group(2)}"
+        if metric not in identifiers["metrics"]:
+            identifiers["metrics"].append(metric)
+
+    # Also capture "key: value" style metrics like "count: 1500"
+    for m in re.finditer(r"([a-zA-Z_]+):\s*(\d[\d,]*(?:\.\d+)?)", content):
+        metric = f"{m.group(1)}: {m.group(2)}"
+        if metric not in identifiers["metrics"]:
+            identifiers["metrics"].append(metric)
+
+    return identifiers
+
+
+def _smart_tool_summary(tool_name: str, content: str, max_chars: int = 400) -> str:
+    """Build a compact but informative summary of a tool result.
+
+    Preserves key identifiers (layer names, file paths, metrics) that the LLM
+    needs to reference in follow-up turns, unlike flat truncation which often
+    cuts off the most important information.
+    """
+    if not content:
+        return f"[Compacted] [System: Tool '{tool_name}' completed execution]"
+
+    content = content.strip()
+    identifiers = _extract_identifiers(content)
+
+    # Start with the first line (often contains the main result/status)
+    first_line = content.split("\n")[0].strip()
+    if len(first_line) > 200:
+        first_line = first_line[:200]
+
+    parts = [first_line]
+
+    # Add extracted identifiers
+    if identifiers["layer_names"]:
+        parts.append("Layers: " + ", ".join(identifiers["layer_names"][:5]))
+    if identifiers["paths"]:
+        parts.append("Paths: " + ", ".join(identifiers["paths"][:3]))
+    if identifiers["metrics"]:
+        parts.append("Metrics: " + ", ".join(identifiers["metrics"][:5]))
+
+    summary = " | ".join(parts)
+    prefix = f"[Compacted] [System: Tool '{tool_name}' completed execution] "
+    # Reserve space for the prefix so the total stays within max_chars
+    if len(summary) > max_chars - len(prefix):
+        summary = summary[:max_chars - len(prefix)].rstrip() + "..."
+
+    return prefix + summary
+
 class Agent(QObject):
     """The geospatial AI agent."""
 
     # Signals for ChatPanel to connect to (once, at init)
     finished = pyqtSignal(str) if _HAS_PYQT6 else None
     error = pyqtSignal(str) if _HAS_PYQT6 else None
+
+    # Per-message ceiling for tool results kept in history
+    MAX_TOOL_RESULT_CHARS = 12000
 
     def __init__(self, executor, iface=None, session_context=None):
         super().__init__()
@@ -202,7 +281,7 @@ class Agent(QObject):
         self._retry_count: int = 0
 
         self._last_layer_hash: str = ""  # track layer state changes
-        self._max_context_messages: int = 40  # trim history to this many messages
+        self._max_context_messages: int = 60  # trim history to this many messages
 
         self._next_message: Optional[str] = None
 
@@ -470,8 +549,8 @@ class Agent(QObject):
           retains awareness of what was done without the full payload)
         """
         MAX_COUNT = self._max_context_messages
-        MAX_TOOL_CHARS = 8000  # raised: gives agent more context on errors/results
-        COMPACT_TOKENS = 80_000
+        MAX_TOOL_CHARS = self.MAX_TOOL_RESULT_CHARS  # gives agent more context on errors/results
+        COMPACT_TOKENS = 120_000
 
         with self._lock:
             # 1. Truncate oversized tool results in-place.
@@ -561,9 +640,9 @@ class Agent(QObject):
                         tool_name = msg.get("name", "tool")
                         content = str(msg.get("content", ""))
                         old_len = len(content)
-                        summary = content[:120].rstrip() + ("..." if len(content) > 120 else "")
+                        summary = _smart_tool_summary(tool_name, content)
                         msg["role"] = "user"
-                        msg["content"] = f"[Compacted] [System: Tool '{tool_name}' completed execution] {summary}"
+                        msg["content"] = summary
                         msg.pop("tool_call_id", None)
                         msg.pop("name", None)
                         total_chars -= old_len - len(msg["content"])
@@ -583,9 +662,10 @@ class Agent(QObject):
                                 break
                             content = str(blocks[0].get("content", ""))
                             old_len = len(str(msg["content"]))
-                            summary = content[:120].rstrip() + ("..." if len(content) > 120 else "")
-                            msg["content"] = f"[Compacted] [System: Tool completed execution] {summary}"
+                            summary = _smart_tool_summary("tool", content)
+                            msg["content"] = summary
                             total_chars -= old_len - len(msg["content"])
+                            total_tokens = total_chars // 4
                             total_tokens = total_chars // 4
                             break
 

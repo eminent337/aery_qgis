@@ -168,7 +168,7 @@ def test_trim_messages_drops_image_tool_message_whole():
     image_url list into a 120-char '[Compacted]' summary."""
     agent = Agent(None)
     agent._max_context_messages = 2
-    huge_uri = "data:image/png;base64," + "A" * 400_000  # ~100k tokens -> force compaction
+    huge_uri = "data:image/png;base64," + "A" * 600_000  # ~150k tokens -> exceeds COMPACT_TOKENS (120k), forces compaction
     agent._messages = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "ok"},
@@ -188,7 +188,7 @@ def test_trim_messages_keeps_image_data_uri_string_whole_under_pressure():
     """A raw data-URI string tool result is dropped whole too, not sliced."""
     agent = Agent(None)
     agent._max_context_messages = 2
-    huge_uri = "data:image/png;base64," + "A" * 400_000
+    huge_uri = "data:image/png;base64," + "A" * 600_000
     agent._messages = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "ok"},
@@ -220,7 +220,7 @@ def test_trim_messages_keeps_image_path_note_when_user_image_message_compacted()
     made follow-up "view the image" prompts flail (e.g. drawing polygons)."""
     agent = Agent(None)
     agent._max_context_messages = 10  # token pressure (not count) forces compaction
-    huge_uri = "data:image/png;base64," + "A" * 400_000  # ~100k tokens
+    huge_uri = "data:image/png;base64," + "A" * 600_000  # ~150k tokens -> forces compaction under COMPACT_TOKENS=120k
     agent._messages = [
         {"role": "user", "content": [
             {"type": "text", "text": "view this image\n\n[Attached files:\n- /tmp/photo.png\n]"},
