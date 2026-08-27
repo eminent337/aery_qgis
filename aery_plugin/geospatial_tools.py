@@ -156,33 +156,154 @@ def query_overpass(query: str, timeout: int = 30) -> dict:
     raise RuntimeError(f"All Overpass API mirrors failed. Last error: {last_err}")
 
 
-def run_quickosm_query(key: str, value: str, extent=None, layer_name: str = "OSM Query") -> dict:
-    """Execute a QuickOSM processing query if installed, or gracefully fallback."""
-    from qgis.core import QgsProject, QgsProcessingFeedback, QgsRectangle
-    import processing
+def _normalize_extent(extent):
+    """Normalize an extent into Overpass bbox form ``(south, west, north, east)``.
 
-    try:
-        algs = [a.id() for a in QgsProject.instance().processingRegistry().algorithms()]
-    except Exception:
-        algs = []
+    Accepts a QgsRectangle / QgsReferencedRectangle (in any CRS), a 4-item
+    sequence/list/tuple of numbers (``xmin, ymin, xmax, ymax``), or a string
+    containing four comma/whitespace-separated numbers in the same order.
+    Returns ``None`` when no usable extent is provided.
+    """
+    if extent is None:
+        return None
 
-    # QuickOSM extent query algorithm id
-    q_alg = next((a for a in algs if "quickosm" in a.lower() and "extent" in a.lower()), None)
-    if not q_alg:
-        return {"success": False, "error": "QuickOSM plugin algorithm not found in QGIS processing registry."}
+    # QgsRectangle / QgsReferencedRectangle
+    if hasattr(extent, "xMinimum") and hasattr(extent, "yMaximum"):
+        try:
+            west, south = float(extent.xMinimum()), float(extent.yMinimum())
+            east, north = float(extent.xMaximum()), float(extent.yMaximum())
+            crs = getattr(extent, "crs", lambda: None)()
+        except Exception:
+            return None
+        # Transform to EPSG:4326 when the rectangle carries a valid non-4326 CRS
+        if crs is not None:
+            try:
+                authid = crs.authid() if hasattr(crs, "authid") else ""
+                if authid and authid.upper() != "EPSG:4326":
+                    from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform
+                    t = QgsCoordinateTransform(crs, QgsCoordinateReferenceSystem(4326))
+                    west, south = t.transform(west, south)
+                    east, north = t.transform(east, north)
+            except Exception:
+                pass
+        return (south, west, north, east)
 
-    try:
-        params = {
-            "KEY": key,
-            "VALUE": value,
-            "EXTENT": extent,
-            "OUTPUT": "memory:",
+    # Sequence of 4 numbers -> xmin, ymin, xmax, ymax
+    if isinstance(extent, (tuple, list)) and len(extent) == 4:
+        try:
+            xmin, ymin, xmax, ymax = (float(v) for v in extent)
+            return (ymin, xmin, ymax, xmax)
+        except Exception:
+            return None
+
+    # String with 4 numbers -> xmin, ymin, xmax, ymax
+    if isinstance(extent, str):
+        import re
+        nums = re.findall(r"-?\d+(?:\.\d+)?", extent)
+        if len(nums) >= 4:
+            try:
+                xmin, ymin, xmax, ymax = (float(v) for v in nums[:4])
+                return (ymin, xmin, ymax, xmax)
+            except Exception:
+                return None
+    return None
+
+
+def build_overpass_query(key: str = "", value: str = "", extent=None, raw_query: str = "") -> str:
+    """Build an Overpass QL query.
+
+    When ``raw_query`` is given it is returned verbatim (QuickOSM
+    ``downloadosmdatarawquery`` mode). Otherwise a key/value+bbox filter query is
+    built for nodes, ways and relations, matching the QuickOSM extent query.
+    """
+    bbox = _normalize_extent(extent)
+    if raw_query and raw_query.strip():
+        return raw_query.strip()
+
+    # Build a tag filter: "amenity" (key only), or "amenity"="cafe"
+    tag = key.strip() if key and key.strip() else ""
+    value_s = value.strip() if value and value.strip() else ""
+    if tag:
+        if value_s:
+            tag = f'["{tag}"="{value_s}"]'
+        else:
+            tag = f'["{tag}"]'
+    else:
+        tag = ""
+
+    bbox_round = ";".join(str(round(float(v), 6)) for v in bbox) if bbox else ""
+    bbox_f = f"({bbox_round})" if bbox_round else ""
+
+    types = ["node", "way", "relation"]
+    parts = [f"{t}{tag}{bbox_f}" for t in types]
+    return "[out][timeout:25];\n(" + ";\n".join(parts) + ");\nout geom;"
+
+
+def _overpass_to_features(elements) -> list[dict]:
+    """Convert an Overpass ``out geom`` element list into GeoJSON-style features."""
+    features = []
+    for el in elements or []:
+        if not isinstance(el, dict):
+            continue
+        el_type = el.get("type")
+        props = {
+            "osm_type": el_type,
+            "osm_id": el.get("id"),
         }
-        feedback = QgsProcessingFeedback()
-        res = processing.run(q_alg, params, feedback=feedback)
-        return {"success": True, "output": res}
+        tags = el.get("tags") or {}
+        if isinstance(tags, dict):
+            props.update(tags)
+
+        geom = None
+        if el_type == "node":
+            try:
+                geom = {"type": "Point", "coordinates": [float(el["lon"]), float(el["lat"])]}
+            except Exception:
+                geom = None
+        else:
+            # way / relation from "out geom" carry a "geometry": [{lat,lon}, ...]
+            g = el.get("geometry") or []
+            coords = []
+            try:
+                for pt in g:
+                    coords.append([float(pt["lon"]), float(pt["lat"])])
+            except Exception:
+                coords = []
+            if coords:
+                if el_type == "way" and len(coords) >= 3 and coords[0] == coords[-1]:
+                    geom = {"type": "Polygon", "coordinates": [coords]}
+                elif len(coords) >= 2:
+                    geom = {"type": "LineString", "coordinates": coords}
+                else:
+                    geom = {"type": "Point", "coordinates": coords[0]}
+        if geom is None:
+            continue
+        features.append({"type": "Feature", "id": f"{el_type}/{el.get('id')}", "properties": props, "geometry": geom})
+    return features
+
+
+def run_quickosm_query(key: str = "", value: str = "", extent=None, layer_name: str = "OSM Query", raw_query: str = "") -> dict:
+    """Fetch OSM data for a key/value (or raw Overpass query) within an extent.
+
+    Native-first: builds an Overpass query and fetches it through the robust
+    ``query_overpass()`` helper (mirror failover, User-Agent, backoff). Does NOT
+    depend on the QuickOSM plugin's internal processing algorithms, which are
+    unreliable in some QGIS versions. Returns GeoJSON features ready for
+    ``safe_create_geodataframe`` / layer loading.
+    """
+    try:
+        query = build_overpass_query(key=key, value=value, extent=extent, raw_query=raw_query)
+        data = query_overpass(query)
+        elements = (data or {}).get("elements") or []
+        features = _overpass_to_features(elements)
+        return {
+            "success": True,
+            "features": features,
+            "count": len(features),
+            "layer_name": layer_name,
+        }
     except Exception as e:
-        return {"success": False, "error": f"QuickOSM execution failed: {e}"}
+        return {"success": False, "error": f"QuickOSM/Overpass query failed: {e}"}
 
 def smooth_geometry(geom, simplify_tolerance: float = 0.5, preserve_topology: bool = True):
     """Simplify and smooth a polygon or geometry to remove vertex noise.
