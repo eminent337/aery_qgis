@@ -371,13 +371,26 @@ class SessionSwitcherDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Conversation Sessions")
-        self.setFixedSize(380, 400)
+        self.setFixedSize(420, 460)
         self.setModal(True)
         self.setStyleSheet(_dialog_stylesheet())
+        self._agent = getattr(parent, "agent", None)
+        self._project_dir = None
 
         self._build_ui()
+        self._resolve_project_dir()
         self._populate_sessions()
 
+    def _resolve_project_dir(self) -> None:
+        """Resolve the current QGIS project directory (sessions are per-project)."""
+        try:
+            from qgis.core import QgsProject
+            path = QgsProject.instance().fileName()
+            if path:
+                import os
+                self._project_dir = os.path.dirname(path)
+        except Exception:
+            self._project_dir = None
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -443,83 +456,110 @@ class SessionSwitcherDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
 
+        if not self._project_dir:
+            lbl = QLabel(
+                "No saved project.\n\nSave your QGIS project first — sessions are stored "
+                "per project in its .aery/ folder."
+            )
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px; padding: 8px;")
+            self._list_lay.addWidget(lbl)
+            self._list_lay.addStretch()
+            return
+
         try:
-            from aery_plugin.session_manager import get_session_manager
-            mgr = get_session_manager()
-            sessions = mgr.list_sessions()
-            active_sess = mgr.get_active_session()
-            active_id = active_sess.session_id if active_sess else None
-
-            if not sessions:
-                lbl = QLabel("No active sessions.")
-                lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px; padding: 8px;")
-                self._list_lay.addWidget(lbl)
-            else:
-                for idx, s in enumerate(sessions):
-                    s_id = s.session_id
-                    is_active = (s_id == active_id)
-                    
-                    row = QFrame()
-                    row.setObjectName("innerCard" if is_active else "card")
-                    row_lay = QHBoxLayout(row)
-                    row_lay.setContentsMargins(8, 6, 8, 6)
-                    row_lay.setSpacing(6)
-
-                    dot = QLabel("●" if is_active else "○")
-                    dot.setStyleSheet(f"color: {SUCCESS if is_active else TEXT_DIM}; font-size: 11px;")
-                    row_lay.addWidget(dot)
-
-                    info_col = QVBoxLayout()
-                    info_col.setSpacing(1)
-                    created_str = time.strftime("%b %d, %H:%M", time.localtime(s.created_at)) if s.created_at else ""
-                    name = QLabel(f"Session {idx + 1} {'(Active)' if is_active else ''}")
-                    name.setStyleSheet(f"font-size: 11px; font-weight: {700 if is_active else 500}; color: {ACCENT if is_active else TEXT_PRIMARY};")
-                    meta = QLabel(f"{s_id[:8]} • {created_str}")
-                    meta.setStyleSheet(f"font-size: 9px; color: {TEXT_DIM};")
-                    info_col.addWidget(name)
-                    info_col.addWidget(meta)
-                    row_lay.addLayout(info_col, 1)
-
-                    if not is_active:
-                        switch_btn = QPushButton("Switch")
-                        switch_btn.setFixedHeight(22)
-                        switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                        switch_btn.setStyleSheet(
-                            f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER};"
-                            f" border-radius: 4px; font-size: 10px; font-weight: 600; padding: 0 6px; }}"
-                            f" QPushButton:hover {{ background: {ACCENT}; color: {BG_DARK}; border: none; }}"
-                        )
-                        switch_btn.clicked.connect(lambda _, sid=s_id: self._switch_to_session(sid))
-                        row_lay.addWidget(switch_btn)
-
-                    self._list_lay.addWidget(row)
+            from aery_plugin.session import list_sessions
+            sessions = list_sessions(self._project_dir)
         except Exception:
-            pass
+            sessions = []
+
+        # Active session id comes from the agent when available
+        active_id = None
+        agent = self._agent
+        if agent is not None:
+            active_id = getattr(agent, "_session_id", None)
+
+        if not sessions:
+            lbl = QLabel("No sessions yet for this project.\n\nStart chatting and sessions are saved automatically.")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px; padding: 8px;")
+            self._list_lay.addWidget(lbl)
+            self._list_lay.addStretch()
+            return
+
+        for s in sessions:
+            s_id = s.get("session_id", "")
+            is_active = (s_id == active_id)
+
+            row = QFrame()
+            row.setObjectName("innerCard" if is_active else "card")
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(8, 6, 8, 6)
+            row_lay.setSpacing(6)
+
+            dot = QLabel("●" if is_active else "○")
+            dot.setStyleSheet(f"color: {SUCCESS if is_active else TEXT_DIM}; font-size: 11px;")
+            row_lay.addWidget(dot)
+
+            info_col = QVBoxLayout()
+            info_col.setSpacing(1)
+            created_str = time.strftime("%b %d, %H:%M", time.localtime(s.get("timestamp", 0)))
+            first_prompt = (s.get("first_prompt") or "").strip()
+            if not first_prompt:
+                first_prompt = "(empty session)"
+            name = QLabel(first_prompt[:60])
+            name.setStyleSheet(f"font-size: 11px; font-weight: {700 if is_active else 500}; color: {ACCENT if is_active else TEXT_PRIMARY};")
+            meta = QLabel(f"{s_id[:8]} • {created_str} • {s.get('message_count', 0)} msgs")
+            meta.setStyleSheet(f"font-size: 9px; color: {TEXT_DIM};")
+            info_col.addWidget(name)
+            info_col.addWidget(meta)
+            row_lay.addLayout(info_col, 1)
+
+            if is_active:
+                self._list_lay.addWidget(row)
+            else:
+                resume_btn = QPushButton("Resume")
+                resume_btn.setFixedHeight(22)
+                resume_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                resume_btn.setStyleSheet(
+                    f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER};"
+                    f" border-radius: 4px; font-size: 10px; font-weight: 600; padding: 0 6px; }}"
+                    f" QPushButton:hover {{ background: {ACCENT}; color: {BG_DARK}; border: none; }}"
+                )
+                resume_btn.clicked.connect(lambda _, sid=s_id: self._switch_to_session(sid))
+                row_lay.addWidget(resume_btn)
+                self._list_lay.addWidget(row)
 
         self._list_lay.addStretch()
 
     def _switch_to_session(self, session_id: str) -> None:
+        """Resume the selected session via the agent's persistent session store."""
+        agent = self._agent
+        if agent is None or not self._project_dir:
+            QMessageBox.warning(self, "Error", "Agent or project directory unavailable.")
+            return
         try:
-            from aery_plugin.session_manager import get_session_manager
-            mgr = get_session_manager()
-            mgr.set_active_session(session_id)
-            self._populate_sessions()
-            self.session_switched.emit(session_id)
-            self.accept()
+            agent.resume_session(self._project_dir, session_id)
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not switch session: {e}")
+            QMessageBox.warning(self, "Error", f"Could not resume session: {e}")
+            return
+        self.session_switched.emit(session_id)
+        self.accept()
 
     def _create_new_session(self) -> None:
+        """Start a fresh persisted session for this project."""
+        agent = self._agent
+        if agent is None or not self._project_dir:
+            QMessageBox.warning(self, "Error", "Agent or project directory unavailable.")
+            return
         try:
-            from aery_plugin.session_manager import get_session_manager
-            mgr = get_session_manager()
-            new_id = mgr.create_session()
-            mgr.set_active_session(new_id)
-            self._populate_sessions()
-            self.session_switched.emit(new_id)
-            self.accept()
+            agent.start_session(self._project_dir)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not create session: {e}")
+            return
+        self.session_switched.emit(agent._session_id)
+        self.accept()
+
 
 
 class AerySettingsDialog(QDialog):

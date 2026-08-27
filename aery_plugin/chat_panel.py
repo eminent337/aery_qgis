@@ -187,15 +187,21 @@ class ChatPanel(QDockWidget):
         self._thinking_timer.setSingleShot(True)
         self._thinking_timer.timeout.connect(self._on_thinking_timeout)
 
-        # Register initial session with SessionManager if empty
+        # Start a project-scoped persisted session so agent messages are saved
+        # to <project>/.aery/sessions/<id>.jsonl (the per-project session store
+        # the sessions dialog lists). Falls back to auto-detection on failure.
         try:
-            from aery_plugin.session_manager import get_session_manager
-            mgr = get_session_manager()
-            if not mgr.get_active_session():
-                sid = mgr.create_session(agent=self.agent)
-                mgr.set_active_session(sid)
+            from qgis.core import QgsProject
+            _ppath = QgsProject.instance().fileName()
+            if _ppath:
+                self.agent.start_session(os.path.dirname(_ppath))
         except Exception as _e:
-            logger.info(f"Aery: session manager registration: {_e}")
+            logger.info(f"Aery: agent start_session: {_e}")
+        # Load any previous transcript snapshot for this project
+        try:
+            self._load_session()
+        except Exception as _e:
+            logger.info(f"Aery: initial session load: {_e}")
 
         try:
             from qgis.core import QgsProject
@@ -1025,12 +1031,33 @@ class ChatPanel(QDockWidget):
             self._transcript.add_bubble("ERROR", f"Sessions dialog: {e}", "error")
 
     def _on_session_switched(self, session_id: str) -> None:
-        self._transcript.clear()
+        """Reflect a resumed/created session in the transcript view."""
+        agent = self.agent
+        msgs = []
         try:
-            self.agent.reset()
+            msgs = agent.get_history() if agent else []
         except Exception:
-            pass
-        self._transcript.add_bubble("SYSTEM", f"Switched to session: {session_id[:8]}", "tool")
+            msgs = []
+        self._transcript.clear()
+        if msgs:
+            # Rebuild chat bubbles from the agent's restored history
+            for m in msgs:
+                role = m.get("role", "assistant")
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                if not content:
+                    continue
+                sender = "YOU" if role == "user" else "AERY"
+                self._transcript.add_bubble(sender, str(content), role)
+        self._transcript.add_bubble(
+            "SYSTEM", f"Session {session_id[:8]} loaded ({len(msgs)} messages).", "system"
+        )
+        self._save_session()
+
     def _show_model_switcher(self) -> None:
         try:
             from aery_plugin.provider_settings import ModelSwitcherDialog

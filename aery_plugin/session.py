@@ -251,10 +251,38 @@ def delete_session(project_dir: str, session_id: str) -> bool:
 def get_latest_session(project_dir: str) -> Optional[str]:
     """Get the most recent session ID, or None if no sessions exist."""
     sessions = list_sessions(project_dir)
-    sessions = list_sessions(project_dir)
     return sessions[0]["session_id"] if sessions else None
+
+
+def _agent_state_path(project_dir: str, session_id: str) -> str:
+    return os.path.join(_sessions_dir(project_dir), f"{session_id}.state.json")
+
+
+def save_agent_state(project_dir: str, session_id: str, state: dict) -> bool:
+    """Persist agent resumption state alongside the session transcript."""
+    path = _agent_state_path(project_dir, session_id)
+    try:
+        with open(path, "w") as f:
+            json.dump(state, f)
+        return True
+    except OSError:
+        return False
+
+
+def load_agent_state(project_dir: str, session_id: str) -> dict:
+    """Load persisted agent state, or {} when absent/corrupt."""
+    path = _agent_state_path(project_dir, session_id)
+    try:
+        with open(path) as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def rotate_sessions(project_dir: str, max_sessions: int = 50) -> int:
     """Remove oldest sessions beyond the maximum limit.
+
     Sorts sessions by timestamp (oldest first) and deletes excess.
     Returns:
         Number of sessions deleted.
