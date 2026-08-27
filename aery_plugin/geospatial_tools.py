@@ -231,12 +231,12 @@ def build_overpass_query(key: str = "", value: str = "", extent=None, raw_query:
     else:
         tag = ""
 
-    bbox_round = ";".join(str(round(float(v), 6)) for v in bbox) if bbox else ""
+    bbox_round = ",".join(str(round(float(v), 6)) for v in bbox) if bbox else ""
     bbox_f = f"({bbox_round})" if bbox_round else ""
 
     types = ["node", "way", "relation"]
     parts = [f"{t}{tag}{bbox_f}" for t in types]
-    return "[out][timeout:25];\n(" + ";\n".join(parts) + ");\nout geom;"
+    return "[out:json][timeout:25];\n(" + ";\n".join(parts) + ");\nout geom;"
 
 
 def _overpass_to_features(elements) -> list[dict]:
@@ -281,6 +281,43 @@ def _overpass_to_features(elements) -> list[dict]:
         features.append({"type": "Feature", "id": f"{el_type}/{el.get('id')}", "properties": props, "geometry": geom})
     return features
 
+def _load_osm_features_as_layer(features, layer_name):
+    """Load GeoJSON features into a QgsVectorLayer and add it to the project.
+
+    Writes the features to a temporary GeoJSON file and loads it via the OGR
+    provider, which handles mixed geometry types. Returns the added layer's id,
+    or None when there are no features or loading fails.
+    """
+    if not features:
+        return None
+    try:
+        import json
+        import os
+        import tempfile
+        from qgis.core import QgsVectorLayer, QgsProject
+
+        fc = {
+            "type": "FeatureCollection",
+            "features": features,
+            "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::4326"}},
+        }
+        fd, path = tempfile.mkstemp(suffix=".geojson", prefix="aery_osm_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(fc, f)
+            layer = QgsVectorLayer(path, layer_name, "ogr")
+            if not layer.isValid():
+                return None
+            layer = QgsProject.instance().addMapLayer(layer)
+            return layer.id() if layer else None
+        finally:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+    except Exception:
+        return None
+
 
 def run_quickosm_query(key: str = "", value: str = "", extent=None, layer_name: str = "OSM Query", raw_query: str = "") -> dict:
     """Fetch OSM data for a key/value (or raw Overpass query) within an extent.
@@ -288,19 +325,21 @@ def run_quickosm_query(key: str = "", value: str = "", extent=None, layer_name: 
     Native-first: builds an Overpass query and fetches it through the robust
     ``query_overpass()`` helper (mirror failover, User-Agent, backoff). Does NOT
     depend on the QuickOSM plugin's internal processing algorithms, which are
-    unreliable in some QGIS versions. Returns GeoJSON features ready for
-    ``safe_create_geodataframe`` / layer loading.
+    unreliable in some QGIS versions. Loads the result as a memory layer and
+    returns a ``processing.run``-compatible dict (``{"OUTPUT": layer_id, ...}``).
     """
     try:
         query = build_overpass_query(key=key, value=value, extent=extent, raw_query=raw_query)
         data = query_overpass(query)
         elements = (data or {}).get("elements") or []
         features = _overpass_to_features(elements)
+        layer_id = _load_osm_features_as_layer(features, layer_name)
         return {
             "success": True,
             "features": features,
             "count": len(features),
             "layer_name": layer_name,
+            "output": {"OUTPUT": layer_id} if layer_id else {},
         }
     except Exception as e:
         return {"success": False, "error": f"QuickOSM/Overpass query failed: {e}"}

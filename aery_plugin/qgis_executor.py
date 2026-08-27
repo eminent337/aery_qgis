@@ -635,6 +635,30 @@ class QGISCodeExecutor(QObject):
         except queue.Empty:
             pass
 
+    def _run_quickosm_native(self, algorithm, parameters, result_queue):
+        """Run a QuickOSM algorithm via the native Overpass helper.
+
+        Maps the QuickOSM processing params to ``run_quickosm_query`` and
+        returns a ``processing.run``-compatible result dict.
+        """
+        from aery_plugin.geospatial_tools import run_quickosm_query
+
+        params = parameters or {}
+        alg = (algorithm or "").lower()
+        if "rawquery" in alg or "raw_query" in alg:
+            res = run_quickosm_query(raw_query=params.get("QUERY", ""), extent=params.get("EXTENT"))
+        else:
+            res = run_quickosm_query(
+                key=params.get("KEY", ""),
+                value=params.get("VALUE", ""),
+                extent=params.get("EXTENT"),
+            )
+        if not res.get("success"):
+            from qgis.core import QgsProcessingException
+            raise QgsProcessingException(res.get("error", "QuickOSM native query failed"))
+        return res.get("output", {})
+
+
     def _run_processing_async(self, algorithm, parameters, feedback=None, context=None, req_id=None, result_queue=None):
         """Run a processing algorithm via QgsProcessingAlgRunnerTask in the
         background thread pool while pumping the Qt event loop so the UI
@@ -656,6 +680,12 @@ class QGISCodeExecutor(QObject):
         alg = QgsApplication.processingRegistry().algorithmById(algorithm)
         if alg is None:
             return _processing.run(algorithm, parameters, feedback, context)
+
+        # Route QuickOSM algorithms through the native Overpass helper — the
+        # QuickOSM plugin's own processing algorithms are unreliable in some
+        # QGIS versions (internal IndexError in process_road, missing params).
+        if isinstance(algorithm, str) and algorithm.lower().startswith("quickosm:"):
+            return _run_quickosm_native(algorithm, parameters, result_queue)
 
         ctx = context or QgsProcessingContext()
         fb = feedback or QgsProcessingFeedback()

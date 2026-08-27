@@ -45,7 +45,7 @@ def test_build_overpass_query_key_value_extent():
     q = build_overpass_query(key="amenity", value="cafe", extent=(-0.1, 51.4, 0.2, 51.6))
     assert "[\"amenity\"=\"cafe\"]" in q
     # bbox: south, west, north, east = 51.4, -0.1, 51.6, 0.2
-    assert "(51.4;-0.1;51.6;0.2)" in q
+    assert "(51.4,-0.1,51.6,0.2)" in q
     for t in ("node", "way", "relation"):
         assert t in q
     assert "out geom;" in q
